@@ -16,6 +16,7 @@ import html
 import string
 from collections import Counter
 from pathlib import Path
+from urllib.parse import urlparse
 
 from engineering_audit.rules import Rule, RulesPack
 from engineering_audit.schema import (
@@ -75,7 +76,10 @@ def _markdownish(text: str) -> str:
     blank-line-separated chunks into paragraphs and single newlines into
     line breaks.
     """
-    escaped = html.escape(text)
+    # Normalise CRLF (and lone CR) to LF first: a paragraph split on a literal
+    # '\n\n' would otherwise miss every blank line in CRLF-sourced text.
+    normalised = text.replace("\r\n", "\n").replace("\r", "\n")
+    escaped = html.escape(normalised)
     paragraphs = [p for p in escaped.split("\n\n") if p.strip()]
     if not paragraphs:
         return ""
@@ -128,16 +132,23 @@ def _coverage_summary(selected: dict[str, DomainResult], domain_titles: dict[str
     return summary
 
 
-def _findings_rollup(all_findings: list[tuple[str, Finding]]) -> str:
+def _findings_rollup(
+    all_findings: list[tuple[str, Finding]], domain_titles: dict[str, str]
+) -> str:
     severity_counts: Counter[str] = Counter(f.severity.value for _, f in all_findings)
-    domain_counts: Counter[str] = Counter(title for title, _ in all_findings)
+    # Keyed by domain id, not title: two domains with identical titles (from
+    # different rules-pack files) must not merge into one rollup row.
+    domain_counts: Counter[str] = Counter(domain_id for domain_id, _ in all_findings)
     total = len(all_findings)
 
     sev_items = "".join(
         f"<li>{_esc(sev)}: {severity_counts.get(sev, 0)}</li>" for sev in _SEVERITY_ORDER
     )
     domain_items = (
-        "".join(f"<li>{_esc(title)}: {count}</li>" for title, count in domain_counts.items())
+        "".join(
+            f"<li>{_esc(domain_id)}: {_esc(domain_titles[domain_id])}: {count}</li>"
+            for domain_id, count in domain_counts.items()
+        )
         or "<li>No findings.</li>"
     )
     return (
@@ -151,14 +162,21 @@ def _could_not_evaluate_list(
     selected: dict[str, DomainResult], rule_index: dict[str, Rule]
 ) -> str:
     rows = []
-    for result in selected.values():
+    for domain_id, result in selected.items():
         for rv in result.rule_verdicts:
             if rv.verdict != Verdict.COULD_NOT_EVALUATE:
                 continue
             rule = rule_index.get(rv.rule_id)
-            rule_title = rule.title if rule is not None else "(rule not found in pack)"
+            if rule is None:
+                # Consistent with the findings check below: a verdict for a
+                # rule id absent from the pack is a broken run, not a cosmetic
+                # gap, and must raise rather than render a placeholder label.
+                raise ReportError(
+                    f"domain '{domain_id}' has a rule_verdict for rule id "
+                    f"'{rv.rule_id}', which is not in the rules pack"
+                )
             rows.append(
-                f"<li><strong>{_esc(rv.rule_id)}</strong> ({_esc(rule_title)}): {_esc(rv.note)}</li>"
+                f"<li><strong>{_esc(rv.rule_id)}</strong> ({_esc(rule.title)}): {_esc(rv.note)}</li>"
             )
     if not rows:
         return (
@@ -238,6 +256,15 @@ def _issues_section(
         for finding in all_findings:
             url = issue_urls.get(finding.rule_id)
             if url:
+                # A non-http(s) scheme here (e.g. javascript:) is a bug in the
+                # filing integration upstream, not a cosmetic issue, so it
+                # must raise rather than render a clickable, unsafe link.
+                scheme = urlparse(url).scheme.lower()
+                if scheme not in ("http", "https"):
+                    raise ReportError(
+                        f"issue url for rule id '{finding.rule_id}' has scheme "
+                        f"'{scheme or '(none)'}', only http/https are allowed: {url!r}"
+                    )
                 rows.append(f'<li><a href="{_esc(url)}">{_esc(finding.issue_title)}</a></li>')
             else:
                 rows.append(f"<li>{_esc(finding.issue_title)} (no issue filed for this finding)</li>")
@@ -306,14 +333,15 @@ def render_report(
                 )
 
     all_findings = [
-        (domain_titles[domain_id], finding)
+        (domain_id, finding)
         for domain_id, result in selected.items()
         for finding in result.findings
     ]
 
     performance_summary = (
         f'<div class="perf-block"><h3>Coverage</h3>{_coverage_summary(selected, domain_titles)}</div>'
-        f'<div class="perf-block"><h3>Findings rollup</h3>{_findings_rollup(all_findings)}</div>'
+        f'<div class="perf-block"><h3>Findings rollup</h3>'
+        f"{_findings_rollup(all_findings, domain_titles)}</div>"
         f'<div class="perf-block prominent">{_could_not_evaluate_list(selected, rule_index)}</div>'
         f'<div class="perf-block"><h3>Self-assessment by domain</h3>'
         f"{_self_assessment_list(selected, domain_titles)}</div>"

@@ -176,6 +176,104 @@ def test_report_error_when_finding_references_unknown_rule_id() -> None:
         render_report(run_state, pack)
 
 
+def test_could_not_evaluate_verdict_for_unknown_rule_id_raises() -> None:
+    # A finding referencing an unknown rule id already raises ReportError;
+    # a could-not-evaluate verdict for an unknown rule id must be equally
+    # loud, not rendered as "(rule not found in pack)".
+    pack = _pack()
+    d01 = pack.get_domain("d01")
+    verdicts = _all_pass_verdicts(d01)
+    verdicts[0] = RuleVerdict(
+        rule_id="D01-R99",
+        verdict=Verdict.COULD_NOT_EVALUATE,
+        note="this rule id does not exist in the pack",
+    )
+    run_state = RunState(
+        meta=_meta(),
+        config=AuditConfig(selected_domain_ids=["d01"], issue_mode="report"),
+        domain_results={"d01": DomainResult(domain_id="d01", status="completed", rule_verdicts=verdicts)},
+    )
+    with pytest.raises(ReportError):
+        render_report(run_state, pack)
+
+
+def test_findings_rollup_rows_keyed_by_domain_id_not_title(tmp_path: Path) -> None:
+    # Build a two-domain pack where both domains share an identical title,
+    # each with one finding, and confirm two distinct rollup rows appear.
+    scratch = tmp_path / "pack"
+    scratch.mkdir()
+    domain_md = (
+        "# Domain {num}: Same Title Domain\n\n"
+        "**Trigger:** you are about to trigger domain {num}.\n\n"
+        "### 1. A single rule.\n\n"
+        "Body text.\n\n"
+        "*Source: fixture. Rule id: D{num:02d}-R01. Volatility: durable.*\n"
+    )
+    (scratch / "01-a.md").write_text(domain_md.format(num=1), encoding="utf-8")
+    (scratch / "02-b.md").write_text(domain_md.format(num=2), encoding="utf-8")
+    pack = load_pack(scratch)
+    d01 = pack.get_domain("d01")
+    d02 = pack.get_domain("d02")
+    assert d01.title == d02.title == "Same Title Domain"
+
+    def _finding(rule_id: str) -> Finding:
+        return Finding(
+            rule_id=rule_id,
+            severity=Severity.LOW,
+            title="a finding",
+            location="x.py",
+            body_md="x",
+            issue_title="x",
+            issue_body="x",
+        )
+
+    run_state = RunState(
+        meta=_meta(),
+        config=AuditConfig(selected_domain_ids=["d01", "d02"], issue_mode="report"),
+        domain_results={
+            "d01": DomainResult(
+                domain_id="d01",
+                status="completed",
+                rule_verdicts=[RuleVerdict(rule_id="D01-R01", verdict=Verdict.FINDING)],
+                findings=[_finding("D01-R01")],
+            ),
+            "d02": DomainResult(
+                domain_id="d02",
+                status="completed",
+                rule_verdicts=[RuleVerdict(rule_id="D02-R01", verdict=Verdict.FINDING)],
+                findings=[_finding("D02-R01")],
+            ),
+        },
+    )
+    rendered = render_report(run_state, pack)
+    assert "d01: Same Title Domain: 1" in rendered
+    assert "d02: Same Title Domain: 1" in rendered
+
+
+def test_markdownish_splits_paragraphs_on_crlf() -> None:
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.config.feedback_text = "First paragraph.\r\n\r\nSecond paragraph."
+    rendered = render_report(run_state, pack)
+    assert "<p>First paragraph.</p><p>Second paragraph.</p>" in rendered
+
+
+def test_issue_url_with_javascript_scheme_raises() -> None:
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    with pytest.raises(ReportError):
+        render_report(run_state, pack, issue_urls={"D01-R02": "javascript:alert(1)"})
+
+
+def test_issue_url_with_https_scheme_still_renders_as_link() -> None:
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    rendered = render_report(
+        run_state, pack, issue_urls={"D01-R02": "https://example.invalid/issues/42"}
+    )
+    assert 'href="https://example.invalid/issues/42"' in rendered
+
+
 def test_full_rule_body_text_never_leaks_into_report() -> None:
     # The rules pack is private IP; the report may show a rule id and its
     # short heading title, never the body prose that explains the rule.
