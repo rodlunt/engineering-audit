@@ -1,6 +1,6 @@
 """Tests for the MCP server skeleton (src/engineering_audit/server.py).
 
-Tool calls are exercised through FastMCP's own in-process call_tool(), which
+Tool calls are exercised through MCPServer's own in-process call_tool(), which
 runs the tool exactly as the MCP protocol would (argument validation,
 structured-content wrapping, error wrapping) without needing a real stdio
 transport or a separate client process.
@@ -13,7 +13,7 @@ import json
 from pathlib import Path
 
 import pytest
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 from engineering_audit.rules import RulesPackError
 from engineering_audit.server import AppState, _resolve_rules_dir, build_server
@@ -22,8 +22,8 @@ FIXTURE_PACK = Path(__file__).parent / "fixture_pack"
 
 
 def _call(mcp, name: str, arguments: dict):
-    _content_blocks, structured = asyncio.run(mcp.call_tool(name, arguments))
-    return structured
+    result = asyncio.run(mcp.call_tool(name, arguments))
+    return result.structured_content
 
 
 def test_build_server_loads_the_fixture_pack() -> None:
@@ -57,8 +57,8 @@ def test_list_domains_tool_reports_domains_and_skip() -> None:
 
 def test_get_domain_tool_returns_full_document_text() -> None:
     mcp, _state = build_server(FIXTURE_PACK)
-    content_blocks, _structured = asyncio.run(mcp.call_tool("get_domain", {"domain_id": "d01"}))
-    text = content_blocks[0].text
+    result = asyncio.run(mcp.call_tool("get_domain", {"domain_id": "d01"}))
+    text = result.content[0].text
     assert text.startswith("# Domain 01: Gnome Husbandry Record Keeping")
     assert "D01-R04" in text
 

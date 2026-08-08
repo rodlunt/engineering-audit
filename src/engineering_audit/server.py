@@ -1,4 +1,4 @@
-"""FastMCP stdio server exposing the rules pack to a local coding agent.
+"""MCP stdio server exposing the rules pack to a local coding agent.
 
 Milestone 1 ships the deterministic core only: the rules pack loader and two
 read-only, pack-inspection tools. The config page, run tracking and report
@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
 
 from engineering_audit.rules import RulesPack, RulesPackError, get_domain_text, load_pack
 
@@ -70,8 +70,8 @@ def _resolve_rules_dir(argv: list[str]) -> Path:
     return rules_dir
 
 
-def build_server(rules_dir: Path) -> tuple[FastMCP, AppState]:
-    """Load the rules pack and construct the FastMCP app.
+def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
+    """Load the rules pack and construct the MCPServer app.
 
     Raises RulesPackError (or RulesPackParseError) if the pack cannot be
     loaded; this is intentionally not caught here so callers that want the
@@ -81,7 +81,7 @@ def build_server(rules_dir: Path) -> tuple[FastMCP, AppState]:
     pack = load_pack(rules_dir)
     state = AppState(pack=pack)
 
-    mcp = FastMCP("engineering-audit")
+    mcp = MCPServer("engineering-audit")
 
     @mcp.tool()
     def list_domains() -> dict[str, Any]:

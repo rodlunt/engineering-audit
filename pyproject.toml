@@ -7,10 +7,7 @@ authors = [
 ]
 requires-python = ">=3.10"
 dependencies = [
-    # Pinned below 2.0.0: the 2.x line dropped mcp.server.fastmcp (FastMCP moved
-    # or was removed) as of this writing. Revisit the pin once the 2.x FastMCP
-    # replacement, if any, is confirmed.
-    "mcp>=1.9,<2.0.0",
+    "mcp>=2.0,<3.0",
     "pydantic>=2.0,<3.0",
 ]
 
