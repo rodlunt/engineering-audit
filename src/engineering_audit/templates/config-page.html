@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>engineering-audit: configure this run</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f7f7f5;
+    --fg: #1a1a1a;
+    --muted: #5b5b5b;
+    --card-bg: #ffffff;
+    --border: #d8d8d4;
+    --accent: #2f5d50;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16181a;
+      --fg: #e8e8e6;
+      --muted: #a3a3a0;
+      --card-bg: #1f2224;
+      --border: #34383a;
+      --accent: #7fbfae;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    max-width: 44rem;
+    margin: 2.5rem auto;
+    padding: 0 1.25rem 3rem;
+    line-height: 1.5;
+  }
+  h1 { font-size: 1.4rem; margin-bottom: 0.25rem; }
+  p.lede { color: var(--muted); margin-top: 0; }
+  section {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    margin-bottom: 1.25rem;
+  }
+  h2 { font-size: 1.05rem; margin-top: 0; }
+  label.domain-row {
+    display: block;
+    padding: 0.4rem 0;
+    border-bottom: 1px solid var(--border);
+  }
+  label.domain-row:last-child { border-bottom: none; }
+  .domain-title { font-weight: 600; }
+  .domain-trigger { display: block; color: var(--muted); font-size: 0.85rem; margin-left: 1.6rem; }
+  .radio-row, .consent-row { display: block; padding: 0.3rem 0; }
+  .consent-row.locked { color: var(--muted); }
+  textarea {
+    width: 100%;
+    min-height: 5rem;
+    font-family: inherit;
+    font-size: 0.95rem;
+    background: var(--bg);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.5rem;
+  }
+  button {
+    background: var(--accent);
+    color: #ffffff;
+    border: none;
+    border-radius: 6px;
+    padding: 0.6rem 1.4rem;
+    font-size: 1rem;
+    cursor: pointer;
+  }
+  button:hover { opacity: 0.9; }
+</style>
+</head>
+<body>
+<h1>Configure this audit run</h1>
+<p class="lede">This page is served on your machine only. Nothing here leaves your computer until you tick a box below and choose to send it.</p>
+
+<form action="/submit" method="post">
+
+<section>
+  <h2>Domains to audit</h2>
+  $domain_checkboxes
+</section>
+
+<section>
+  <h2>How should findings be delivered?</h2>
+  <label class="radio-row">
+    <input type="radio" name="issue_mode" value="github" $issue_mode_github_checked>
+    Open a GitHub issue per finding
+  </label>
+  <label class="radio-row">
+    <input type="radio" name="issue_mode" value="report" $issue_mode_report_checked>
+    List findings in the report only (copy issue text manually if needed)
+  </label>
+</section>
+
+<section>
+  <h2>Feedback to the tool author (optional)</h2>
+  <textarea name="feedback_text" placeholder="Anything you want the tool author to know about this run.">$feedback_text</textarea>
+</section>
+
+<section>
+  <h2>What to include if you send feedback</h2>
+  <label class="consent-row">
+    <input type="checkbox" name="consent_coverage" $consent_coverage_checked>
+    Coverage statistics (files inspected, files skipped)
+  </label>
+  <label class="consent-row">
+    <input type="checkbox" name="consent_rollup" $consent_rollup_checked>
+    Findings rollup (counts by severity and domain, not the finding text)
+  </label>
+  <label class="consent-row">
+    <input type="checkbox" name="consent_self_assessment" $consent_self_assessment_checked>
+    Self assessment (confidence and limits per domain)
+  </label>
+  <label class="consent-row">
+    <input type="checkbox" name="consent_environment" $consent_environment_checked>
+    Environment information (assistant, model, tool version)
+  </label>
+  <label class="consent-row locked">
+    <input type="checkbox" checked disabled>
+    Run metadata (always included when sending feedback)
+  </label>
+</section>
+
+<button type="submit">Start audit</button>
+</form>
+</body>
+</html>
