@@ -98,6 +98,27 @@ def test_load_pack_raises_when_zero_domains_loaded(tmp_path: Path) -> None:
         load_pack(only_no_trigger)
 
 
+def test_rule_id_footer_wins_over_earlier_prose_cross_reference(tmp_path: Path) -> None:
+    # A rule's body can mention another rule's id in prose before its own
+    # metadata footer. The footer line is always the last occurrence in the
+    # block, so parsing must take the last match, not the first.
+    scratch = tmp_path / "pack"
+    scratch.mkdir()
+    (scratch / "01-cross-ref.md").write_text(
+        "# Domain 01: Cross Reference Domain\n\n"
+        "**Trigger:** you are about to touch a cross-referencing rule.\n\n"
+        "### 1. A rule whose body cites another rule before its own footer.\n\n"
+        "This is as covered by Rule id: D01-R01. in a different rule's footer, "
+        "mentioned here only in prose.\n\n"
+        "*Source: fixture only. Rule id: D01-R05. Volatility: durable.*\n",
+        encoding="utf-8",
+    )
+    pack = load_pack(scratch)
+    d01 = pack.get_domain("d01")
+    assert d01 is not None
+    assert [r.id for r in d01.rules] == ["D01-R05"]
+
+
 def test_get_domain_text_returns_full_document() -> None:
     pack = load_pack(FIXTURE_PACK)
     d01 = pack.get_domain("d01")

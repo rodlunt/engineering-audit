@@ -125,13 +125,17 @@ def _parse_rules(path: Path, text: str) -> list[Rule]:
         heading_number = int(heading_match.group("number"))
         heading_title = heading_match.group("title").strip()
 
-        id_match = _RULE_ID_RE.search(block)
-        if id_match is None:
+        # A rule block can carry a prose cross-reference to another rule's id
+        # before its own metadata footer (e.g. "as covered by Rule id: ..."),
+        # so take the *last* match in the block: the footer line is always
+        # the final occurrence, never the first.
+        id_matches = list(_RULE_ID_RE.finditer(block))
+        if not id_matches:
             raise RulesPackParseError(
                 f"{path}: rule {heading_number} ('{heading_title}') has no parseable "
                 "'Rule id: ...' metadata line"
             )
-        rule_id = id_match.group("rule_id").upper()
+        rule_id = id_matches[-1].group("rule_id").upper()
 
         volatility_match = _VOLATILITY_RE.search(block)
         volatility = (

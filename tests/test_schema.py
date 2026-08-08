@@ -159,6 +159,39 @@ def test_telemetry_consent_has_no_run_meta_toggle() -> None:
     assert not hasattr(TelemetryConsent(), "run_meta")
 
 
+def test_run_state_rejects_domain_results_key_mismatched_with_domain_id() -> None:
+    # domain_results is keyed by domain_id; a DomainResult filed under a
+    # different key than its own domain_id is silent data corruption (a
+    # report renderer trusts the key), so it must be rejected loudly.
+    with pytest.raises(ValidationError):
+        RunState(
+            meta=_meta(),
+            config=_config(),
+            domain_results={
+                "d01": DomainResult(
+                    domain_id="d02",
+                    status="completed",
+                    rule_verdicts=[RuleVerdict(rule_id="D02-R01", verdict=Verdict.pass_)],
+                )
+            },
+        )
+
+
+def test_run_meta_accepts_trailing_z_timestamp() -> None:
+    # Python 3.10 (this project's minimum) rejects a trailing 'Z' in
+    # datetime.fromisoformat; the validator must normalise it before parsing.
+    meta = RunMeta(
+        tool_version="0.1.0",
+        rules_pack_name="fixture-pack",
+        assistant="claude-code",
+        model="claude-sonnet-5",
+        repo_name="engineering-audit",
+        repo_commit="deadbeef",
+        started="2026-08-09T09:00:00Z",
+    )
+    assert meta.started == "2026-08-09T09:00:00Z"
+
+
 def test_run_state_round_trip_json() -> None:
     state = RunState(
         meta=_meta(),

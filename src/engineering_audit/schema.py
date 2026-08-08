@@ -186,7 +186,11 @@ class RunMeta(BaseModel):
         if value is None:
             return value
         try:
-            datetime.fromisoformat(value)
+            # Python 3.10 (the project's minimum, see requires-python in
+            # pyproject.toml) has no 'Z' support in fromisoformat: normalise
+            # a trailing 'Z' (UTC) to the '+00:00' offset it always accepts.
+            normalised = value[:-1] + "+00:00" if value.endswith("Z") else value
+            datetime.fromisoformat(normalised)
         except ValueError as exc:
             raise ValueError(f"timestamp {value!r} is not a valid ISO 8601 string") from exc
         return value
@@ -234,6 +238,20 @@ class RunState(BaseModel):
     meta: RunMeta
     config: AuditConfig
     domain_results: dict[str, DomainResult] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _domain_results_keys_match_domain_id(self) -> "RunState":
+        mismatched = [
+            (key, result.domain_id)
+            for key, result in self.domain_results.items()
+            if key != result.domain_id
+        ]
+        if mismatched:
+            raise ValueError(
+                "domain_results key(s) do not match their DomainResult.domain_id: "
+                f"{mismatched}"
+            )
+        return self
 
     def to_json(self) -> str:
         return self.model_dump_json(indent=2)
