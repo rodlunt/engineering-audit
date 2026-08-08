@@ -95,7 +95,14 @@ class ConfigServer:
                 if server._submitted.is_set():
                     self.send_error(HTTPStatus.CONFLICT, "Configuration already submitted")
                     return
-                length = int(self.headers.get("Content-Length", "0"))
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                except ValueError:
+                    # A non-numeric Content-Length is a malformed request, not
+                    # a reason to crash the handler thread: reply 400 and keep
+                    # serving.
+                    self.send_error(HTTPStatus.BAD_REQUEST, "Invalid Content-Length header")
+                    return
                 raw_body = self.rfile.read(length).decode("utf-8")
                 try:
                     config = server._parse_submission(raw_body)

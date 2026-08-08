@@ -8,6 +8,7 @@ module does not need reshaping when they arrive.
 
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 from dataclasses import dataclass
@@ -15,6 +16,13 @@ from pathlib import Path
 from typing import Any
 
 from mcp.server import MCPServer
+
+# Private import: the SDK enables OpenTelemetry span middleware on every
+# server unconditionally (mcp/server/lowlevel/server.py), and this tool's
+# consent model forbids ambient telemetry, so it is stripped out in
+# build_server() below. If this import breaks on an SDK upgrade, that is the
+# loud ImportError we want rather than a silent no-op strip.
+from mcp.server._otel import OpenTelemetryMiddleware
 
 from engineering_audit.rules import RulesPack, RulesPackError, get_domain_text, load_pack
 
@@ -43,14 +51,14 @@ def _resolve_rules_dir(argv: list[str]) -> Path:
     that silently started with no rules pack would produce a report that
     looks like a clean audit while having checked nothing.
     """
-    rules_dir_value: str | None = None
-    for index, arg in enumerate(argv):
-        if arg == "--rules-dir" and index + 1 < len(argv):
-            rules_dir_value = argv[index + 1]
-            break
-        if arg.startswith("--rules-dir="):
-            rules_dir_value = arg.split("=", 1)[1]
-            break
+    # argparse rather than a hand-rolled scan: a trailing '--rules-dir' with
+    # no value must error loudly (SystemExit code 2), not silently fall
+    # through to the environment variable, which could be a stale, wrong
+    # pack.
+    parser = argparse.ArgumentParser(prog="engineering-audit-mcp", add_help=False)
+    parser.add_argument("--rules-dir", default=None)
+    args = parser.parse_args(argv)
+    rules_dir_value: str | None = args.rules_dir
 
     if rules_dir_value is None:
         rules_dir_value = os.environ.get("ENGINEERING_AUDIT_RULES_DIR")
@@ -82,6 +90,12 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
     state = AppState(pack=pack)
 
     mcp = MCPServer("engineering-audit")
+    # The SDK installs OpenTelemetry span middleware on every server by
+    # default. This project's design requires explicit consent for any
+    # telemetry, so it is stripped here rather than left ambient.
+    mcp.middleware[:] = [
+        m for m in mcp.middleware if not isinstance(m, OpenTelemetryMiddleware)
+    ]
 
     @mcp.tool()
     def list_domains() -> dict[str, Any]:

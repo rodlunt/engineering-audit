@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import http.client
 import urllib.request
 from pathlib import Path
 from urllib.error import HTTPError
@@ -87,6 +88,34 @@ def test_post_submission_then_poll_returns_config(domains) -> None:
         assert config.telemetry_consent.rollup is True
         assert config.telemetry_consent.self_assessment is False
         assert config.telemetry_consent.environment is False
+    finally:
+        srv.shutdown()
+
+
+def test_post_with_non_numeric_content_length_returns_400_and_server_keeps_serving(domains) -> None:
+    # int(Content-Length) on a malformed header used to raise ValueError
+    # uncaught, crashing the handler thread. It must return a clean 400 and
+    # leave the server able to serve the next request.
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        host_port = url[len("http://") :].rstrip("/")
+        host, port_str = host_port.split(":")
+        conn = http.client.HTTPConnection(host, int(port_str), timeout=5)
+        try:
+            conn.putrequest("POST", "/submit")
+            conn.putheader("Content-Length", "abc")
+            conn.endheaders()
+            resp = conn.getresponse()
+            assert resp.status == 400
+            resp.read()
+        finally:
+            conn.close()
+
+        # The server must still be alive and serving after the bad request.
+        with urllib.request.urlopen(url, timeout=5) as resp2:
+            assert resp2.status == 200
+        assert srv.poll() == "pending"
     finally:
         srv.shutdown()
 

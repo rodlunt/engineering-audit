@@ -15,6 +15,8 @@ from pathlib import Path
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
 
+from mcp.server._otel import OpenTelemetryMiddleware
+
 from engineering_audit.rules import RulesPackError
 from engineering_audit.server import AppState, _resolve_rules_dir, build_server
 
@@ -73,6 +75,19 @@ def test_get_domain_tool_raises_a_clear_error_for_an_unknown_id() -> None:
     assert "d02" in message
 
 
+def test_build_server_strips_opentelemetry_middleware_but_tools_still_work() -> None:
+    # The SDK installs OpenTelemetryMiddleware on every server by default;
+    # this tool's consent model forbids ambient telemetry, so build_server()
+    # must strip it while leaving the rest of the middleware chain (and tool
+    # dispatch) intact.
+    mcp, _state = build_server(FIXTURE_PACK)
+    assert not any(isinstance(m, OpenTelemetryMiddleware) for m in mcp.middleware)
+    assert not any(type(m).__name__ == "OpenTelemetryMiddleware" for m in mcp.middleware)
+
+    result = _call(mcp, "list_domains", {})
+    assert [d["id"] for d in result["domains"]] == ["d01", "d02"]
+
+
 def test_resolve_rules_dir_from_argv_flag(tmp_path: Path) -> None:
     resolved = _resolve_rules_dir(["--rules-dir", str(tmp_path)])
     assert resolved == tmp_path
@@ -99,3 +114,15 @@ def test_resolve_rules_dir_raises_when_not_a_directory(tmp_path: Path) -> None:
     not_a_dir = tmp_path / "nope"
     with pytest.raises(SystemExit):
         _resolve_rules_dir(["--rules-dir", str(not_a_dir)])
+
+
+def test_resolve_rules_dir_raises_on_trailing_flag_with_no_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A trailing '--rules-dir' with no value must error loudly (argparse's
+    # SystemExit code 2), never fall through to the environment variable,
+    # which could be a stale, wrong pack.
+    monkeypatch.setenv("ENGINEERING_AUDIT_RULES_DIR", "/should/not/be/used")
+    with pytest.raises(SystemExit) as excinfo:
+        _resolve_rules_dir(["--rules-dir"])
+    assert excinfo.value.code == 2
