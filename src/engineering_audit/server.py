@@ -267,6 +267,124 @@ def _filed_urls_by_rule(run: RunTracker) -> dict[str, str]:
     return by_rule
 
 
+def _issue_preview(pending: list[PendingIssue], repo: str | None) -> dict[str, Any]:
+    """The confirm=False answer: what would be filed, and nothing else.
+
+    Deliberately touches neither gh nor the target repository, so previewing
+    can never be the call that creates something on someone's repo.
+    """
+    return {
+        "repo": repo,
+        "count": len(pending),
+        "titles": [issue.finding.issue_title for issue in pending],
+        "instruction": (
+            "Show this list of issue titles, and the target repository once known, to "
+            "the user and ask for their explicit approval. Call file_issues again with "
+            "confirm=True only after the user has explicitly agreed to file these on "
+            "their repository."
+        ),
+    }
+
+
+def _resolve_target_repo(run: RunTracker, repo: str | None) -> str:
+    """The 'owner/name' repository to file this run's issues on.
+
+    An explicit `repo` wins and is taken at face value. Otherwise it is
+    detected from the audited repository directory recorded by begin_run,
+    which needs a working gh. Every way of failing to work it out raises,
+    naming what to do about it: filing on a guessed repository is worse than
+    not filing.
+    """
+    if repo is not None:
+        return repo
+    if run.repo_dir is None:
+        raise ValueError(
+            "No repo_dir was recorded for this run (pass it to begin_run) and no repo "
+            "argument was given to file_issues; cannot detect which GitHub repository "
+            "to file issues on."
+        )
+    if not gh_available():
+        raise ValueError(
+            "gh is not available or not authenticated (gh auth status failed). Install "
+            "and authenticate gh, or use issue_mode='report' instead."
+        )
+    detected = detect_repo(run.repo_dir)
+    if detected is None:
+        raise ValueError(
+            f"Could not detect a GitHub repository from {run.repo_dir}: no GitHub "
+            "remote found. Pass repo='owner/name' explicitly to file_issues."
+        )
+    return detected
+
+
+def _file_pending_issues(
+    run: RunTracker,
+    target_repo: str,
+    pending: list[PendingIssue],
+    rule_index: dict[str, Rule],
+) -> dict[str, Any]:
+    """File one issue per pending finding, recording each url on the run as
+    it goes.
+
+    Stops at the first failure and raises, naming what was filed and what was
+    not: the bookkeeping is updated per issue, so a retry resumes rather than
+    re-filing. Returns the filed map, the run's full filed map, the label
+    outcome and any warnings.
+    """
+    # Once per run, not once per issue: whether the label exists is one
+    # fact about the target repository.
+    label_status = ensure_label(target_repo)
+    labels = [label_status.name] if label_status.usable else []
+
+    filed_this_call: dict[str, str] = {}
+    warnings: list[str] = [label_status.warning] if label_status.warning else []
+    for issue in pending:
+        finding = issue.finding
+        # A filed issue is a published claim. It never goes out without
+        # the evidence backing it: a finding whose rule is missing from
+        # the pack or has no cited source stops filing loudly, before
+        # anything is created on the target repository.
+        rule = rule_index.get(finding.rule_id)
+        if rule is None or not rule.source:
+            problem = (
+                "is not in the rules pack"
+                if rule is None
+                else "has no cited source in the rules pack"
+            )
+            raise ValueError(
+                f"Refusing to file issue for finding on rule {finding.rule_id}: the rule "
+                f"{problem}. A filed issue is a published claim; this tool does not "
+                "publish claims without evidence. Nothing was filed for this finding. "
+                f"Already filed before this stop: {run.filed_issues or 'none'}."
+            )
+        trailing_line = build_issue_trailing_line(finding, rule)
+        body = f"{finding.issue_body}\n\n{trailing_line}"
+        try:
+            created = create_issue(target_repo, finding.issue_title, body, labels)
+        except IssueFilingError as exc:
+            unfiled = [p.key for p in pending if p.key not in run.filed_issues]
+            raise ValueError(
+                f"Filing stopped after {len(filed_this_call)} of {len(pending)} issue(s) "
+                f"this call. Filed: {run.filed_issues}. Not filed: {unfiled}. Failure "
+                f"filing finding '{issue.key}' on {target_repo}: {exc}"
+            ) from exc
+        run.filed_issues[issue.key] = created.url
+        filed_this_call[issue.key] = created.url
+        # create_issue's own missing-label retry can still fire (a label
+        # deleted or renamed mid-run), and it reports the same fact for
+        # every issue after that. One line per distinct warning.
+        for warning in created.warnings:
+            if warning not in warnings:
+                warnings.append(warning)
+
+    return {
+        "filed": filed_this_call,
+        "all_filed_issue_urls": dict(run.filed_issues),
+        "label": {"name": label_status.name, "state": label_status.state},
+        "warnings": warnings,
+    }
+
+
 def _resolve_rules_dir(argv: list[str]) -> Path:
     """Resolve the rules pack directory from --rules-dir or the environment.
 
@@ -724,93 +842,13 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
             )
 
         pending = _pending_issues(run)
-
         if not confirm:
-            return {
-                "repo": repo,
-                "count": len(pending),
-                "titles": [issue.finding.issue_title for issue in pending],
-                "instruction": (
-                    "Show this list of issue titles, and the target repository once known, to "
-                    "the user and ask for their explicit approval. Call file_issues again with "
-                    "confirm=True only after the user has explicitly agreed to file these on "
-                    "their repository."
-                ),
-            }
+            return _issue_preview(pending, repo)
 
-        target_repo = repo
-        if target_repo is None:
-            if run.repo_dir is None:
-                raise ValueError(
-                    "No repo_dir was recorded for this run (pass it to begin_run) and no repo "
-                    "argument was given to file_issues; cannot detect which GitHub repository "
-                    "to file issues on."
-                )
-            if not gh_available():
-                raise ValueError(
-                    "gh is not available or not authenticated (gh auth status failed). Install "
-                    "and authenticate gh, or use issue_mode='report' instead."
-                )
-            detected = detect_repo(run.repo_dir)
-            if detected is None:
-                raise ValueError(
-                    f"Could not detect a GitHub repository from {run.repo_dir}: no GitHub "
-                    "remote found. Pass repo='owner/name' explicitly to file_issues."
-                )
-            target_repo = detected
-
-        # Once per run, not once per issue: whether the label exists is one
-        # fact about the target repository.
-        label_status = ensure_label(target_repo)
-        labels = [label_status.name] if label_status.usable else []
-
-        filed_this_call: dict[str, str] = {}
-        warnings: list[str] = [label_status.warning] if label_status.warning else []
-        for issue in pending:
-            finding = issue.finding
-            # A filed issue is a published claim. It never goes out without
-            # the evidence backing it: a finding whose rule is missing from
-            # the pack or has no cited source stops filing loudly, before
-            # anything is created on the target repository.
-            rule = rule_index.get(finding.rule_id)
-            if rule is None or not rule.source:
-                problem = (
-                    "is not in the rules pack"
-                    if rule is None
-                    else "has no cited source in the rules pack"
-                )
-                raise ValueError(
-                    f"Refusing to file issue for finding on rule {finding.rule_id}: the rule "
-                    f"{problem}. A filed issue is a published claim; this tool does not "
-                    "publish claims without evidence. Nothing was filed for this finding. "
-                    f"Already filed before this stop: {run.filed_issues or 'none'}."
-                )
-            trailing_line = build_issue_trailing_line(finding, rule)
-            body = f"{finding.issue_body}\n\n{trailing_line}"
-            try:
-                created = create_issue(target_repo, finding.issue_title, body, labels)
-            except IssueFilingError as exc:
-                unfiled = [p.key for p in pending if p.key not in run.filed_issues]
-                raise ValueError(
-                    f"Filing stopped after {len(filed_this_call)} of {len(pending)} issue(s) "
-                    f"this call. Filed: {run.filed_issues}. Not filed: {unfiled}. Failure "
-                    f"filing finding '{issue.key}' on {target_repo}: {exc}"
-                ) from exc
-            run.filed_issues[issue.key] = created.url
-            filed_this_call[issue.key] = created.url
-            # create_issue's own missing-label retry can still fire (a label
-            # deleted or renamed mid-run), and it reports the same fact for
-            # every issue after that. One line per distinct warning.
-            for warning in created.warnings:
-                if warning not in warnings:
-                    warnings.append(warning)
-
+        target_repo = _resolve_target_repo(run, repo)
         return {
             "repo": target_repo,
-            "filed": filed_this_call,
-            "all_filed_issue_urls": dict(run.filed_issues),
-            "label": {"name": label_status.name, "state": label_status.state},
-            "warnings": warnings,
+            **_file_pending_issues(run, target_repo, pending, rule_index),
         }
 
     @mcp.tool()

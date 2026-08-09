@@ -26,7 +26,7 @@ from mcp.server._otel import OpenTelemetryMiddleware
 import engineering_audit.server as server_module
 from engineering_audit.issues import CreatedIssue, IssueFilingError, LabelStatus
 from engineering_audit.rules import RulesPackError
-from engineering_audit.schema import RunState
+from engineering_audit.schema import RunMeta, RunState
 from engineering_audit.server import (
     AppState,
     _git_commit,
@@ -1261,6 +1261,44 @@ def test_file_issues_confirm_raises_when_gh_unavailable_and_no_repo_given(
     with pytest.raises(ToolError) as excinfo:
         _call(mcp, "file_issues", {"confirm": True})
     assert "gh is not available" in str(excinfo.value)
+
+
+def _bare_tracker(tmp_path: Path, repo_dir: Path | None = None) -> server_module.RunTracker:
+    meta = RunMeta(
+        tool_version="0.0.0-dev",
+        rules_pack_name="fixture_pack",
+        assistant="claude-code",
+        model="claude-sonnet-5",
+        repo_name="widgets-app",
+        repo_commit="abc1234",
+        started="2026-08-09T09:00:00Z",
+    )
+    return server_module.RunTracker(meta=meta, output_dir=tmp_path, repo_dir=repo_dir)
+
+
+def test_resolve_target_repo_takes_an_explicit_repo_without_touching_gh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _must_not_be_called(*_args, **_kwargs):
+        raise AssertionError("an explicit repo must not trigger repo detection")
+
+    monkeypatch.setattr(server_module, "gh_available", _must_not_be_called)
+    monkeypatch.setattr(server_module, "detect_repo", _must_not_be_called)
+
+    tracker = _bare_tracker(tmp_path, repo_dir=tmp_path)
+    assert server_module._resolve_target_repo(tracker, "rodlunt/widgets-app") == "rodlunt/widgets-app"
+
+
+def test_resolve_target_repo_raises_when_detection_finds_no_github_remote(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(server_module, "gh_available", lambda: True)
+    monkeypatch.setattr(server_module, "detect_repo", lambda cwd: None)
+
+    tracker = _bare_tracker(tmp_path, repo_dir=tmp_path)
+    with pytest.raises(ValueError) as excinfo:
+        server_module._resolve_target_repo(tracker, None)
+    assert "no GitHub" in str(excinfo.value)
 
 
 def test_file_issues_confirm_raises_when_no_repo_dir_and_no_repo(
