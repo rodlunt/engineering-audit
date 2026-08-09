@@ -164,17 +164,29 @@ For each domain id in `selected_domain_ids`, in order:
      a plain statement that the rule carries none) is appended automatically from the rules pack
      after every rendered finding; do not restate sources or the rule's literature-review rationale
      in the body yourself. Keep the three parts about the repository, not about the literature.
-4. Once every rule in the domain has a verdict, decide the domain's overall `status`:
+4. If reaching a verdict on a rule involved fetching or reading anything **outside the rules
+   pack itself** (a documentation page, a standard, a spec, a paper, anything not already inside
+   `get_domain`'s text), record it in that `DomainResult`'s `consulted_sources`: `{rule_id, url,
+   title, why, accessed}`. `rule_id` must be one of this domain's own rule ids; `why` is a
+   one-line reason the source was consulted, not a summary of its contents. This server cannot
+   see what you fetched or read outside its own pack: **an unrecorded source is a claim it
+   cannot back.** Do this for every rule as you go, not as a memory exercise at the end of the
+   sweep. Leave `consulted_sources` empty for a rule you verdicted from the rules pack and the
+   repository alone, which is the common case.
+5. Once every rule in the domain has a verdict, decide the domain's overall `status`:
    - `completed`, if you were able to sweep the repository at all (even if some individual rules
      ended up could-not-evaluate).
    - `could-not-run`, only if the whole domain could not be attempted (e.g. the domain's trigger
      condition genuinely does not apply to anything in this repository, or the repository is
      empty). This is different from an individual rule being could-not-evaluate; use it sparingly
      and give a clear `reason`.
-5. Call `record_domain_result` with the full `DomainResult` payload. If it errors:
+6. Call `record_domain_result` with the full `DomainResult` payload. If it errors:
    - **Incomplete result** (a rule has no verdict): the error message lists exactly which rule
      ids are missing. Go back, verdict them, and resubmit. Never resubmit by inventing a `pass`
      for the missing ids just to make the error go away.
+   - **Unknown rule id in consulted_sources**: a source names a `rule_id` that is not one of
+     this domain's own rules. Fix the id (it must be the domain being recorded, not another
+     one) and resubmit.
    - **Domain not selected**: you are trying to record a domain the user did not choose. Skip it.
    - **Already recorded**: you are re-recording a domain. If this is deliberate (you found a
      mistake in your first pass), pass `replace=True`. If it is not deliberate, you have a bug in
@@ -218,10 +230,12 @@ Check `config.issue_mode` from step 3's `get_config` response.
 
 Call `render_report` with a `finished` ISO timestamp (the current time, same format as `started`
 in step 1). It writes `report.html` and `run-state.json` into the run's `output_dir` and returns
-their paths along with a findings summary. Any issues filed in step 6 are linked automatically;
-there is nothing further to pass. The run's `run-state.progress.json` recovery file is removed
-at this point: `run-state.json` is the record from here, and a later `begin_run` on the same
-`output_dir` starts a clean run rather than offering to resume this one.
+their paths along with a findings summary. Any issues filed in step 6 are linked automatically,
+and any `consulted_sources` recorded in step 4 appear in the report's own "Sources consulted
+this run" section, grouped by rule id; there is nothing further to pass for either. The run's
+`run-state.progress.json` recovery file is removed at this point: `run-state.json` is the
+record from here, and a later `begin_run` on the same `output_dir` starts a clean run rather
+than offering to resume this one.
 
 Tell the user directly where `report.html` is, give them a one-line summary of what was
 found (e.g. "3 findings: 1 high, 2 medium, across 2 domains"), and offer to open the report
@@ -233,8 +247,11 @@ report's location and headline numbers are the actual deliverable.
 
 If the user supplied feedback text on the configuration page (`config.feedback_text`), call
 `submit_feedback`. It sends that text, plus a run-metadata section and whichever telemetry
-sections the user consented to (coverage, findings rollup, self-assessment, environment; never
-finding text), to the tool author's repository via `gh`. If it returns `mode: "mailto"` (gh was
+sections the user consented to (coverage, findings rollup, self-assessment, environment,
+consulted sources by rule id/URL/why; never finding text), to the tool author's repository via
+`gh`. Every section defaults off until the user ticks it; the consulted-sources one carries its
+own reason on the configuration page too, since URLs fetched while auditing a private
+repository can hint at what that repository is about. If it returns `mode: "mailto"` (gh was
 unavailable or filing failed), tell the user their feedback was not lost: offer to open the
 `mailto_url`, and if that fails or is unavailable, offer the `body` text for them to paste into an
 email themselves. The rendered report also carries this same mailto fallback in its Feedback
