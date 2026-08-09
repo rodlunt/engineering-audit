@@ -17,16 +17,14 @@ Usage: engineering-audit-render <run-state.json> [--rules-dir <path>] [--out <pa
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
 from pathlib import Path
 
-from pydantic import ValidationError
-
 from engineering_audit.report import ReportError, write_report
 from engineering_audit.rules import RulesPackError, load_pack
-from engineering_audit.schema import RunState, RunStateVersionError
+from engineering_audit.run_state_io import RunStateLoadError, load_run_state_file
+from engineering_audit.schema import RunState
 
 __all__ = ["main"]
 
@@ -55,25 +53,10 @@ def _resolve_rules_dir(rules_dir_arg: str | None) -> Path:
 
 
 def _load_run_state(run_state_path: Path) -> RunState:
-    if not run_state_path.is_file():
-        raise SystemExit(
-            f"engineering-audit-render: run-state file does not exist: {run_state_path}"
-        )
     try:
-        raw_text = run_state_path.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise SystemExit(
-            f"engineering-audit-render: could not read {run_state_path}: {exc}"
-        ) from exc
-
-    try:
-        return RunState.from_json(raw_text)
-    except RunStateVersionError as exc:
+        return load_run_state_file(run_state_path)
+    except RunStateLoadError as exc:
         raise SystemExit(f"engineering-audit-render: {exc}") from exc
-    except (json.JSONDecodeError, ValidationError) as exc:
-        raise SystemExit(
-            f"engineering-audit-render: {run_state_path} is not a valid run-state file: {exc}"
-        ) from exc
 
 
 def main(argv: list[str] | None = None) -> None:
