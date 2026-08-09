@@ -53,7 +53,13 @@ __all__ = [
 # rather than versioning itself separately: it carries the same component
 # models, so a bump that makes an old reader unsafe for one makes it unsafe
 # for the other, and one number cannot drift out of step with itself.
-RUN_STATE_SCHEMA_VERSION = 2
+#
+# Bumped to 3 when RunState.filed_issue_urls switched from rule-id keys to
+# the per-finding "<rule id>#<n>" keys RunProgress.filed_issues already
+# used: RunState.from_json migrates a schema_version <= 2 file's bare
+# rule-id keys to "<rule id>#1" (see below), which only a reader that knows
+# about the change can do safely.
+RUN_STATE_SCHEMA_VERSION = 3
 
 
 class Verdict(str, Enum):
@@ -445,7 +451,12 @@ class RunState(BaseModel):
     domain_results: dict[str, DomainResult] = Field(default_factory=dict)
     filed_issue_urls: dict[str, str] = Field(
         default_factory=dict,
-        description="Rule id -> GitHub issue URL, for findings already filed this run.",
+        description=(
+            "Finding key ('<rule id>#<n>') -> GitHub issue URL, for findings already "
+            "filed this run. Since schema_version 3, keyed per finding rather than per "
+            "rule id, the same shape RunProgress.filed_issues has always used, so a rule "
+            "with two findings carries both their urls rather than losing one."
+        ),
     )
     feedback_issue_url: str | None = None
 
@@ -480,6 +491,15 @@ class RunState(BaseModel):
         saying so, and a report built from that partial read would look
         complete while being wrong.
 
+        A document at schema_version 2 or below has ``filed_issue_urls``
+        keyed by bare rule id, from before the schema_version 3 switch to
+        per-finding ``"<rule id>#<n>"`` keys. Such a file holds exactly one
+        url per rule, deterministically the first one filed (server.py used
+        to project the finding-keyed bookkeeping down to that shape when
+        writing it, a projection pinned by a test), so migrating a bare key
+        to ``"<rule id>#1"`` is lossless and truthful, never a guess standing
+        in for a second url the old file never recorded.
+
         A document whose top level is valid JSON but not an object (a bare
         array, string, number or ``null``) has no ``schema_version`` to read
         in the first place. That case is deliberately left for
@@ -490,7 +510,15 @@ class RunState(BaseModel):
         expecting either a ``RunState`` or a named parse error should never
         see.
         """
-        return cls.model_validate(_parse_versioned(data, "run-state file"))
+        raw = _parse_versioned(data, "run-state file")
+        if isinstance(raw, dict) and raw.get("schema_version", 1) <= 2:
+            filed_issue_urls = raw.get("filed_issue_urls")
+            if isinstance(filed_issue_urls, dict):
+                raw["filed_issue_urls"] = {
+                    (key if "#" in key else f"{key}#1"): url
+                    for key, url in filed_issue_urls.items()
+                }
+        return cls.model_validate(raw)
 
 
 class RunProgress(BaseModel):
@@ -499,18 +527,19 @@ class RunProgress(BaseModel):
     Written to the run's output directory as it advances, so a server that is
     killed mid-run loses at most the domain in flight rather than every result
     recorded so far. It is deliberately a sibling of :class:`RunState` rather
-    than a reuse of it, for two reasons the finished-run model cannot bend to
-    without weakening what it guarantees:
+    than a reuse of it: ``config`` is optional here, where RunState requires
+    it. A run genuinely exists between begin_run and the user submitting the
+    configuration page, and RunState's required ``config`` is what lets
+    everything downstream trust that a rendered report was produced against a
+    configuration a person actually chose.
 
-    * ``config`` is optional here. A run genuinely exists between begin_run
-      and the user submitting the configuration page, and RunState's required
-      ``config`` is what lets everything downstream trust that a rendered
-      report was produced against a configuration a person actually chose.
-    * ``filed_issues`` is keyed by finding (``"<rule id>#<n>"``), not by rule
-      id like RunState.filed_issue_urls, which is knowingly lossy where one
-      rule carries two findings. Resuming from the lossy map would re-file an
-      already-filed issue on the user's repository, so the recovery record
-      keeps the full-fidelity map.
+    ``filed_issues`` is keyed by finding (``"<rule id>#<n>"``), the same shape
+    RunState.filed_issue_urls has used since schema_version 3. The two fields
+    were not always the same shape: before that bump, RunState's map was keyed
+    by rule id and knowingly lossy where one rule carried two findings.
+    Resuming from a lossy map would have re-filed an already-filed issue on
+    the user's repository, which is why this field kept the full-fidelity
+    shape even while RunState's did not.
 
     Everything else is shared with RunState verbatim: the same component
     models, the same schema_version constant and the same version gate.

@@ -1218,13 +1218,14 @@ def test_file_issues_retry_after_a_failure_between_two_findings_on_one_rule(
     assert preview["count"] == 0
 
 
-def test_render_report_projects_duplicate_rule_findings_onto_the_first_filed_url(
+def test_render_report_carries_a_distinct_filed_url_per_finding_on_one_rule(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # RunState.filed_issue_urls is keyed by rule id (the report marks a
-    # finding filed by looking its rule id up), so the written run state can
-    # only carry one url per rule. This pins which one: the first filed, never
-    # a silently-overwritten last one.
+    # RunState.filed_issue_urls is keyed per finding ("<rule id>#<n>") since
+    # schema_version 3, matching run.filed_issues exactly, so two findings on
+    # the same rule each keep their own url in the written run state and the
+    # rendered report links each of them separately rather than showing one
+    # shared "already filed" link for both.
     _fake, _calls = _fake_create_issue()
     monkeypatch.setattr(server_module, "create_issue", _fake)
 
@@ -1239,8 +1240,17 @@ def test_render_report_projects_duplicate_rule_findings_onto_the_first_filed_url
         Path(report_result["run_state_path"]).read_text(encoding="utf-8")
     )
     assert restored.filed_issue_urls == {
-        "D01-R02": "https://github.com/rodlunt/widgets-app/issues/1"
+        "D01-R02#1": "https://github.com/rodlunt/widgets-app/issues/1",
+        "D01-R02#2": "https://github.com/rodlunt/widgets-app/issues/2",
     }
+
+    rendered = Path(report_result["report_path"]).read_text(encoding="utf-8")
+    assert (
+        'href="https://github.com/rodlunt/widgets-app/issues/1">already filed</a>' in rendered
+    )
+    assert (
+        'href="https://github.com/rodlunt/widgets-app/issues/2">already filed</a>' in rendered
+    )
 
 
 def test_file_issues_missing_label_warning_is_surfaced(
