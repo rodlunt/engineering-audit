@@ -63,12 +63,12 @@ The server runs with [uv](https://docs.astral.sh/uv/) (Python 3.10+), either str
 this repository via `uvx` or from a local clone. Every assistant needs the same two things:
 the MCP server registered, and a rules pack on disk to point it at.
 
-Every `uvx --from git+...` command below is pinned to a release tag (currently `@v0.4.0`), not
+Every `uvx --from git+...` command below is pinned to a release tag (currently `@v0.5.0`), not
 to the moving default branch: an unpinned git dependency resolves to whatever is on `main` at
 install time, and to whatever `main` has moved to on every later `uvx` cache refresh. To find
 the current latest release, check [the Releases
 page](https://github.com/rodlunt/engineering-audit/releases) or run `git ls-remote --tags
-https://github.com/rodlunt/engineering-audit "v*"`. To update deliberately, change `@v0.4.0`
+https://github.com/rodlunt/engineering-audit "v*"`. To update deliberately, change `@v0.5.0`
 in the install command below to the new tag and re-register the server (consult your
 assistant's MCP docs for how it handles re-registering a name that already exists).
 
@@ -78,7 +78,7 @@ assistant's MCP docs for how it handles re-registering a name that already exist
 Register the server:
 
 ```sh
-claude mcp add engineering-audit -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.4.0 \
+claude mcp add engineering-audit -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.5.0 \
     engineering-audit-mcp --rules-dir /path/to/rules-clone/domains
 ```
 
@@ -102,14 +102,14 @@ Register the server (verified against codex-cli 0.114.0):
 ```sh
 codex mcp add engineering-audit \
     --env ENGINEERING_AUDIT_RULES_DIR=/path/to/rules-clone/domains \
-    -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.4.0 engineering-audit-mcp
+    -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.5.0 engineering-audit-mcp
 ```
 
 Inline mode: generate the trigger fragment and append it to your repo's `AGENTS.md` (or
 `~/.codex/AGENTS.md` for all repos):
 
 ```sh
-uvx --from git+https://github.com/rodlunt/engineering-audit@v0.4.0 engineering-audit-fragments \
+uvx --from git+https://github.com/rodlunt/engineering-audit@v0.5.0 engineering-audit-fragments \
     --rules-dir /path/to/rules-clone/domains --out-dir .
 cat AGENTS-fragment.md >> AGENTS.md
 ```
@@ -128,10 +128,10 @@ available to exercise it; check `gemini --help` against the README's flags befor
 unattended run):
 
 ```sh
-gemini extensions install https://github.com/rodlunt/engineering-audit --ref v0.4.0
+gemini extensions install https://github.com/rodlunt/engineering-audit --ref v0.5.0
 ```
 
-`--ref v0.4.0` pins the install to the current tagged release rather than the moving `main`
+`--ref v0.5.0` pins the install to the current tagged release rather than the moving `main`
 branch; see the note at the top of this section for how to find the latest tag.
 
 The extension registers the MCP server, adds an `/audit` command, and carries the inline
@@ -235,7 +235,7 @@ from the maintained pack. They are a working rules directory: point the server a
 and run a real audit before asking for anything.
 
 ```sh
-claude mcp add engineering-audit -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.4.0 \
+claude mcp add engineering-audit -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.5.0 \
     engineering-audit-mcp --rules-dir /path/to/engineering-audit/examples/taster-rules
 ```
 
