@@ -9,7 +9,7 @@ CREATE TABLE customers (
     -- the sign-up form never requires one, so this stays nullable.
     phone TEXT,
     loyalty_tier TEXT NOT NULL DEFAULT 'bronze' CHECK (loyalty_tier IN ('bronze', 'silver', 'gold')),
-    points_balance INTEGER NOT NULL DEFAULT 0,
+    points_balance INTEGER NOT NULL DEFAULT 0 CHECK (points_balance >= 0),
     joined_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

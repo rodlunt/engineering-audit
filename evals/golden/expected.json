@@ -23,7 +23,7 @@
     {
       "rule_id": "D01-R07",
       "expect": "no-finding",
-      "why": "Control. schema.sql bounds every domain-constrained attribute it defines with an explicit CHECK: amount_spent >= 0 on visits, loyalty_tier restricted to a known set on customers. The rule is genuinely exercised by this schema and clearly satisfied."
+      "why": "Control. schema.sql bounds every domain-constrained attribute it defines with an explicit CHECK: amount_spent >= 0 on visits, loyalty_tier restricted to a known set on customers, points_balance >= 0 on customers. That last bound was missing until the first live eval run correctly flagged this control as a false positive (a points balance had no lower bound); it was added to the fixture the same day, and the control is now genuinely exercised and satisfied."
     },
     {
       "rule_id": "D05-R08",
