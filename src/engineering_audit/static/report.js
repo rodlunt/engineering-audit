@@ -328,3 +328,13 @@ function fileSelectedIssues() {
     _setFilingInProgress(false);
   });
 }
+
+// Exposes a handful of pure functions to Node's CommonJS require() for
+// tests/js/report.test.js, without pulling in a module system or build
+// step for the browser. In a browser <script> block, "module" is simply
+// undefined, so this whole block is a no-op there; it only runs under
+// Node, where it lets the test runner call these functions directly
+// instead of only checking their source text is present.
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = { _githubErrorMessage: _githubErrorMessage };
+}
