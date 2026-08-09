@@ -720,6 +720,32 @@ def test_issue_embedded_body_ends_with_shared_trailing_line_byte_identical_to_fi
 
 
 # ---------------------------------------------------------------------------
+# Content Security Policy (part of #40)
+# ---------------------------------------------------------------------------
+
+
+def test_report_page_sets_a_content_security_policy_restricting_connect_src() -> None:
+    # The report's inline JS sends a user-entered GitHub PAT to
+    # api.github.com over fetch; a CSP caps the blast radius of any future
+    # escaping bug by restricting where that fetch (and any script) can go.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    rendered = render_report(run_state, pack)
+
+    match = re.search(
+        r'<meta http-equiv="Content-Security-Policy" content="([^"]*)">', rendered
+    )
+    assert match is not None, "no Content-Security-Policy meta tag found"
+    policy = match.group(1)
+    assert "connect-src https://api.github.com" in policy
+    assert "default-src 'none'" in policy
+    # No external script or style host is permitted: only the page's own
+    # inline script/style, never a CDN or third-party origin.
+    assert "script-src 'unsafe-inline'" in policy
+    assert "style-src 'unsafe-inline'" in policy
+
+
+# ---------------------------------------------------------------------------
 # Footer
 # ---------------------------------------------------------------------------
 
