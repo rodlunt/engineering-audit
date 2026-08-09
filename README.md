@@ -177,9 +177,24 @@ A standalone audit is a conversation plus one browser page. From your seat:
 `audit-output/` belongs to the audited repository, not to this tool. Commit it, ignore it
 or delete it as that repository's own conventions dictate.
 
-A full sweep is token-hungry: a recorded 16-domain run against this repository consumed
-roughly 2M subagent tokens over 47 minutes. Per-domain numbers, so you can budget before
-ticking every box, are in [docs/example-audit-cost.md](docs/example-audit-cost.md).
+## What a full run costs
+
+A full sweep is token-hungry, and the configuration page's domain tick boxes are the cost
+control: cost scales close to linearly with the domains you tick. Budget from this
+recorded example run rather than guessing:
+
+| Measure | Recorded example (this repository, 2026-08-09) |
+|---|---|
+| Scope | all 16 domains of the standard pack, 260 rules |
+| Subagent tokens | 2,010,691 total, roughly 100k to 170k per domain |
+| Wall clock | 47 minutes end to end, sweeps running four at a time |
+| Findings | 33 (every one filed as a GitHub issue) |
+
+Two caveats from the recorded run: the orchestrating conversation's own tokens are real
+overhead on top of the subagent figure and were not separately metered, and findings do
+not track cost (the cheapest domain produced the most findings; the dearest concluded
+honestly that nothing applied). The full per-domain table and sizing rules of thumb are
+in [docs/example-audit-cost.md](docs/example-audit-cost.md).
 
 ## The report
 
