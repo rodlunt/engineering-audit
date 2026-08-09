@@ -270,16 +270,18 @@ class EvalResult(BaseModel):
         return self.model_dump_json(indent=2)
 
 
-_LINE_SUFFIX_RE = re.compile(r":\d+$")
+_LINE_SUFFIX_RE = re.compile(r":\d+(?:-\d+)?$")
 
 
 def _location_matches(expected: str, location: str) -> bool:
     """True if expected occurs in location as a whole path segment (or a
     run of them), not as an arbitrary substring.
 
-    A trailing ``:<line number>`` on location is stripped first, so
-    ``"schema.sql:18"`` is matched exactly as ``"schema.sql"`` alone would
-    be. What remains must then match at path-segment boundaries: the
+    A trailing ``:<line>`` or ``:<start>-<end>`` on location is stripped
+    first, so ``"schema.sql:18"`` and ``"schema.sql:24-30"`` are matched
+    exactly as ``"schema.sql"`` alone would be. Live runs really do emit
+    range locations; the second recorded run scored four planted findings
+    as found-wrong-location purely because this strip missed them. What remains must then match at path-segment boundaries: the
     character immediately before the match must be the start of the string
     or a ``/``, and, unless expected itself ends with ``/`` (a deliberate
     directory-prefix anchor, whose own trailing slash already supplies the
