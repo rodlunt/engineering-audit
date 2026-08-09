@@ -54,6 +54,11 @@
   .domain-trigger { display: block; color: var(--muted); font-size: 0.85rem; margin-left: 1.6rem; }
   .radio-row, .consent-row { display: block; padding: 0.3rem 0; }
   .consent-row.locked { color: var(--muted); }
+  .form-error { color: #b3261e; font-weight: 600; margin: 0 0 0.75rem; }
+  @media (prefers-color-scheme: dark) {
+    .form-error { color: #ff8a80; }
+  }
+  label[for="feedback-textarea"] { display: block; font-weight: 500; margin-bottom: 0.3rem; }
   textarea {
     width: 100%;
     min-height: 5rem;
@@ -82,9 +87,11 @@
 <p class="lede">This page is served on your machine only. Nothing here leaves your computer until you tick a box below and choose to send it.</p>
 
 <form action="/submit" method="post">
+<input type="hidden" name="csrf_token" value="$csrf_token">
 
 <section>
   <h2>Domains to audit</h2>
+  $domain_error
   $domain_checkboxes
 </section>
 
@@ -102,7 +109,8 @@
 
 <section>
   <h2>Feedback to the tool author (optional)</h2>
-  <textarea name="feedback_text" placeholder="Anything you want the tool author to know about this run.">$feedback_text</textarea>
+  <label for="feedback-textarea">Feedback to the tool author</label>
+  <textarea id="feedback-textarea" name="feedback_text" autocomplete="off" placeholder="Anything you want the tool author to know about this run.">$feedback_text</textarea>
 </section>
 
 <section>
@@ -121,7 +129,8 @@
   </label>
   <label class="consent-row">
     <input type="checkbox" name="consent_environment" $consent_environment_checked>
-    Environment information (assistant, model, tool version)
+    Environment information (free-form details recorded by the AI assistant driving this
+    run; typically assistant, model and tool version, but may include more)
   </label>
   <label class="consent-row locked">
     <input type="checkbox" checked disabled>

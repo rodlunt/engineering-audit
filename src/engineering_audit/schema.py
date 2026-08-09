@@ -300,11 +300,15 @@ class TelemetryConsent(BaseModel):
     Run metadata (:class:`RunMeta`) is always sent with feedback and is
     deliberately absent from this model: it is not a toggle, it is required
     context for the feedback to mean anything.
+
+    Every flag here defaults to False: this is what a fresh configuration
+    page renders before a person has ticked anything, and opt-in consent
+    means nothing if the box already looks ticked when it first loads.
     """
 
-    coverage: bool = True
-    rollup: bool = True
-    self_assessment: bool = True
+    coverage: bool = False
+    rollup: bool = False
+    self_assessment: bool = False
     environment: bool = False
 
 
