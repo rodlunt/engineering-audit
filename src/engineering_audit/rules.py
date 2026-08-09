@@ -30,6 +30,7 @@ __all__ = [
     "RulesPackError",
     "RulesPackParseError",
     "load_pack",
+    "citation",
     "get_domain_text",
 ]
 
@@ -286,6 +287,28 @@ def load_pack(rules_dir: Path) -> RulesPack:
 
     domains.sort(key=lambda d: d.number)
     return RulesPack(root=rules_dir, domains=domains, skipped=skipped)
+
+
+_EXCERPT_START_RE = re.compile(r':\s*["“]')
+
+
+def citation(source: str) -> str:
+    """Return the citation part of a rule's parsed source, capped before any
+    quoted excerpt.
+
+    Pack sources often follow the citation with supporting quotes, e.g.
+    'ISTQB syllabus v4.0.1, sections 3.1.2 and 3.1.3: "Static testing can..."'.
+    Published references cap at the citation itself; the excerpts stay in the
+    pack. The cut point is the first colon that introduces a quote, which
+    leaves quoted work titles (preceded by commas) intact. A cut that would
+    yield an empty string falls back to the full source rather than
+    publishing a blank reference.
+    """
+    match = _EXCERPT_START_RE.search(source)
+    if match is None:
+        return source
+    capped = source[: match.start()].rstrip(" ,;")
+    return capped if capped else source
 
 
 def get_domain_text(domain: Domain) -> str:

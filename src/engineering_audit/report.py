@@ -24,7 +24,7 @@ from engineering_audit.feedback import (
     build_mailto_url,
     feedback_subject,
 )
-from engineering_audit.rules import Rule, RulesPack
+from engineering_audit.rules import citation, Rule, RulesPack
 from engineering_audit.schema import (
     DomainResult,
     Finding,
@@ -256,7 +256,7 @@ def _reference_line(rule: Rule) -> str:
             "rules pack. A finding is a published claim; this tool does not publish "
             "claims without evidence. Fix the rule's Source: footer or drop the finding."
         )
-    return f"Reference: {rule.id}: {rule.source}"
+    return f"Reference: {rule.id}: {citation(rule.source)}"
 
 
 def _findings_section(

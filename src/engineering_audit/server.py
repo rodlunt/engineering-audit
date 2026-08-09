@@ -42,7 +42,7 @@ from engineering_audit.feedback import (
 )
 from engineering_audit.issues import IssueFilingError, create_issue, detect_repo, gh_available
 from engineering_audit.report import write_report
-from engineering_audit.rules import Rule, RulesPack, RulesPackError, get_domain_text, load_pack
+from engineering_audit.rules import citation, Rule, RulesPack, RulesPackError, get_domain_text, load_pack
 from engineering_audit.schema import (
     AuditConfig,
     DomainResult,
@@ -552,7 +552,7 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
                     "publish claims without evidence. Nothing was filed for this finding. "
                     f"Already filed before this stop: {run.filed_issue_urls or 'none'}."
                 )
-            reference = f"Reference: {rule.source}"
+            reference = f"Reference: {citation(rule.source)}"
             body = (
                 f"{finding.issue_body}\n\n"
                 f"Found by an engineering-practice audit (rule {finding.rule_id}, severity "
