@@ -1,5 +1,11 @@
 # engineering-audit
 
+![CI](https://img.shields.io/github/actions/workflow/status/rodlunt/engineering-audit/ci.yml?branch=main&label=ci)
+![Latest release](https://img.shields.io/github/v/release/rodlunt/engineering-audit)
+![Licence](https://img.shields.io/github/license/rodlunt/engineering-audit)
+![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776ab)
+![Checked with ruff and mypy](https://img.shields.io/badge/checked%20with-ruff%20%2B%20mypy-4b8bbe)
+
 **TL;DR:** an engineering-practice audit tool for AI coding assistants (Claude Code, Codex
 CLI, Gemini CLI). Your assistant sweeps a repository against a pack of sourced engineering
 rules and produces a self-contained HTML report: every finding says what is wrong, why it
