@@ -121,6 +121,7 @@ def test_get_page_telemetry_consent_defaults_are_all_unticked(domains) -> None:
             "consent_rollup",
             "consent_self_assessment",
             "consent_environment",
+            "consent_consulted_sources",
         ):
             tag_match = re.search(rf'<input type="checkbox" name="{name}"[^>]*>', page)
             assert tag_match is not None, f"{name} checkbox not found on the page"
@@ -143,6 +144,21 @@ def test_get_page_environment_consent_label_matches_what_the_code_sends(domains)
             page = resp.read().decode("utf-8")
         assert "(assistant, model, tool version)" not in page
         assert "recorded by the AI assistant driving this" in page
+    finally:
+        srv.shutdown()
+
+
+def test_get_page_consulted_sources_consent_label_states_the_privacy_note(domains) -> None:
+    # Issue #57: URLs fetched while auditing a private repository can hint
+    # at what that repository is about; the label controlling whether they
+    # are sent to the maintainer must say this plainly, not just default the
+    # box off silently.
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            page = resp.read().decode("utf-8")
+        assert "can hint at what that repository is about" in page
     finally:
         srv.shutdown()
 
@@ -186,6 +202,32 @@ def test_post_submission_then_poll_returns_config(domains) -> None:
         assert config.telemetry_consent.rollup is True
         assert config.telemetry_consent.self_assessment is False
         assert config.telemetry_consent.environment is False
+        assert config.telemetry_consent.consulted_sources is False
+    finally:
+        srv.shutdown()
+
+
+def test_post_submission_with_consulted_sources_consent_ticked(domains) -> None:
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        token = _fetch_csrf_token(url)
+        payload = urlencode(
+            {
+                "domain": ["d01"],
+                "issue_mode": "report",
+                "consent_consulted_sources": "on",
+                "csrf_token": token,
+            },
+            doseq=True,
+        ).encode("utf-8")
+        request = urllib.request.Request(url + "submit", data=payload, method="POST")
+        with urllib.request.urlopen(request, timeout=5) as resp:
+            assert resp.status == 200
+
+        config = srv.poll()
+        assert config != "pending"
+        assert config.telemetry_consent.consulted_sources is True
     finally:
         srv.shutdown()
 

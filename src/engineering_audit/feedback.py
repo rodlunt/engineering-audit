@@ -145,12 +145,29 @@ def build_feedback_sections(
         env_lines = "- No environment information reported for this run."
     environment_section = f"Environment\n{env_lines}"
 
+    # Rule id, URL and the agent's one-line why only: consulted_sources also
+    # carries a title and an accessed timestamp, but those are for the local
+    # report to display, not for what leaves the machine here. Grouped by
+    # rule id, the same way self-assessment and rollup are grouped by domain,
+    # so a consented send is still readable finding-by-finding rather than
+    # one flat list.
+    consulted_source_lines: list[str] = []
+    for result in domain_results.values():
+        for source in result.consulted_sources:
+            consulted_source_lines.append(f"- {source.rule_id}: {source.url} (why: {source.why})")
+    consulted_sources = (
+        "Sources consulted\n" + "\n".join(consulted_source_lines)
+        if consulted_source_lines
+        else "Sources consulted\n- No sources were consulted outside the rules pack this run."
+    )
+
     return {
         "run_metadata": run_metadata,
         "coverage": coverage,
         "rollup": rollup,
         "self_assessment": self_assessment,
         "environment": environment_section,
+        "consulted_sources": consulted_sources,
     }
 
 
@@ -182,6 +199,8 @@ def build_feedback_body(
         sections.append(sections_by_name["self_assessment"])
     if consent.environment:
         sections.append(sections_by_name["environment"])
+    if consent.consulted_sources:
+        sections.append(sections_by_name["consulted_sources"])
 
     return "\n\n".join(sections)
 

@@ -28,6 +28,7 @@ from engineering_audit.report import write_report
 from engineering_audit.rules import RulesPack, load_pack
 from engineering_audit.schema import (
     AuditConfig,
+    ConsultedSource,
     Coverage,
     DomainResult,
     Finding,
@@ -47,6 +48,17 @@ OUT_PATH = REPO_ROOT / "docs" / "demo" / "report.html"
 # validated against a live repository. It exists purely to show what an
 # already-filed finding looks like: disabled, unticked, linking out.
 _DEMO_FILED_ISSUE_URL = "https://github.com/rodlunt/engineering-audit/issues/3"
+
+# Invented for this demo only, the same way _DEMO_FILED_ISSUE_URL is: shows
+# what the "Sources consulted this run" report section looks like with a
+# real entry, rather than only ever exercising the "none recorded" fallback.
+_DEMO_CONSULTED_SOURCE = ConsultedSource(
+    rule_id="D01-R01",
+    url="https://example.invalid/garden-bed-standards",
+    title="Garden Bed Allocation Standard, section 3",
+    why="checked the shared-bed flag's documented meaning before verdicting this rule",
+    accessed="2026-08-09T09:02:00+00:00",
+)
 
 
 def build_demo_run_state(pack: RulesPack) -> RunState:
@@ -97,6 +109,7 @@ def build_demo_run_state(pack: RulesPack) -> RunState:
         coverage=Coverage(
             files_inspected=14, files_skipped=1, note="one binary hat-colour swatch skipped"
         ),
+        consulted_sources=[_DEMO_CONSULTED_SOURCE],
     )
 
     d02_result = DomainResult(

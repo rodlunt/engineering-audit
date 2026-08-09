@@ -655,6 +655,72 @@ def test_record_domain_result_accepts_could_not_run(
     assert result["finding_count"] == 0
 
 
+def _consulted_source(**overrides) -> dict:
+    defaults = dict(
+        rule_id="D01-R01",
+        url="https://example.invalid/standard",
+        title="An external standard",
+        why="checked the standard's definition before verdicting this rule",
+        accessed="2026-08-09T09:02:00Z",
+    )
+    defaults.update(overrides)
+    return defaults
+
+
+def test_record_domain_result_accepts_consulted_sources_for_the_domains_own_rules(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mcp, _state = build_server(FIXTURE_PACK)
+    _configured_run(mcp, tmp_path, monkeypatch)
+
+    result = {
+        "domain_id": "d01",
+        "status": "completed",
+        "rule_verdicts": _all_pass_verdicts(_domain(mcp, "d01")),
+        "consulted_sources": [_consulted_source(rule_id="D01-R01")],
+    }
+    response = _call(mcp, "record_domain_result", {"result": result})
+    assert response["status"] == "completed"
+
+
+def test_record_domain_result_rejects_a_consulted_source_rule_id_outside_the_domain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mcp, _state = build_server(FIXTURE_PACK)
+    _configured_run(mcp, tmp_path, monkeypatch)
+
+    result = {
+        "domain_id": "d01",
+        "status": "completed",
+        "rule_verdicts": _all_pass_verdicts(_domain(mcp, "d01")),
+        # D02-R01 belongs to d02, not the d01 result it is attached to here.
+        "consulted_sources": [_consulted_source(rule_id="D02-R01")],
+    }
+    with pytest.raises(ToolError) as excinfo:
+        _call(mcp, "record_domain_result", {"result": result})
+    assert "D02-R01" in str(excinfo.value)
+    assert "does not define" in str(excinfo.value)
+
+
+def test_record_domain_result_accepts_consulted_sources_on_a_could_not_run_domain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A source consulted while deciding a domain could not run at all is
+    # still checked, and still accepted when it names one of this domain's
+    # own rules: consulted_sources is validated independently of status.
+    mcp, _state = build_server(FIXTURE_PACK)
+    _configured_run(mcp, tmp_path, monkeypatch)
+
+    result = {
+        "domain_id": "d01",
+        "status": "could-not-run",
+        "reason": "no ledger file present",
+        "consulted_sources": [_consulted_source(rule_id="D01-R01")],
+    }
+    response = _call(mcp, "record_domain_result", {"result": result})
+    assert response["status"] == "could-not-run"
+
+
 # ---------------------------------------------------------------------------
 # run_status
 # ---------------------------------------------------------------------------

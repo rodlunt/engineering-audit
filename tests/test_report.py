@@ -13,6 +13,7 @@ from engineering_audit.report import _INLINE_SCRIPT, ReportError, render_report,
 from engineering_audit.rules import load_pack
 from engineering_audit.schema import (
     AuditConfig,
+    ConsultedSource,
     Coverage,
     DomainResult,
     Finding,
@@ -221,6 +222,120 @@ def test_could_not_evaluate_verdict_for_unknown_rule_id_raises() -> None:
         domain_results={"d01": DomainResult(domain_id="d01", status="completed", rule_verdicts=verdicts)},
     )
     with pytest.raises(ReportError):
+        render_report(run_state, pack)
+
+
+def _consulted_source(**overrides) -> ConsultedSource:
+    defaults = dict(
+        rule_id="D01-R01",
+        url="https://example.invalid/standard",
+        title="An external standard",
+        why="checked the standard's definition before verdicting this rule",
+        accessed="2026-08-09T09:02:00Z",
+    )
+    defaults.update(overrides)
+    return ConsultedSource(**defaults)
+
+
+def test_consulted_sources_section_renders_none_recorded_when_empty() -> None:
+    # _base_run_state's domain results carry no consulted_sources: the
+    # section must say "none recorded" rather than vanish, the same way an
+    # empty could-not-evaluate list still renders its own heading.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    rendered = render_report(run_state, pack)
+    assert "Sources consulted this run" in rendered
+    assert "none recorded" in rendered
+
+
+def test_consulted_sources_section_shows_title_link_why_and_accessed() -> None:
+    pack = _pack()
+    d01 = pack.get_domain("d01")
+    run_state = _base_run_state(
+        pack,
+        extra_domain_results={
+            "d01": DomainResult(
+                domain_id="d01",
+                status="completed",
+                rule_verdicts=_all_pass_verdicts(d01),
+                consulted_sources=[_consulted_source(rule_id="D01-R01")],
+            )
+        },
+    )
+    rendered = render_report(run_state, pack)
+    assert "Sources consulted this run" in rendered
+    assert "D01-R01" in rendered
+    assert '<a href="https://example.invalid/standard">An external standard</a>' in rendered
+    assert "checked the standard&#x27;s definition before verdicting this rule" in rendered
+    assert "accessed 2026-08-09T09:02:00Z" in rendered
+
+
+def test_consulted_sources_section_groups_multiple_sources_under_one_rule_id() -> None:
+    pack = _pack()
+    d01 = pack.get_domain("d01")
+    run_state = _base_run_state(
+        pack,
+        extra_domain_results={
+            "d01": DomainResult(
+                domain_id="d01",
+                status="completed",
+                rule_verdicts=_all_pass_verdicts(d01),
+                consulted_sources=[
+                    _consulted_source(rule_id="D01-R01", url="https://example.invalid/a", title="Source A"),
+                    _consulted_source(rule_id="D01-R01", url="https://example.invalid/b", title="Source B"),
+                ],
+            )
+        },
+    )
+    rendered = render_report(run_state, pack)
+    # Both sources appear once each, under a single D01-R01 heading rather
+    # than two separate ones.
+    assert rendered.count("D01-R01 (") == 1
+    assert "Source A" in rendered
+    assert "Source B" in rendered
+
+
+def test_consulted_source_with_a_non_http_url_degrades_to_text_instead_of_raising() -> None:
+    # consulted_sources is self-reported by the driving agent, not produced
+    # by this tool's own gh integration like a filed-issue or feedback-issue
+    # url; a scheme this page will not link must not take the whole report
+    # down.
+    pack = _pack()
+    d01 = pack.get_domain("d01")
+    run_state = _base_run_state(
+        pack,
+        extra_domain_results={
+            "d01": DomainResult(
+                domain_id="d01",
+                status="completed",
+                rule_verdicts=_all_pass_verdicts(d01),
+                consulted_sources=[
+                    _consulted_source(url="file:///etc/hosts", title="a local file reference")
+                ],
+            )
+        },
+    )
+    rendered = render_report(run_state, pack)
+    assert "a local file reference (file:///etc/hosts)" in rendered
+    assert '<a href="file:///etc/hosts">' not in rendered
+
+
+def test_report_error_when_consulted_source_references_a_rule_id_outside_its_domain() -> None:
+    pack = _pack()
+    d01 = pack.get_domain("d01")
+    run_state = _base_run_state(
+        pack,
+        extra_domain_results={
+            "d01": DomainResult(
+                domain_id="d01",
+                status="completed",
+                rule_verdicts=_all_pass_verdicts(d01),
+                # D02-R01 belongs to d02's own rules, not d01's.
+                consulted_sources=[_consulted_source(rule_id="D02-R01")],
+            )
+        },
+    )
+    with pytest.raises(ReportError, match="D02-R01"):
         render_report(run_state, pack)
 
 
@@ -577,7 +692,7 @@ def test_feedback_consent_checkboxes_prefilled_true_from_config() -> None:
     pack = _pack()
     run_state = _base_run_state(pack)
     run_state.config.telemetry_consent = TelemetryConsent(
-        coverage=True, rollup=True, self_assessment=True, environment=True
+        coverage=True, rollup=True, self_assessment=True, environment=True, consulted_sources=True
     )
     rendered = render_report(run_state, pack)
 
@@ -586,6 +701,7 @@ def test_feedback_consent_checkboxes_prefilled_true_from_config() -> None:
         "consent-rollup",
         "consent-self-assessment",
         "consent-environment",
+        "consent-consulted-sources",
     ):
         match = re.search(rf'<input type="checkbox" id="{input_id}"([^>]*)>', rendered)
         assert match is not None, f"checkbox {input_id!r} not found"
@@ -596,7 +712,7 @@ def test_feedback_consent_checkboxes_prefilled_false_from_config() -> None:
     pack = _pack()
     run_state = _base_run_state(pack)
     run_state.config.telemetry_consent = TelemetryConsent(
-        coverage=False, rollup=False, self_assessment=False, environment=False
+        coverage=False, rollup=False, self_assessment=False, environment=False, consulted_sources=False
     )
     rendered = render_report(run_state, pack)
 
@@ -605,10 +721,21 @@ def test_feedback_consent_checkboxes_prefilled_false_from_config() -> None:
         "consent-rollup",
         "consent-self-assessment",
         "consent-environment",
+        "consent-consulted-sources",
     ):
         match = re.search(rf'<input type="checkbox" id="{input_id}"([^>]*)>', rendered)
         assert match is not None, f"checkbox {input_id!r} not found"
         assert "checked" not in match.group(1), f"checkbox {input_id!r} expected unchecked"
+
+
+def test_feedback_consulted_sources_consent_label_states_the_privacy_note() -> None:
+    # Issue #57: URLs fetched while auditing a private repository can hint
+    # at what that repository is about, so the label controlling whether
+    # they are sent must say this plainly, not just default the box off.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    rendered = render_report(run_state, pack)
+    assert "can hint at what that repository is about" in rendered
 
 
 def test_feedback_run_metadata_row_is_locked_checked_and_disabled() -> None:
@@ -635,24 +762,19 @@ def test_feedback_embedded_json_parses_and_matches_build_feedback_sections() -> 
     assert data["rollup"] == expected_sections["rollup"]
     assert data["self_assessment"] == expected_sections["self_assessment"]
     assert data["environment"] == expected_sections["environment"]
+    assert data["consulted_sources"] == expected_sections["consulted_sources"]
     assert data["email"] == "rodneylunt79+audit-feedback@gmail.com"
 
     # Cross-check against the MCP path's own builder: with only one section
     # consented, build_feedback_body's output must be exactly the always-on
     # run-metadata chunk plus that one section, joined the same way the
     # report's own JS joins ticked sections.
-    for key, consent_kwargs in (
-        ("coverage", {"coverage": True, "rollup": False, "self_assessment": False, "environment": False}),
-        ("rollup", {"coverage": False, "rollup": True, "self_assessment": False, "environment": False}),
-        (
-            "self_assessment",
-            {"coverage": False, "rollup": False, "self_assessment": True, "environment": False},
-        ),
-        (
-            "environment",
-            {"coverage": False, "rollup": False, "self_assessment": False, "environment": True},
-        ),
-    ):
+    base_consent = {
+        "coverage": False, "rollup": False, "self_assessment": False, "environment": False,
+        "consulted_sources": False,
+    }
+    for key in ("coverage", "rollup", "self_assessment", "environment", "consulted_sources"):
+        consent_kwargs = {**base_consent, key: True}
         body = build_feedback_body(
             None, run_state.meta, TelemetryConsent(**consent_kwargs), run_state.domain_results
         )

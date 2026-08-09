@@ -132,6 +132,12 @@
     Environment information (free-form details recorded by the AI assistant driving this
     run; typically assistant, model and tool version, but may include more)
   </label>
+  <label class="consent-row">
+    <input type="checkbox" name="consent_consulted_sources" $consent_consulted_sources_checked>
+    Send fetched references to the maintainer (rule id, URL and a one-line why, for each
+    source the assistant consulted outside the rules pack). Off by default: URLs fetched
+    while auditing a private repository can hint at what that repository is about.
+  </label>
   <label class="consent-row locked">
     <input type="checkbox" checked disabled>
     Run metadata (always included when sending feedback)

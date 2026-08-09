@@ -61,6 +61,7 @@ function buildFeedbackPayload() {
   if (document.getElementById("consent-rollup").checked) { parts.push(data.rollup); }
   if (document.getElementById("consent-self-assessment").checked) { parts.push(data.self_assessment); }
   if (document.getElementById("consent-environment").checked) { parts.push(data.environment); }
+  if (document.getElementById("consent-consulted-sources").checked) { parts.push(data.consulted_sources); }
   return parts.join("\n\n");
 }
 
