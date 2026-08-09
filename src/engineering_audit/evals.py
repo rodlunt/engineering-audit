@@ -145,6 +145,21 @@ class EvalSpec(BaseModel):
         return self
 
 
+# The set of values ExpectationOutcome.outcome accepts. Named once here,
+# rather than written twice, so the loop in score() that assigns one of
+# these into a plain local variable can be annotated against the same
+# literal the model itself validates against, instead of mypy widening the
+# variable to plain str and losing the check entirely.
+_Outcome = Literal[
+    "hit",
+    "missed",
+    "found-wrong-location",
+    "held",
+    "false-positive",
+    "control-not-evaluated",
+]
+
+
 class ExpectationOutcome(BaseModel):
     """The scored result for one expectation.
 
@@ -160,14 +175,7 @@ class ExpectationOutcome(BaseModel):
 
     rule_id: str
     expect: Literal["finding", "no-finding"]
-    outcome: Literal[
-        "hit",
-        "missed",
-        "found-wrong-location",
-        "held",
-        "false-positive",
-        "control-not-evaluated",
-    ]
+    outcome: _Outcome
     why: str
     detail: str | None = Field(
         default=None, description="What was actually found (or not), for the human reading the report."
@@ -420,6 +428,7 @@ def score(
         matches = findings_by_rule.get(expectation.rule_id, [])
 
         if expectation.expect == "finding":
+            outcome: _Outcome
             if not matches:
                 outcome = "missed"
                 detail = "no finding recorded for this rule id"
