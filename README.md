@@ -6,21 +6,147 @@
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776ab)
 ![Checked with ruff and mypy](https://img.shields.io/badge/checked%20with-ruff%20%2B%20mypy-4b8bbe)
 
-**TL;DR:** an engineering-practice audit tool for AI coding assistants (Claude Code, Codex
-CLI, Gemini CLI). Your assistant sweeps a repository against a pack of sourced engineering
-rules and produces a self-contained HTML report: every finding says what is wrong, why it
-matters, and how to fix it, with the citation behind the claim attached. Findings can be
-filed as GitHub issues (from the assistant, or straight from the report with a PAT) or
-copied out for pasting anywhere. It also works inline, nudging your assistant to load the
-relevant rules at the moment of a decision. If you want audited-by-evidence engineering
-practice checks inside the tools you already use, this is for you; you will need access to
-a rules pack (see [Rules access](#rules-access)).
+**TL;DR:** engineering-audit turns the AI coding assistant you already use (Claude Code,
+Codex CLI, Gemini CLI) into an engineering-practice auditor. It is one tool with **two
+distinct modes**:
+
+1. **Full repository audit**: your assistant sweeps a whole repository against a pack of
+   sourced engineering rules and produces a self-contained HTML report. Every finding says
+   what is wrong, why it matters and how to fix it, with the citation behind the claim
+   attached, and can be filed as a GitHub issue or copied out for pasting anywhere.
+2. **Inline decision-time checks**: one-line triggers in your assistant's context make it
+   load the relevant rules at the moment you are making a matching decision (designing a
+   schema, cutting a branch, shaping an API). No report, just the right rules at the right
+   moment.
+
+**Three complete rule domains ship in this repository**, ready to run: data modelling,
+testing strategy and presenting data, 54 rules with their full source citations, in
+[examples/taster-rules/](examples/taster-rules/). You can run a real audit right now with
+no sign-up; the full sixteen-domain, 260-rule pack is available on request
+([Rules access](#rules-access)).
+
+**[Save me the chit chat: show me how to install it →](#how-to-use)**
 
 | Configure a run | Report |
 |---|---|
 | ![Configuration page: domain tick boxes, issue delivery, feedback consent](docs/images/config-page.png) | ![Report: run metadata and tool performance summary](docs/images/report.png) |
 
 ![Issues with selection tick boxes and GitHub filing, feedback form, footer](docs/images/issues-feedback.png)
+
+## How to use
+
+From nothing to a first audit in five steps. The taster rules ship in this repository, so
+none of this needs access to the full pack.
+
+### Step 1: pick your assistant
+
+The tool works through the assistant you already drive: **Claude Code** (proven end to
+end), **OpenAI Codex CLI** or **Gemini CLI** (both documented, not yet exercised end to
+end; see the [support matrix](#support-matrix)). GitHub Copilot is not supported.
+
+### Step 2: dependencies
+
+| Dependency | Why you need it | Check it |
+|---|---|---|
+| [uv](https://docs.astral.sh/uv/) | runs the MCP server via `uvx` straight from a pinned release tag, and installs its own Python (3.10+) if the machine lacks one | `uvx --version` |
+| git | clones this repository for the taster rules, and any other rules pack | `git --version` |
+| your assistant's CLI | drives the audit and hosts the MCP registration | `claude --version` (or `codex`, `gemini`) |
+| GitHub CLI `gh`, optional | only if the assistant should file findings as GitHub issues; filing from the report page instead needs only a PAT in your browser | `gh auth status` |
+
+There is no `pip install` and no npm anywhere: `uvx` fetches and runs the tagged release
+directly.
+
+### Step 3: get the rules onto disk
+
+Clone this repository. The taster pack (the three complete domains named in the TL;DR) is
+a working rules directory at `examples/taster-rules/`:
+
+```sh
+git clone https://github.com/rodlunt/engineering-audit
+```
+
+Have the full pack instead? Registration below is identical, just point `--rules-dir` at
+that clone's `domains/` directory. See [Rules access](#rules-access) for how to ask.
+
+### Step 4: register the tool with your assistant
+
+Every command below is pinned to the current release tag (`@v0.5.0`) rather than the
+moving `main` branch: an unpinned git dependency resolves to whatever `main` holds at
+install time and silently moves on later cache refreshes. Find the latest tag on [the
+Releases page](https://github.com/rodlunt/engineering-audit/releases); to update
+deliberately, change the tag in the command and re-register.
+
+#### Claude Code
+
+Register the server (swap in the taster path from Step 3, or your full-pack path):
+
+```sh
+claude mcp add engineering-audit -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.5.0 \
+    engineering-audit-mcp --rules-dir /path/to/engineering-audit/examples/taster-rules
+```
+
+Install the audit skill (gives you a natural-language entry point: "audit this repo"):
+
+```sh
+ln -s /path/to/engineering-audit/integrations/claude-code/audit ~/.claude/skills/audit
+```
+
+Full details: [integrations/claude-code/](integrations/claude-code/).
+
+#### OpenAI Codex CLI
+
+Register the server (verified against codex-cli 0.114.0):
+
+```sh
+codex mcp add engineering-audit \
+    --env ENGINEERING_AUDIT_RULES_DIR=/path/to/engineering-audit/examples/taster-rules \
+    -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.5.0 engineering-audit-mcp
+```
+
+Inline mode: generate the trigger fragment and append it to your repo's `AGENTS.md` (or
+`~/.codex/AGENTS.md` for all repos):
+
+```sh
+uvx --from git+https://github.com/rodlunt/engineering-audit@v0.5.0 engineering-audit-fragments \
+    --rules-dir /path/to/engineering-audit/examples/taster-rules --out-dir .
+cat AGENTS-fragment.md >> AGENTS.md
+```
+
+Standalone audit: in a `codex` session, ask it to read AUDIT.md from this repository and
+run the audit. Headless notes and caveats: [integrations/codex/](integrations/codex/).
+
+#### Gemini CLI
+
+Everything for Gemini ships as an extension (documented, untested: Gemini CLI was not
+available to exercise it; check `gemini --help` against the README's flags before an
+unattended run):
+
+```sh
+gemini extensions install https://github.com/rodlunt/engineering-audit --ref v0.5.0
+```
+
+The extension registers the MCP server, adds an `/audit` command, and carries the inline
+trigger fragment as its context file. Manual alternative and details:
+[integrations/gemini/](integrations/gemini/).
+
+#### Headless / CI
+
+Skip the interactive configuration page by pointing `ENGINEERING_AUDIT_CONFIG` at a saved
+configuration JSON (shape documented in [AUDIT.md](AUDIT.md)); `get_config` then returns
+immediately. Example driver, Claude Code:
+
+```sh
+claude -p "Read AUDIT.md at <path> and audit this repository via the engineering-audit \
+MCP tools." --mcp-config mcp.json --allowedTools "mcp__engineering-audit__*,Read,Glob,Grep"
+```
+
+### Step 5: run your first audit
+
+Ask your assistant to audit the repository you have open ("audit this repo against the
+engineering rules"), tick the domains on the configuration page that opens, wait for the
+sweep, then open `audit-output/report.html`. What to expect while it runs is in
+[What a run looks like](#what-a-run-looks-like); what it costs in tokens is in
+[What a full run costs](#what-a-full-run-costs).
 
 ## Scope
 
@@ -62,103 +188,6 @@ Two modes:
 integration follows the assistant's official documentation, with individually verified
 pieces labelled in the integration README, but no full audit has been exercised on it yet.
 Copilot is deliberately unsupported rather than silently absent.
-
-## Install
-
-The server runs with [uv](https://docs.astral.sh/uv/) (Python 3.10+), either straight from
-this repository via `uvx` or from a local clone. Every assistant needs the same two things:
-the MCP server registered, and a rules pack on disk to point it at.
-
-Every `uvx --from git+...` command below is pinned to a release tag (currently `@v0.5.0`), not
-to the moving default branch: an unpinned git dependency resolves to whatever is on `main` at
-install time, and to whatever `main` has moved to on every later `uvx` cache refresh. To find
-the current latest release, check [the Releases
-page](https://github.com/rodlunt/engineering-audit/releases) or run `git ls-remote --tags
-https://github.com/rodlunt/engineering-audit "v*"`. To update deliberately, change `@v0.5.0`
-in the install command below to the new tag and re-register the server (consult your
-assistant's MCP docs for how it handles re-registering a name that already exists).
-
-<details>
-<summary><strong>Claude Code</strong></summary>
-
-Register the server:
-
-```sh
-claude mcp add engineering-audit -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.5.0 \
-    engineering-audit-mcp --rules-dir /path/to/rules-clone/domains
-```
-
-Install the audit skill (gives you a natural-language entry point: "audit this repo"):
-
-```sh
-ln -s /path/to/engineering-audit/integrations/claude-code/audit ~/.claude/skills/audit
-```
-
-Then ask Claude Code to audit the repository you have open. It follows
-[AUDIT.md](AUDIT.md): you pick domains on the configuration page, it sweeps, you get the
-report. Full details: [integrations/claude-code/](integrations/claude-code/).
-
-</details>
-
-<details>
-<summary><strong>OpenAI Codex CLI</strong></summary>
-
-Register the server (verified against codex-cli 0.114.0):
-
-```sh
-codex mcp add engineering-audit \
-    --env ENGINEERING_AUDIT_RULES_DIR=/path/to/rules-clone/domains \
-    -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.5.0 engineering-audit-mcp
-```
-
-Inline mode: generate the trigger fragment and append it to your repo's `AGENTS.md` (or
-`~/.codex/AGENTS.md` for all repos):
-
-```sh
-uvx --from git+https://github.com/rodlunt/engineering-audit@v0.5.0 engineering-audit-fragments \
-    --rules-dir /path/to/rules-clone/domains --out-dir .
-cat AGENTS-fragment.md >> AGENTS.md
-```
-
-Standalone audit: in a `codex` session, ask it to read AUDIT.md from this repository and
-run the audit. The full flow is documented but not yet exercised end to end on Codex; see
-[integrations/codex/](integrations/codex/) for headless notes and caveats.
-
-</details>
-
-<details>
-<summary><strong>Gemini CLI</strong></summary>
-
-Everything for Gemini ships as an extension (documented, untested: Gemini CLI was not
-available to exercise it; check `gemini --help` against the README's flags before an
-unattended run):
-
-```sh
-gemini extensions install https://github.com/rodlunt/engineering-audit --ref v0.5.0
-```
-
-`--ref v0.5.0` pins the install to the current tagged release rather than the moving `main`
-branch; see the note at the top of this section for how to find the latest tag.
-
-The extension registers the MCP server, adds an `/audit` command, and carries the inline
-trigger fragment as its context file. Manual alternative and details:
-[integrations/gemini/](integrations/gemini/).
-
-</details>
-
-<details>
-<summary><strong>Headless / CI</strong></summary>
-
-Skip the interactive configuration page by pointing `ENGINEERING_AUDIT_CONFIG` at a saved
-configuration JSON (shape documented in [AUDIT.md](AUDIT.md)); `get_config` then returns
-immediately. Example driver, Claude Code:
-
-```sh
-claude -p "Read AUDIT.md at <path> and audit this repository via the engineering-audit \
-MCP tools." --mcp-config mcp.json --allowedTools "mcp__engineering-audit__*,Read,Glob,Grep"
-```
-
-</details>
 
 ## What a run looks like
 
@@ -252,15 +281,11 @@ against a real system before it is trusted:
 
 Three complete domains (d01, d05, d16, 54 rules with their full source citations) are
 published in [examples/taster-rules/](examples/taster-rules/) as point-in-time exports
-from the maintained pack. They are a working rules directory: point the server at them
-and run a real audit before asking for anything.
+from the maintained pack. They are a working rules directory, and they are what the
+[How to use](#how-to-use) steps register by default: run a real audit before asking for
+anything.
 
-```sh
-claude mcp add engineering-audit -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.5.0 \
-    engineering-audit-mcp --rules-dir /path/to/engineering-audit/examples/taster-rules
-```
-
-### Full access
+### Rules access
 
 The full pack lives in a private repository with access granted per user (the maintained
 originals, their revision history and proving records). Open an issue here to ask. The

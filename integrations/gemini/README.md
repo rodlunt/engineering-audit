@@ -33,7 +33,7 @@ Documented syntax: `gemini extensions install <url>` installs an extension from 
 git repository URL. A local, unpublished extension directory may need a different
 form; check `gemini extensions install --help` on your install. `--ref v0.5.0` pins
 the install to the current tagged release rather than the moving `main` branch;
-see the root README's [Install](../../README.md#install) section for how to find
+see the root README's [How to use](../../README.md#how-to-use) section for how to find
 the latest tag and update to it deliberately. Drop `--ref` (or point it at a
 branch) only for a deliberate local/dev install off `main`.
 
@@ -60,7 +60,7 @@ your `~/.gemini/settings.json` (or the project-level `.gemini/settings.json`)
 ```
 
 `@v0.5.0` pins the install to the current tagged release rather than the moving `main` branch;
-see the root README's [Install](../../README.md#install) section for how to find the latest tag
+see the root README's [How to use](../../README.md#how-to-use) section for how to find the latest tag
 and update to it deliberately.
 
 This manual route sidesteps the extension's `settings`-array mechanism entirely

@@ -17,7 +17,7 @@ quickly; there is no long-term support branch.
 | anything older | no |
 
 If you are running an older tag or an untagged checkout of `main`, update to the latest release
-before reporting: the issue may already be fixed. See [README.md](README.md#install) for how to
+before reporting: the issue may already be fixed. See [README.md](README.md#how-to-use) for how to
 pin an install to a specific tag, and how to find the current one.
 
 ## Reporting a vulnerability
