@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from engineering_audit.rules import (
+    citation,
     RulesPackError,
     RulesPackParseError,
     get_domain_text,
@@ -249,3 +250,35 @@ def test_duplicate_rule_ids_raise(tmp_path: Path) -> None:
     with pytest.raises(RulesPackParseError) as excinfo:
         load_pack(scratch)
     assert "D01-R01" in str(excinfo.value)
+
+
+def test_citation_returns_a_plain_source_unchanged() -> None:
+    source = (
+        "Object-Role Modeling and its Conceptual Schema Design Procedure "
+        "(Halpin, *Object-Role Modeling: an overview*, orm.net), CSDP step 1"
+    )
+    assert citation(source) == source
+
+
+def test_citation_caps_before_the_first_quoted_excerpt() -> None:
+    source = (
+        'ISTQB Certified Tester Foundation Level syllabus v4.0.1, sections 3.1.2 '
+        'and 3.1.3: "Static testing can detect defects early"; "and more quotes"'
+    )
+    assert citation(source) == (
+        "ISTQB Certified Tester Foundation Level syllabus v4.0.1, "
+        "sections 3.1.2 and 3.1.3"
+    )
+
+
+def test_citation_keeps_a_quoted_work_title_before_the_excerpt() -> None:
+    # A title quoted after a comma is part of the citation; only a colon
+    # introducing a quote starts an excerpt.
+    source = (
+        'Mike Cohn, "The Forgotten Layer of the Test Automation Pyramid," '
+        'Mountain Goat Software (2009): "At the base of the pyramid is unit testing"'
+    )
+    assert citation(source) == (
+        'Mike Cohn, "The Forgotten Layer of the Test Automation Pyramid," '
+        "Mountain Goat Software (2009)"
+    )
