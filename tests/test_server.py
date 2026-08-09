@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
+import subprocess
 import urllib.request
 from pathlib import Path
 from urllib.parse import urlencode
@@ -23,7 +25,13 @@ import engineering_audit.server as server_module
 from engineering_audit.issues import CreatedIssue, IssueFilingError
 from engineering_audit.rules import RulesPackError
 from engineering_audit.schema import RunState
-from engineering_audit.server import AppState, _resolve_rules_dir, build_server
+from engineering_audit.server import (
+    AppState,
+    _git_commit,
+    _parse_direct_url_commit,
+    _resolve_rules_dir,
+    build_server,
+)
 
 FIXTURE_PACK = Path(__file__).parent / "fixture_pack"
 
@@ -235,6 +243,95 @@ def test_begin_run_defaults_tool_version_when_omitted(tmp_path: Path) -> None:
     mcp, _state = build_server(FIXTURE_PACK)
     result = _begin_run(mcp, tmp_path / "audit-output")
     assert result["meta"]["tool_version"]  # non-empty, package version or dev placeholder
+
+
+def _init_git_repo(path: Path) -> None:
+    """Initialise path as a git repo with one commit covering whatever is
+    already on disk (--allow-empty so this also works on an empty
+    directory), using -c flags for user.email/user.name so this works on a
+    bare CI runner with no global git identity configured."""
+    subprocess.run(["git", "init"], cwd=path, check=True, capture_output=True)
+    subprocess.run(["git", "add", "-A"], cwd=path, check=True, capture_output=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "user.name=Test",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "init",
+        ],
+        cwd=path,
+        check=True,
+        capture_output=True,
+    )
+
+
+def _head_sha(path: Path) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.strip()
+
+
+def test_git_commit_returns_the_head_sha_for_a_real_git_repo(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+
+    assert _git_commit(repo) == _head_sha(repo)
+
+
+def test_git_commit_appends_dirty_suffix_when_working_tree_has_uncommitted_changes(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    (repo / "untracked.txt").write_text("uncommitted", encoding="utf-8")
+
+    result = _git_commit(repo)
+    assert result == f"{_head_sha(repo)}-dirty"
+
+
+def test_git_commit_returns_none_for_a_non_repo_directory(tmp_path: Path) -> None:
+    not_a_repo = tmp_path / "plain-dir"
+    not_a_repo.mkdir()
+    assert _git_commit(not_a_repo) is None
+
+
+def test_parse_direct_url_commit_returns_commit_id_for_a_git_style_payload() -> None:
+    payload = json.dumps(
+        {
+            "url": "https://github.com/rodlunt/engineering-audit",
+            "vcs_info": {
+                "vcs": "git",
+                "requested_revision": "main",
+                "commit_id": "8b158dda99f3c5e7714840296db550f7a4978c5",
+            },
+        }
+    )
+    assert (
+        _parse_direct_url_commit(payload) == "8b158dda99f3c5e7714840296db550f7a4978c5"
+    )
+
+
+def test_parse_direct_url_commit_returns_none_for_a_local_dir_payload() -> None:
+    # A plain local/editable install's direct_url.json has no vcs_info at
+    # all: this is the ordinary "installed from a source checkout" case,
+    # not a failure, and must still render as "unknown" rather than error.
+    payload = json.dumps({"url": "file:///home/dev/engineering-audit", "dir_info": {"editable": True}})
+    assert _parse_direct_url_commit(payload) is None
+
+
+def test_parse_direct_url_commit_returns_none_for_invalid_json() -> None:
+    assert _parse_direct_url_commit("not json at all {") is None
 
 
 # ---------------------------------------------------------------------------
@@ -533,6 +630,33 @@ def test_render_report_frees_the_run_so_begin_run_does_not_need_replace(
     # No replace=True needed: the previous run finished.
     result = _begin_run(mcp, tmp_path / "audit-output-2", repo_name="second-repo")
     assert result["meta"]["repo_name"] == "second-repo"
+
+
+def test_begin_run_populates_rules_pack_commit_when_the_rules_dir_is_a_git_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rules_dir = tmp_path / "rules-pack"
+    shutil.copytree(FIXTURE_PACK, rules_dir)
+    _init_git_repo(rules_dir)
+    expected_sha = _head_sha(rules_dir)
+
+    mcp, _state = build_server(rules_dir)
+    result = _begin_run(mcp, tmp_path / "audit-output")
+    assert result["meta"]["rules_pack_commit"] == expected_sha
+
+    # And it survives through to the finished run's meta, not just the
+    # in-progress tracker's: finished_meta is rebuilt from run.meta at
+    # render_report time via model_dump(), so this is the check that a
+    # future refactor of that rebuild can't silently drop the new field.
+    _preset_config_env(monkeypatch, tmp_path)
+    _call(mcp, "start_config", {})
+    _call(mcp, "get_config", {"timeout_s": 1})
+    _record_d01_with_finding(mcp)
+    _record_d02_all_pass(mcp)
+    report_result = _call(mcp, "render_report", {"finished": "2026-08-09T10:00:00Z"})
+
+    run_state = RunState.from_json(Path(report_result["run_state_path"]).read_text(encoding="utf-8"))
+    assert run_state.meta.rules_pack_commit == expected_sha
 
 
 # ---------------------------------------------------------------------------

@@ -178,8 +178,25 @@ class RunMeta(BaseModel):
     """Metadata about one audit run. Always sent with feedback; not a consent toggle."""
 
     tool_version: str
+    tool_commit: str | None = Field(
+        default=None,
+        description=(
+            "Full git SHA the installed tool build was made from, read from the "
+            "package's PEP 610 install record. None means it could not be determined "
+            "(e.g. installed from a wheel with no VCS metadata, or a source checkout "
+            "never installed at all), never a fabricated value."
+        ),
+    )
     rules_pack_name: str
     rules_pack_version: str | None = None
+    rules_pack_commit: str | None = Field(
+        default=None,
+        description=(
+            "Full git SHA of the rules pack directory's checkout, if it is inside a "
+            "git repository. None means it could not be determined (git missing, not "
+            "a repo, or the lookup failed), never a fabricated value."
+        ),
+    )
     assistant: str
     model: str
     repo_name: str
