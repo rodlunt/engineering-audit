@@ -715,13 +715,14 @@ def _render_footer(run_state: RunState) -> str:
     )
 
 
-def render_report(
-    run_state: RunState,
-    pack: RulesPack,
-    issue_urls: dict[str, str] | None = None,
-    feedback_issue_url: str | None = None,
-) -> str:
+def render_report(run_state: RunState, pack: RulesPack) -> str:
     """Render a complete, self-contained HTML report.
+
+    Filed issue urls and any feedback issue link are read from
+    ``run_state.filed_issue_urls`` and ``run_state.feedback_issue_url``: the
+    RunState is the single source for both, so a report rendered straight
+    from a saved run-state.json (see render_cli.py) always matches one
+    rendered live from the same run's in-progress tracker.
 
     Raises ReportError if a selected domain has no matching DomainResult, if
     a completed DomainResult fails :func:`validate_completeness`, or if a
@@ -788,22 +789,18 @@ def render_report(
         meta_block=_render_meta_block(run_state),
         performance_summary=performance_summary,
         findings_section=_findings_section(selected, domain_titles, rule_index),
-        issues_section=_issues_section(selected, rule_index, issue_urls, repo_prefill),
-        feedback_section=_feedback_section(run_state, feedback_issue_url),
+        issues_section=_issues_section(
+            selected, rule_index, run_state.filed_issue_urls or None, repo_prefill
+        ),
+        feedback_section=_feedback_section(run_state, run_state.feedback_issue_url),
         footer_block=_render_footer(run_state),
         inline_script=_INLINE_SCRIPT,
     )
 
 
-def write_report(
-    run_state: RunState,
-    pack: RulesPack,
-    out_path: str | Path,
-    issue_urls: dict[str, str] | None = None,
-    feedback_issue_url: str | None = None,
-) -> Path:
+def write_report(run_state: RunState, pack: RulesPack, out_path: str | Path) -> Path:
     """Render the report and write it to out_path, returning the Path written."""
-    rendered = render_report(run_state, pack, issue_urls, feedback_issue_url)
+    rendered = render_report(run_state, pack)
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(rendered, encoding="utf-8")

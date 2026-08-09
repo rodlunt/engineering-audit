@@ -283,16 +283,16 @@ def test_markdownish_splits_paragraphs_on_crlf() -> None:
 def test_issue_url_with_javascript_scheme_raises() -> None:
     pack = _pack()
     run_state = _base_run_state(pack)
+    run_state.filed_issue_urls = {"D01-R02": "javascript:alert(1)"}
     with pytest.raises(ReportError):
-        render_report(run_state, pack, issue_urls={"D01-R02": "javascript:alert(1)"})
+        render_report(run_state, pack)
 
 
 def test_issue_url_with_https_scheme_still_renders_as_link() -> None:
     pack = _pack()
     run_state = _base_run_state(pack)
-    rendered = render_report(
-        run_state, pack, issue_urls={"D01-R02": "https://example.invalid/issues/42"}
-    )
+    run_state.filed_issue_urls = {"D01-R02": "https://example.invalid/issues/42"}
+    rendered = render_report(run_state, pack)
     assert 'href="https://example.invalid/issues/42"' in rendered
 
 
@@ -361,14 +361,15 @@ def test_could_not_run_domain_renders_reason_without_verdicts() -> None:
 def test_issue_urls_render_as_links_when_given() -> None:
     pack = _pack()
     run_state = _base_run_state(pack)
-    rendered = render_report(run_state, pack, issue_urls={"D01-R02": "https://example.invalid/issues/1"})
+    run_state.filed_issue_urls = {"D01-R02": "https://example.invalid/issues/1"}
+    rendered = render_report(run_state, pack)
     assert 'href="https://example.invalid/issues/1"' in rendered
 
 
 def test_in_report_mode_renders_copy_to_clipboard_block_when_no_issue_urls() -> None:
     pack = _pack()
     run_state = _base_run_state(pack)
-    rendered = render_report(run_state, pack, issue_urls=None)
+    rendered = render_report(run_state, pack)
     assert "Set shared-bed flag for bed-14" in rendered
     assert "copyIssueText(" in rendered
     assert "<textarea" in rendered
@@ -403,9 +404,8 @@ def test_feedback_section_shows_filed_issue_link_and_still_offers_the_form() -> 
     pack = _pack()
     run_state = _base_run_state(pack)
     run_state.config.feedback_text = "The gnome roster export was slow on large repos."
-    rendered = render_report(
-        run_state, pack, feedback_issue_url="https://github.com/rodlunt/engineering-audit/issues/9"
-    )
+    run_state.feedback_issue_url = "https://github.com/rodlunt/engineering-audit/issues/9"
+    rendered = render_report(run_state, pack)
 
     assert 'href="https://github.com/rodlunt/engineering-audit/issues/9"' in rendered
     assert "filed as" in rendered
@@ -418,8 +418,9 @@ def test_feedback_section_shows_filed_issue_link_and_still_offers_the_form() -> 
 def test_feedback_issue_url_with_non_http_scheme_raises() -> None:
     pack = _pack()
     run_state = _base_run_state(pack)
+    run_state.feedback_issue_url = "javascript:alert(1)"
     with pytest.raises(ReportError):
-        render_report(run_state, pack, feedback_issue_url="javascript:alert(1)")
+        render_report(run_state, pack)
 
 
 def test_finding_reference_line_cites_the_rule_pack_source() -> None:
@@ -615,17 +616,20 @@ def test_feedback_json_escapes_closing_script_tag_in_section_text() -> None:
 def test_issue_checkbox_rendered_and_ticked_by_default() -> None:
     pack = _pack()
     run_state = _base_run_state(pack)
-    rendered = render_report(run_state, pack, issue_urls=None)
+    rendered = render_report(run_state, pack)
 
     assert '<input type="checkbox" id="issue-check-0" checked' in rendered
 
 
-def test_issue_already_filed_via_mcp_renders_unticked_disabled_with_link() -> None:
+def test_issue_already_filed_via_run_state_renders_unticked_disabled_with_link() -> None:
+    # filed_issue_urls is a field on RunState itself (set by render_report's
+    # caller from a previous file_issues call, or carried over from a saved
+    # run-state.json), so a finding already filed renders disabled with its
+    # link server-side, with no JS needed to discover it.
     pack = _pack()
     run_state = _base_run_state(pack)
-    rendered = render_report(
-        run_state, pack, issue_urls={"D01-R02": "https://example.invalid/issues/42"}
-    )
+    run_state.filed_issue_urls = {"D01-R02": "https://example.invalid/issues/42"}
+    rendered = render_report(run_state, pack)
 
     assert '<input type="checkbox" id="issue-check-0" disabled>' in rendered
     assert 'href="https://example.invalid/issues/42">already filed</a>' in rendered
@@ -659,7 +663,7 @@ def test_issue_embedded_body_ends_with_shared_trailing_line_byte_identical_to_fi
     )
     pack = _pack()
     run_state = _base_run_state(pack)
-    rendered = render_report(run_state, pack, issue_urls=None)
+    rendered = render_report(run_state, pack)
 
     data = _extract_json_script(rendered, "issues-data")
     assert data["issues"] == [

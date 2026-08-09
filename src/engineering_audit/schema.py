@@ -32,9 +32,17 @@ __all__ = [
     "TelemetryConsent",
     "AuditConfig",
     "RunState",
+    "RUN_STATE_SCHEMA_VERSION",
+    "RunStateVersionError",
     "IncompleteResultError",
     "validate_completeness",
 ]
+
+# Bumped whenever RunState gains or changes a field in a way a reader written
+# against an older version could not safely ignore. See RunState.from_json
+# for the compatibility gate this backs: a run-state file naming a version
+# higher than this is refused outright rather than partially parsed.
+RUN_STATE_SCHEMA_VERSION = 2
 
 
 class Verdict(str, Enum):
@@ -235,9 +243,15 @@ class AuditConfig(BaseModel):
 class RunState(BaseModel):
     """The full state of one audit run: metadata, config and per-domain results."""
 
+    schema_version: int = RUN_STATE_SCHEMA_VERSION
     meta: RunMeta
     config: AuditConfig
     domain_results: dict[str, DomainResult] = Field(default_factory=dict)
+    filed_issue_urls: dict[str, str] = Field(
+        default_factory=dict,
+        description="Rule id -> GitHub issue URL, for findings already filed this run.",
+    )
+    feedback_issue_url: str | None = None
 
     @model_validator(mode="after")
     def _domain_results_keys_match_domain_id(self) -> "RunState":
@@ -258,7 +272,38 @@ class RunState(BaseModel):
 
     @classmethod
     def from_json(cls, data: str) -> "RunState":
-        return cls.model_validate(json.loads(data))
+        """Parse a run-state JSON document, enforcing the schema-version gate.
+
+        A document with no ``schema_version`` field predates the field
+        entirely and is treated as version 1: accepted, with the fields
+        introduced since (``filed_issue_urls``, ``feedback_issue_url``)
+        taking their defaults. A document naming a version higher than this
+        tool understands is refused outright, with both version numbers in
+        the message: silently parsing only the fields this version
+        recognises would drop whatever the newer version added without
+        saying so, and a report built from that partial read would look
+        complete while being wrong.
+        """
+        raw = json.loads(data)
+        version = raw.get("schema_version", 1)
+        if version > RUN_STATE_SCHEMA_VERSION:
+            raise RunStateVersionError(
+                f"run-state file is schema_version {version}, but this version of "
+                f"engineering-audit only understands up to schema_version "
+                f"{RUN_STATE_SCHEMA_VERSION}. Upgrade engineering-audit to a version that "
+                "supports this run-state file."
+            )
+        raw.setdefault("schema_version", 1)
+        return cls.model_validate(raw)
+
+
+class RunStateVersionError(Exception):
+    """Raised when a run-state file declares a schema_version newer than this
+    tool understands. A higher version is a genuine incompatibility, not a
+    detail to shrug past: silently parsing only the fields this version
+    recognises would drop whatever the newer version added without saying
+    so. Upgrading the tool is the only correct fix, so the error says that
+    explicitly rather than leaving the caller to guess."""
 
 
 class IncompleteResultError(Exception):

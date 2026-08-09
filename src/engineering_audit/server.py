@@ -643,8 +643,11 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
         rather than producing a report that looks clean over a gap), and
         writes both report.html and run-state.json to the run's output
         directory. Any issue URLs filed this run via file_issues, and any
-        feedback issue filed via submit_feedback, are passed through so the
-        report links them instead of falling back to copy-paste text.
+        feedback issue filed via submit_feedback, are carried on the
+        RunState itself, so the written run-state.json is self-sufficient:
+        it (and its schema_version) can be handed to
+        engineering-audit-render later to re-render the same report without
+        this server, this run tracker, or either URL, still in memory.
         """
         run = _require_run()
         config = _require_config(run)
@@ -655,14 +658,14 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
             meta=finished_meta,
             config=config,
             domain_results=run.domain_results,
+            filed_issue_urls=run.filed_issue_urls,
+            feedback_issue_url=run.feedback_issue_url,
         )
 
         report_path = write_report(
             run_state,
             state.pack,
             run.output_dir / "report.html",
-            issue_urls=run.filed_issue_urls or None,
-            feedback_issue_url=run.feedback_issue_url,
         )
         run_state_path = run.output_dir / "run-state.json"
         run_state_path.write_text(run_state.to_json(), encoding="utf-8")
