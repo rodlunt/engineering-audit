@@ -11,6 +11,7 @@ rather than letting the gap pass unnoticed.
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from datetime import datetime
 from enum import Enum
@@ -81,16 +82,51 @@ class RuleVerdict(BaseModel):
         return self
 
 
+# Matches the ':line' or ':start-end' suffix documented on Finding.location,
+# so the path segment in front of it can be checked separately from the line
+# reference itself.
+_LOCATION_LINE_SUFFIX_RE = re.compile(r":(?P<start>\d+)(?:-(?P<end>\d+))?$")
+
+
 class Finding(BaseModel):
     """A single audit finding: a rule verdicted as 'finding', with detail."""
 
     rule_id: str
     severity: Severity
     title: str
-    location: str = Field(description="'path:line' or 'path'")
+    location: str = Field(description="'path:line', 'path:start-end' or 'path'")
     body_md: str
     issue_title: str
     issue_body: str
+
+    @model_validator(mode="after")
+    def _location_matches_documented_format(self) -> "Finding":
+        # A finding is a claim the tool publishes as a GitHub issue; a blank
+        # or free-text location undermines the evidence it is meant to give.
+        # This only checks the shape (a non-empty path, an optional positive
+        # line or line range), not that the path exists in the repository:
+        # that check belongs to whoever has repository access, not the model.
+        suffix_match = _LOCATION_LINE_SUFFIX_RE.search(self.location)
+        path = self.location[: suffix_match.start()] if suffix_match else self.location
+        if not path.strip():
+            raise ValueError(
+                f"rule {self.rule_id}: location {self.location!r} has no file path segment; "
+                "the documented format is 'path', 'path:line' or 'path:start-end'"
+            )
+        if suffix_match:
+            start_line = int(suffix_match.group("start"))
+            end_line = suffix_match.group("end")
+            if start_line < 1:
+                raise ValueError(
+                    f"rule {self.rule_id}: location {self.location!r} has line number "
+                    f"{start_line}, which must be a positive integer"
+                )
+            if end_line is not None and int(end_line) < 1:
+                raise ValueError(
+                    f"rule {self.rule_id}: location {self.location!r} has end line "
+                    f"{end_line}, which must be a positive integer"
+                )
+        return self
 
 
 class SelfAssessment(BaseModel):
