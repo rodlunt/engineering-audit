@@ -48,8 +48,11 @@ Call `start_config`. It responds in one of two modes:
   `AuditConfig` JSON file, and it has already been loaded. This is the headless/CI path: no user
   interaction is needed. Proceed straight to step 4 with the domain ids from the response.
 - **`"interactive"`**: no preset config was found. The response includes a `url` for a localhost
-  configuration page. **Show this URL to the user as a clickable line** and ask them to open it,
-  choose which domains to audit, and submit the form.
+  configuration page, and an `opened_in_browser` field saying whether the server managed to open
+  it in the user's browser itself. If `opened_in_browser` is true, tell the user a configuration
+  page has opened in their browser, and still show the URL in case the tab is buried. If it is
+  false (a remote or display-less session), **show the URL to the user as a clickable line** and
+  ask them to open it. Either way: choose which domains to audit, and submit the form.
 
 In interactive mode, call `get_config` (with a reasonable `timeout_s`, e.g. 300) to wait for the
 submission. `get_config` blocks until the user submits, or raises a clear error on timeout.
@@ -166,9 +169,11 @@ in step 1). It writes `report.html` and `run-state.json` into the run's `output_
 their paths along with a findings summary. Any issues filed in step 6 are linked automatically;
 there is nothing further to pass.
 
-Tell the user directly where `report.html` is, and give them a one-line summary of what was
-found (e.g. "3 findings: 1 high, 2 medium, across 2 domains"). Do not just say "the audit is
-done"; the report's location and headline numbers are the actual deliverable.
+Tell the user directly where `report.html` is, give them a one-line summary of what was
+found (e.g. "3 findings: 1 high, 2 medium, across 2 domains"), and offer to open the report
+for them (`xdg-open` on Linux, `open` on macOS, `start` on Windows); if opening fails or the
+session is remote, the path is the fallback. Do not just say "the audit is done"; the
+report's location and headline numbers are the actual deliverable.
 
 ## 8. Offer to send feedback
 

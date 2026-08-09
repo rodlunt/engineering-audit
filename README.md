@@ -133,6 +133,29 @@ MCP tools." --mcp-config mcp.json --allowedTools "mcp__engineering-audit__*,Read
 
 </details>
 
+## What a run looks like
+
+A standalone audit is a conversation plus one browser page. From your seat:
+
+1. **Ask for the audit** ("audit this repo against the engineering rules"). The assistant
+   gathers run metadata and starts the run.
+2. **A configuration page opens in your browser** (`http://127.0.0.1:<port>/`). Opening it
+   is best-effort: in a remote or display-less session no tab can appear, so the assistant
+   also prints the URL; open it yourself if nothing popped up. Tick the domains to audit,
+   choose report-only or GitHub issue filing, and submit. Nothing proceeds until you
+   submit: the tool never falls back to a domain selection you did not make.
+3. **The assistant sweeps the repository** domain by domain. This is the slow part:
+   minutes for a small repository and a few domains, longer for a big selection. You can
+   ask for progress; it can report which domains are recorded and which remain.
+4. **Everything lands in `audit-output/` inside the audited repository**: `report.html`
+   (the deliverable, openable in any browser; the assistant offers to open it when the
+   run finishes) and `run-state.json` (the raw machine-readable results, which can
+   re-render the same report later via `engineering-audit-render`). If you chose GitHub
+   filing, the assistant previews the issues and asks before filing anything.
+
+`audit-output/` belongs to the audited repository, not to this tool. Commit it, ignore it
+or delete it as that repository's own conventions dictate.
+
 ## The report
 
 Self-contained HTML, generated locally; nothing leaves your machine unless you choose to

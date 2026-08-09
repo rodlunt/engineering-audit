@@ -13,6 +13,7 @@ import json
 import shutil
 import subprocess
 import urllib.request
+import webbrowser
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -430,6 +431,21 @@ def test_get_config_requires_start_config_first(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _no_real_browser(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Keep the suite from opening real browser tabs: start_config's
+    interactive path calls webbrowser.open, which on a developer machine
+    would pop a tab per test run. Records the URLs it was asked to open."""
+    opened: list[str] = []
+
+    def _record(url: str) -> bool:
+        opened.append(url)
+        return True
+
+    monkeypatch.setattr(server_module.webbrowser, "open", _record)
+    return opened
+
+
 def test_start_config_interactive_path_returns_a_url(tmp_path: Path) -> None:
     mcp, _state = build_server(FIXTURE_PACK)
     _begin_run(mcp, tmp_path / "audit-output")
@@ -437,6 +453,36 @@ def test_start_config_interactive_path_returns_a_url(tmp_path: Path) -> None:
     result = _call(mcp, "start_config", {})
     assert result["mode"] == "interactive"
     assert result["url"].startswith("http://127.0.0.1:")
+
+
+def test_start_config_interactive_path_opens_the_browser_and_says_so(
+    tmp_path: Path, _no_real_browser: list[str]
+) -> None:
+    mcp, _state = build_server(FIXTURE_PACK)
+    _begin_run(mcp, tmp_path / "audit-output")
+
+    result = _call(mcp, "start_config", {})
+    assert result["opened_in_browser"] is True
+    assert _no_real_browser == [result["url"]]
+
+
+def test_start_config_interactive_path_survives_a_browserless_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A display-less box (SSH session, CI) may raise webbrowser.Error; the
+    # page must still start and the URL must still come back, with the
+    # response honestly reporting that no tab opened.
+    def _raise(url: str) -> bool:
+        raise webbrowser.Error("no runnable browser")
+
+    monkeypatch.setattr(server_module.webbrowser, "open", _raise)
+    mcp, _state = build_server(FIXTURE_PACK)
+    _begin_run(mcp, tmp_path / "audit-output")
+
+    result = _call(mcp, "start_config", {})
+    assert result["mode"] == "interactive"
+    assert result["url"].startswith("http://127.0.0.1:")
+    assert result["opened_in_browser"] is False
 
 
 def test_get_config_interactive_path_blocks_then_returns_after_form_post(tmp_path: Path) -> None:
