@@ -182,4 +182,7 @@ page are deterministic and fully testable with no LLM involved.
 
 ## Licence
 
-To be finalised before the repository is made public. All rights reserved in the interim.
+The tooling in this repository (the MCP server, the deterministic report renderer, the
+configuration page, and every supporting script) is licensed under [Apache-2.0](LICENSE).
+Rules packs are licensed separately and are not covered by this repository's licence; see
+[Rules access](#rules-access).

@@ -5,6 +5,7 @@ description = "Rules-pack-agnostic engineering practice audit tool delivered as 
 authors = [
     { name = "rodlunt", email = "181032093+rodlunt@users.noreply.github.com" }
 ]
+license = "Apache-2.0"
 requires-python = ">=3.10"
 dependencies = [
     "mcp>=2.0,<3.0",
