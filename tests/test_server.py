@@ -978,7 +978,7 @@ def test_submit_feedback_gh_unavailable_returns_mailto_with_encoded_body(
 
     result = _call(mcp, "submit_feedback", {})
     assert result["mode"] == "mailto"
-    assert result["mailto_url"].startswith("mailto:rodneylunt79@gmail.com?subject=")
+    assert result["mailto_url"].startswith("mailto:rodneylunt79+audit-feedback@gmail.com?subject=")
     assert "The%20gnome%20export%20was%20slow." in result["mailto_url"] or "The+gnome" in result["mailto_url"]
     assert "The gnome export was slow." in result["body"]
 
