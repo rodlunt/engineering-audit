@@ -360,6 +360,41 @@ def test_feedback_text_rendered_when_present() -> None:
     assert "The gnome roster export was slow on large repos." in rendered
 
 
+def test_feedback_section_renders_mailto_button_and_body_text_when_no_issue_filed() -> None:
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.config.feedback_text = "The gnome roster export was slow on large repos."
+    rendered = render_report(run_state, pack)
+
+    assert 'href="mailto:rodneylunt79@gmail.com?subject=' in rendered
+    assert "feedback-mailto" in rendered
+    assert "Send feedback to the" in rendered
+    assert 'id="feedback-body-text"' in rendered
+    # The body text in the textarea carries the run metadata section too,
+    # built by the same helper submit_feedback uses.
+    assert "Run metadata" in rendered
+
+
+def test_feedback_section_links_the_filed_issue_instead_of_mailto_when_given() -> None:
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.config.feedback_text = "The gnome roster export was slow on large repos."
+    rendered = render_report(
+        run_state, pack, feedback_issue_url="https://github.com/rodlunt/engineering-audit/issues/9"
+    )
+
+    assert 'href="https://github.com/rodlunt/engineering-audit/issues/9"' in rendered
+    assert "filed as" in rendered
+    assert 'href="mailto:' not in rendered
+
+
+def test_feedback_issue_url_with_non_http_scheme_raises() -> None:
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    with pytest.raises(ReportError):
+        render_report(run_state, pack, feedback_issue_url="javascript:alert(1)")
+
+
 def test_write_report_writes_the_file(tmp_path: Path) -> None:
     pack = _pack()
     run_state = _base_run_state(pack)
