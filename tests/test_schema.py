@@ -17,6 +17,7 @@ from engineering_audit.schema import (
     IncompleteResultError,
     RuleVerdict,
     RunMeta,
+    RunProgress,
     RunState,
     RunStateVersionError,
     SelfAssessment,
@@ -365,6 +366,66 @@ def test_run_state_from_json_rejects_a_higher_schema_version_naming_both_numbers
     assert "99" in message
     assert str(RUN_STATE_SCHEMA_VERSION) in message
     assert "upgrade" in message.lower()
+
+
+def test_run_state_still_requires_a_config_after_run_progress_was_added() -> None:
+    # RunProgress exists precisely so RunState did not have to relax this:
+    # a rendered report is always traceable to a configuration a person chose.
+    with pytest.raises(ValidationError):
+        RunState(meta=_meta())
+
+
+# ---------------------------------------------------------------------------
+# RunProgress: the crash-recovery record (src/engineering_audit/schema.py)
+# ---------------------------------------------------------------------------
+
+
+def test_run_progress_can_describe_a_run_that_has_no_configuration_yet() -> None:
+    # A run exists between begin_run and the user submitting the config page,
+    # and that gap is exactly when an interruption is most likely: the audit
+    # is waiting on a human. It has to be representable.
+    progress = RunProgress(meta=_meta())
+    assert progress.config is None
+    assert progress.domain_results == {}
+    assert progress.filed_issues == {}
+    assert progress.completed is False
+
+
+def test_run_progress_shares_the_run_state_schema_version() -> None:
+    progress = RunProgress(meta=_meta(), config=_config())
+    assert progress.schema_version == RUN_STATE_SCHEMA_VERSION
+    assert json.loads(progress.to_json())["schema_version"] == RUN_STATE_SCHEMA_VERSION
+
+
+def test_run_progress_from_json_tolerates_fields_and_version_being_absent() -> None:
+    # A recovery file written by an older build carries neither the newer
+    # fields nor a schema_version. Rejecting it would strand the run it
+    # describes, which is the opposite of what the file is for.
+    raw = json.loads(RunProgress(meta=_meta(), config=_config()).to_json())
+    del raw["schema_version"]
+    del raw["filed_issues"]
+    del raw["completed"]
+    restored = RunProgress.from_json(json.dumps(raw))
+    assert restored.schema_version == 1
+    assert restored.filed_issues == {}
+    assert restored.completed is False
+
+
+def test_run_progress_from_json_rejects_a_higher_schema_version() -> None:
+    raw = json.loads(RunProgress(meta=_meta(), config=_config()).to_json())
+    raw["schema_version"] = 99
+    with pytest.raises(RunStateVersionError) as excinfo:
+        RunProgress.from_json(json.dumps(raw))
+    assert "99" in str(excinfo.value)
+    assert str(RUN_STATE_SCHEMA_VERSION) in str(excinfo.value)
+
+
+def test_run_progress_rejects_a_domain_results_key_that_is_not_its_domain_id() -> None:
+    with pytest.raises(ValidationError):
+        RunProgress(
+            meta=_meta(),
+            domain_results={"d02": DomainResult(domain_id="d01", status="completed")},
+        )
 
 
 def test_run_state_filed_issue_urls_and_feedback_issue_url_round_trip() -> None:
