@@ -223,7 +223,9 @@ def _findings_rollup(
 
 
 def _could_not_evaluate_list(
-    selected: dict[str, DomainResult], rule_index: dict[str, Rule]
+    selected: dict[str, DomainResult],
+    rule_index: dict[str, Rule],
+    domain_titles: dict[str, str],
 ) -> str:
     rows = []
     for domain_id, result in selected.items():
@@ -242,16 +244,42 @@ def _could_not_evaluate_list(
             rows.append(
                 f"<li><strong>{_esc(rv.rule_id)}</strong> ({_esc(rule.title)}): {_esc(rv.note)}</li>"
             )
-    if not rows:
+
+    # A could-not-run domain has no rule_verdicts by design (DomainResult's
+    # own consistency check enforces this), so it satisfies "no rule left
+    # could-not-evaluate" above by construction, even though not a single
+    # rule in it was ever evaluated. That must never be reported as full
+    # coverage: this box's whole purpose is to flag evaluation gaps, and a
+    # domain that never ran at all is the largest possible gap.
+    not_run_domain_ids = [
+        domain_id for domain_id, result in selected.items() if result.status == "could-not-run"
+    ]
+
+    if not rows and not not_run_domain_ids:
         return (
             '<h3>Could not evaluate</h3>'
             '<p class="ok">Every selected rule reached a verdict of pass, finding or '
             "not applicable. Nothing was left could-not-evaluate.</p>"
         )
-    return (
-        f"<h3>Could not evaluate ({len(rows)})</h3>"
-        f"<ul>{''.join(rows)}</ul>"
-    )
+
+    parts = [f"<h3>Could not evaluate ({len(rows)})</h3>"]
+    if rows:
+        parts.append(f"<ul>{''.join(rows)}</ul>")
+    else:
+        parts.append(
+            "<p>No individual rule was left could-not-evaluate, but see below: "
+            "an entire selected domain did not run at all.</p>"
+        )
+    if not_run_domain_ids:
+        names = ", ".join(
+            f"{_esc(domain_titles[domain_id])} ({_esc(domain_id)})"
+            for domain_id in not_run_domain_ids
+        )
+        parts.append(
+            f"<p><strong>{len(not_run_domain_ids)} selected domain(s) did not run at all</strong> "
+            f"and had no rules evaluated, which is not the same as a clean result: {names}.</p>"
+        )
+    return "".join(parts)
 
 
 def _self_assessment_list(selected: dict[str, DomainResult], domain_titles: dict[str, str]) -> str:
@@ -599,7 +627,8 @@ def render_report(run_state: RunState, pack: RulesPack) -> str:
         f'<div class="perf-block"><h3>Coverage</h3>{_coverage_summary(selected, domain_titles)}</div>'
         f'<div class="perf-block"><h3>Findings rollup</h3>'
         f"{_findings_rollup(all_findings, selected, domain_titles)}</div>"
-        f'<div class="perf-block prominent">{_could_not_evaluate_list(selected, rule_index)}</div>'
+        f'<div class="perf-block prominent">'
+        f"{_could_not_evaluate_list(selected, rule_index, domain_titles)}</div>"
         f'<div class="perf-block"><h3>Self-assessment by domain</h3>'
         f"{_self_assessment_list(selected, domain_titles)}</div>"
         f'<div class="perf-block"><h3>Environment</h3>{_environment_info(run_state)}</div>'

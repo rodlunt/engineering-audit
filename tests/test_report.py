@@ -368,6 +368,41 @@ def test_could_not_run_domain_renders_reason_without_verdicts() -> None:
     assert "repository was empty" in rendered
 
 
+def test_could_not_run_domain_stops_the_completeness_banner_claiming_full_coverage() -> None:
+    # A could-not-run domain has no rule_verdicts by design, so it satisfies
+    # "no rule left could-not-evaluate" by construction even though zero
+    # rules were actually evaluated for it. The banner must never claim full
+    # coverage in that case.
+    pack = _pack()
+    run_state = RunState(
+        meta=_meta(),
+        config=AuditConfig(selected_domain_ids=["d02"], issue_mode="report"),
+        domain_results={
+            "d02": DomainResult(domain_id="d02", status="could-not-run", reason="repository was empty")
+        },
+    )
+    rendered = render_report(run_state, pack)
+    assert "Nothing was left could-not-evaluate." not in rendered
+    assert "did not run at all" in rendered
+    assert "Teacup Logistics Handling" in rendered
+    assert "not the same as a clean result" in rendered
+
+
+def test_could_not_run_domain_alongside_a_completed_domain_still_reports_both() -> None:
+    # A mix of one completed domain (with a real could-not-evaluate rule)
+    # and one that never ran at all: both facts must survive into the
+    # banner, not just whichever one the code checks first.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.domain_results["d02"] = DomainResult(
+        domain_id="d02", status="could-not-run", reason="no rules apply here"
+    )
+    rendered = render_report(run_state, pack)
+    assert "D01-R03" in rendered  # the real could-not-evaluate rule from d01
+    assert "did not run at all" in rendered
+    assert "Teacup Logistics Handling" in rendered  # d02's title, named in the banner
+
+
 def test_issue_urls_render_as_links_when_given() -> None:
     pack = _pack()
     run_state = _base_run_state(pack)
