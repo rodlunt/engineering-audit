@@ -9,6 +9,10 @@ explicit confirmation step) and submit_feedback (an optional feedback
 channel to the tool author). The driving agent is expected to call these
 roughly in that order, once per audited domain in between
 record_domain_result calls; see AUDIT.md for the full procedure.
+
+The tools are registered per concern by the _register_*_tools functions,
+which build_server calls in sequence; adding or changing one tool means
+reading one of those, not the whole module.
 """
 
 from __future__ import annotations
@@ -267,6 +271,59 @@ def _filed_urls_by_rule(run: RunTracker) -> dict[str, str]:
     return by_rule
 
 
+def _require_run(state: AppState) -> RunTracker:
+    if state.run is None:
+        raise ValueError(
+            "No audit run in progress. Call begin_run first."
+        )
+    return state.run
+
+
+def _feedback_target(state: AppState) -> tuple[RunTracker, FinishedRun | None]:
+    """The run submit_feedback should send for: the run in progress, or
+    else the last run this process finished.
+
+    Only submit_feedback falls back to a finished run. Every other tool
+    keeps requiring a live run, because recording results or filing issues
+    against a run whose report is already written would silently produce
+    a report that no longer matches its own run state.
+    """
+    if state.run is not None:
+        return state.run, None
+    if state.finished is not None:
+        return state.finished.tracker, state.finished
+    raise ValueError(
+        "No audit run in progress. Call begin_run first."
+    )
+
+
+def _require_config(run: RunTracker) -> AuditConfig:
+    if run.config is None:
+        raise ValueError(
+            "This run has no configuration yet. Call start_config and get_config first."
+        )
+    return run.config
+
+
+def _validate_selected_domains(state: AppState, config: AuditConfig) -> None:
+    valid_ids = {d.id for d in state.pack.domains}
+    unknown = sorted(set(config.selected_domain_ids) - valid_ids)
+    if unknown:
+        raise ValueError(
+            f"selected_domain_ids includes id(s) not in the loaded rules pack: {unknown}. "
+            f"Valid ids: {sorted(valid_ids)}"
+        )
+
+
+def _config_summary(run: RunTracker) -> dict[str, Any]:
+    assert run.config is not None  # only called once config is set
+    return {
+        "mode": run.config_mode,
+        "config": run.config.model_dump(mode="json"),
+        "selected_domain_ids": run.config.selected_domain_ids,
+    }
+
+
 def _issue_preview(pending: list[PendingIssue], repo: str | None) -> dict[str, Any]:
     """The confirm=False answer: what would be filed, and nothing else.
 
@@ -420,29 +477,8 @@ def _resolve_rules_dir(argv: list[str]) -> Path:
     return rules_dir
 
 
-def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
-    """Load the rules pack and construct the MCPServer app.
-
-    Raises RulesPackError (or RulesPackParseError) if the pack cannot be
-    loaded; this is intentionally not caught here so callers that want the
-    exception (tests, alternative entry points) can see it directly. main()
-    is the one place that turns it into a clean CLI error.
-    """
-    pack = load_pack(rules_dir)
-    state = AppState(pack=pack)
-    # pack.rule_index is built once (and cached) from the loaded pack; used
-    # by file_issues to look up each finding's rule so the filed issue can
-    # carry the rule's cited source without re-walking the pack on every
-    # call.
-    rule_index: dict[str, Rule] = pack.rule_index
-
-    mcp = MCPServer("engineering-audit")
-    # The SDK installs OpenTelemetry span middleware on every server by
-    # default. This project's design requires explicit consent for any
-    # telemetry, so it is stripped here rather than left ambient.
-    mcp.middleware[:] = [
-        m for m in mcp.middleware if not isinstance(m, OpenTelemetryMiddleware)
-    ]
+def _register_pack_tools(mcp: MCPServer, state: AppState) -> None:
+    """Read-only inspection of the loaded rules pack."""
 
     @mcp.tool()
     def list_domains() -> dict[str, Any]:
@@ -481,53 +517,9 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
             raise ValueError(f"Unknown domain id '{domain_id}'. Valid ids: {valid_ids}")
         return get_domain_text(domain)
 
-    def _require_run() -> RunTracker:
-        if state.run is None:
-            raise ValueError(
-                "No audit run in progress. Call begin_run first."
-            )
-        return state.run
 
-    def _feedback_target() -> tuple[RunTracker, FinishedRun | None]:
-        """The run submit_feedback should send for: the run in progress, or
-        else the last run this process finished.
-
-        Only submit_feedback falls back to a finished run. Every other tool
-        keeps requiring a live run, because recording results or filing issues
-        against a run whose report is already written would silently produce
-        a report that no longer matches its own run state.
-        """
-        if state.run is not None:
-            return state.run, None
-        if state.finished is not None:
-            return state.finished.tracker, state.finished
-        raise ValueError(
-            "No audit run in progress. Call begin_run first."
-        )
-
-    def _require_config(run: RunTracker) -> AuditConfig:
-        if run.config is None:
-            raise ValueError(
-                "This run has no configuration yet. Call start_config and get_config first."
-            )
-        return run.config
-
-    def _validate_selected_domains(config: AuditConfig) -> None:
-        valid_ids = {d.id for d in state.pack.domains}
-        unknown = sorted(set(config.selected_domain_ids) - valid_ids)
-        if unknown:
-            raise ValueError(
-                f"selected_domain_ids includes id(s) not in the loaded rules pack: {unknown}. "
-                f"Valid ids: {sorted(valid_ids)}"
-            )
-
-    def _config_summary(run: RunTracker) -> dict[str, Any]:
-        assert run.config is not None  # only called once config is set
-        return {
-            "mode": run.config_mode,
-            "config": run.config.model_dump(mode="json"),
-            "selected_domain_ids": run.config.selected_domain_ids,
-        }
+def _register_run_tools(mcp: MCPServer, state: AppState) -> None:
+    """Run lifecycle: starting a run and stamping its provenance."""
 
     @mcp.tool()
     def begin_run(
@@ -624,6 +616,10 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
             "repo_dir": str(repo_dir_path) if repo_dir_path else None,
         }
 
+
+def _register_config_tools(mcp: MCPServer, state: AppState) -> None:
+    """Resolving the run's configuration, interactively or from a preset."""
+
     @mcp.tool()
     def start_config() -> dict[str, Any]:
         """Begin configuring the audit run.
@@ -637,7 +633,7 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
         opened_in_browser field says whether a tab actually opened), and
         returns its URL for the agent to show the user as the fallback.
         """
-        run = _require_run()
+        run = _require_run(state)
 
         if run.config is not None:
             return _config_summary(run)
@@ -667,7 +663,7 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
                 raise ValueError(
                     f"ENGINEERING_AUDIT_CONFIG file '{path}' is not a valid AuditConfig: {exc}"
                 ) from exc
-            _validate_selected_domains(config)
+            _validate_selected_domains(state, config)
             run.config = config
             run.config_mode = "preset"
             return _config_summary(run)
@@ -702,7 +698,7 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
         user never actually chose. Call it again (the user's submission is
         still awaited) rather than treating a timeout as a green light.
         """
-        run = _require_run()
+        run = _require_run(state)
         if run.config_mode is None:
             raise ValueError("start_config must be called before get_config.")
 
@@ -719,10 +715,14 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
                 "rather than proceeding with a default configuration."
             ) from exc
 
-        _validate_selected_domains(config)
+        _validate_selected_domains(state, config)
         run.config = config
         run.config_server.shutdown()
         return _config_summary(run)
+
+
+def _register_result_tools(mcp: MCPServer, state: AppState) -> None:
+    """Recording per-domain results, and reporting progress over them."""
 
     @mcp.tool()
     def record_domain_result(result: DomainResult, replace: bool = False) -> dict[str, Any]:
@@ -738,7 +738,7 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
         passing. Re-recording an already-recorded domain requires
         replace=True, to guard against an accidental overwrite.
         """
-        run = _require_run()
+        run = _require_run(state)
         config = _require_config(run)
 
         domain_id = result.domain_id
@@ -772,7 +772,7 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
         """Report progress for the current run: which selected domains have
         recorded results, which are still missing, and the findings count so
         far. Read-only."""
-        run = _require_run()
+        run = _require_run(state)
         config = _require_config(run)
 
         selected = config.selected_domain_ids
@@ -790,6 +790,10 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
             "could_not_run_domain_ids": could_not_run,
             "finding_count": finding_count,
         }
+
+
+def _register_issue_tools(mcp: MCPServer, state: AppState) -> None:
+    """GitHub issue filing for recorded findings, via the user's own gh."""
 
     @mcp.tool()
     def file_issues(confirm: bool = False, repo: str | None = None) -> dict[str, Any]:
@@ -827,7 +831,7 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
         the issues unlabelled and says so once, in warnings, rather than
         once per issue.
         """
-        run = _require_run()
+        run = _require_run(state)
         config = _require_config(run)
 
         if config.issue_mode != "github":
@@ -848,8 +852,12 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
         target_repo = _resolve_target_repo(run, repo)
         return {
             "repo": target_repo,
-            **_file_pending_issues(run, target_repo, pending, rule_index),
+            **_file_pending_issues(run, target_repo, pending, state.pack.rule_index),
         }
+
+
+def _register_feedback_tools(mcp: MCPServer, state: AppState) -> None:
+    """The optional feedback channel to the tool author."""
 
     @mcp.tool()
     def submit_feedback(extra_text: str | None = None) -> dict[str, Any]:
@@ -882,7 +890,7 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
         an error, because the issue is already filed by then and raising
         would invite a retry that double-files it.
         """
-        run, finished = _feedback_target()
+        run, finished = _feedback_target(state)
         config = _require_config(run)
 
         free_text = config.feedback_text or extra_text
@@ -945,6 +953,10 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
             "report_path": str(finished.report_path),
         }
 
+
+def _register_report_tools(mcp: MCPServer, state: AppState) -> None:
+    """Finishing a run: rendering and writing out its report."""
+
     @mcp.tool()
     def render_report(finished: str) -> dict[str, Any]:
         """Finish the run and render its report.
@@ -967,7 +979,7 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
         feedback issue's link. It stops being reachable at the next
         begin_run.
         """
-        run = _require_run()
+        run = _require_run(state)
         config = _require_config(run)
 
         finished_meta = RunMeta(**{**run.meta.model_dump(), "finished": finished})
@@ -1011,6 +1023,37 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
             "run_state_path": str(run_state_path),
             "findings_summary": findings_summary,
         }
+
+
+def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
+    """Load the rules pack and construct the MCPServer app.
+
+    Tool registration is split per concern into the _register_*_tools
+    functions above, which this calls in sequence; the call order is also the
+    order the tools are advertised in, and the order AUDIT.md walks them in.
+
+    Raises RulesPackError (or RulesPackParseError) if the pack cannot be
+    loaded; this is intentionally not caught here so callers that want the
+    exception (tests, alternative entry points) can see it directly. main()
+    is the one place that turns it into a clean CLI error.
+    """
+    state = AppState(pack=load_pack(rules_dir))
+
+    mcp = MCPServer("engineering-audit")
+    # The SDK installs OpenTelemetry span middleware on every server by
+    # default. This project's design requires explicit consent for any
+    # telemetry, so it is stripped here rather than left ambient.
+    mcp.middleware[:] = [
+        m for m in mcp.middleware if not isinstance(m, OpenTelemetryMiddleware)
+    ]
+
+    _register_pack_tools(mcp, state)
+    _register_run_tools(mcp, state)
+    _register_config_tools(mcp, state)
+    _register_result_tools(mcp, state)
+    _register_issue_tools(mcp, state)
+    _register_feedback_tools(mcp, state)
+    _register_report_tools(mcp, state)
 
     return mcp, state
 

@@ -170,6 +170,62 @@ def test_build_server_strips_opentelemetry_middleware_but_tools_still_work() -> 
     assert [d["id"] for d in result["domains"]] == ["d01", "d02"]
 
 
+def test_tool_surface_is_the_ten_tools_with_their_documented_parameters() -> None:
+    # build_server composes seven per-concern registration functions; the
+    # protocol surface they produce between them is what clients and AUDIT.md
+    # depend on, so it is pinned here rather than left to be noticed later by
+    # a client that stopped working.
+    mcp, _state = build_server(FIXTURE_PACK)
+    tools = asyncio.run(mcp.list_tools())
+
+    assert [tool.name for tool in tools] == [
+        "list_domains",
+        "get_domain",
+        "begin_run",
+        "start_config",
+        "get_config",
+        "record_domain_result",
+        "run_status",
+        "file_issues",
+        "submit_feedback",
+        "render_report",
+    ]
+
+    surface = {
+        tool.name: (
+            sorted(tool.input_schema.get("properties", {})),
+            sorted(tool.input_schema.get("required", [])),
+        )
+        for tool in tools
+    }
+    assert surface == {
+        "list_domains": ([], []),
+        "get_domain": (["domain_id"], ["domain_id"]),
+        "begin_run": (
+            [
+                "assistant",
+                "environment",
+                "model",
+                "output_dir",
+                "replace",
+                "repo_commit",
+                "repo_dir",
+                "repo_name",
+                "started",
+                "tool_version",
+            ],
+            ["assistant", "model", "output_dir", "repo_commit", "repo_name", "started"],
+        ),
+        "start_config": ([], []),
+        "get_config": (["timeout_s"], []),
+        "record_domain_result": (["replace", "result"], ["result"]),
+        "run_status": ([], []),
+        "file_issues": (["confirm", "repo"], []),
+        "submit_feedback": (["extra_text"], []),
+        "render_report": (["finished"], ["finished"]),
+    }
+
+
 def test_resolve_rules_dir_from_argv_flag(tmp_path: Path) -> None:
     resolved = _resolve_rules_dir(["--rules-dir", str(tmp_path)])
     assert resolved == tmp_path
