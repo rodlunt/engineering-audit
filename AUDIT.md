@@ -96,7 +96,8 @@ For each domain id in `selected_domain_ids`, in order:
    - Carry a self-contained `issue_title` and `issue_body`: written so that someone with **no
      access to the rules pack** (a developer who has never heard of this audit tool) can read the
      issue on its own, understand the problem, and know how to fix it. Do not write "see rule
-     D01-R02 for details"; restate the reasoning inline.
+     D01-R02 for details"; restate the reasoning inline. Write issue text in plain punctuation
+     (commas, colons, parentheses); do not use em or en dashes.
 4. Once every rule in the domain has a verdict, decide the domain's overall `status`:
    - `completed`, if you were able to sweep the repository at all (even if some individual rules
      ended up could-not-evaluate).
