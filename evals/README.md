@@ -68,17 +68,33 @@ cat > /tmp/grindpoints-eval-config.json <<'JSON'
 {"selected_domain_ids": ["d01", "d05", "d16"], "issue_mode": "report"}
 JSON
 
-# 3. Register the MCP server against the taster rules pack, then drive the
-#    audit headlessly via AUDIT.md.
-claude mcp add engineering-audit -- uvx --from git+https://github.com/rodlunt/engineering-audit \
-    engineering-audit-mcp --rules-dir /path/to/engineering-audit/examples/taster-rules
+# 3. An MCP config for this run only: the server reads the taster rules pack,
+#    and the preset config env var is set on the server itself, since the
+#    server process is what reads it.
+cat > /tmp/grindpoints-mcp.json <<'JSON'
+{
+  "mcpServers": {
+    "engineering-audit": {
+      "command": "uvx",
+      "args": [
+        "--from", "git+https://github.com/rodlunt/engineering-audit",
+        "engineering-audit-mcp",
+        "--rules-dir", "/path/to/engineering-audit/examples/taster-rules"
+      ],
+      "env": {
+        "ENGINEERING_AUDIT_CONFIG": "/tmp/grindpoints-eval-config.json"
+      }
+    }
+  }
+}
+JSON
 
-ENGINEERING_AUDIT_CONFIG=/tmp/grindpoints-eval-config.json \
+# 4. Drive the audit headlessly via AUDIT.md.
 claude -p "Read AUDIT.md at /path/to/engineering-audit and audit /tmp/grindpoints-eval via the \
-engineering-audit MCP tools." --mcp-config mcp.json \
+engineering-audit MCP tools." --mcp-config /tmp/grindpoints-mcp.json \
     --allowedTools "mcp__engineering-audit__*,Read,Glob,Grep"
 
-# 4. Score whatever the audit produced against the golden spec.
+# 5. Score whatever the audit produced against the golden spec.
 uv run engineering-audit-eval /tmp/grindpoints-eval/audit-output/run-state.json \
     --expected evals/golden/expected.json \
     --rules-dir examples/taster-rules \
