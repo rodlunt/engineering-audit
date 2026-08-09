@@ -33,6 +33,6 @@ CREATE TABLE redemptions (
     id SERIAL PRIMARY KEY,
     customer_id INTEGER NOT NULL REFERENCES customers(id),
     reward_name TEXT NOT NULL,
-    points_spent INTEGER,
+    points_spent INTEGER CHECK (points_spent > 0),
     redeemed_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
