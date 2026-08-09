@@ -26,12 +26,16 @@ your own install before relying on it.
 pack (see the placeholder file for the exact command):
 
 ```
-gemini extensions install <repo-or-local-path-to-this-extension>
+gemini extensions install <repo-or-local-path-to-this-extension> --ref v0.4.0
 ```
 
 Documented syntax: `gemini extensions install <url>` installs an extension from a
 git repository URL. A local, unpublished extension directory may need a different
-form; check `gemini extensions install --help` on your install.
+form; check `gemini extensions install --help` on your install. `--ref v0.4.0` pins
+the install to the current tagged release rather than the moving `main` branch;
+see the root README's [Install](../../README.md#install) section for how to find
+the latest tag and update to it deliberately. Drop `--ref` (or point it at a
+branch) only for a deliberate local/dev install off `main`.
 
 **As a manual MCP server entry**, without the extension packaging, add an entry to
 your `~/.gemini/settings.json` (or the project-level `.gemini/settings.json`)
@@ -44,7 +48,7 @@ your `~/.gemini/settings.json` (or the project-level `.gemini/settings.json`)
       "command": "uvx",
       "args": [
         "--from",
-        "git+https://github.com/rodlunt/engineering-audit",
+        "git+https://github.com/rodlunt/engineering-audit@v0.4.0",
         "engineering-audit-mcp"
       ],
       "env": {
@@ -54,6 +58,10 @@ your `~/.gemini/settings.json` (or the project-level `.gemini/settings.json`)
   }
 }
 ```
+
+`@v0.4.0` pins the install to the current tagged release rather than the moving `main` branch;
+see the root README's [Install](../../README.md#install) section for how to find the latest tag
+and update to it deliberately.
 
 This manual route sidesteps the extension's `settings`-array mechanism entirely
 (see the note below), so `ENGINEERING_AUDIT_RULES_DIR` is set directly and

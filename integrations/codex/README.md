@@ -16,8 +16,12 @@ on the parts that were not run end to end.
 ```
 codex mcp add engineering-audit \
   --env ENGINEERING_AUDIT_RULES_DIR=<path-to-rules-clone> \
-  -- uvx --from git+https://github.com/rodlunt/engineering-audit engineering-audit-mcp
+  -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.4.0 engineering-audit-mcp
 ```
+
+`@v0.4.0` pins the install to the current tagged release rather than the moving `main` branch;
+see the root README's [Install](../../README.md#install) section for how to find the latest tag
+and update to it deliberately.
 
 `<path-to-rules-clone>` is a local checkout of a rules pack: a directory of
 `NN-slug.md` domain files. Rules packs are distributed separately from this tool

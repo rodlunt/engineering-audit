@@ -16,6 +16,15 @@ a rules pack (see [Rules access](#rules-access)).
 
 ![Issues with selection tick boxes and GitHub filing, feedback form, footer](docs/images/issues-feedback.png)
 
+## Scope
+
+This documentation states functional behaviour (what the tool does) and the security and
+privacy properties documented inline (how the access token is held, what telemetry you opt
+into, what leaves your machine and when). The two human-facing surfaces, the configuration page
+and the report page, target [WCAG 2.2](https://www.w3.org/TR/WCAG22/) Level AA. Performance is
+explicitly out of scope for now: no throughput or latency target is stated or tested anywhere in
+this repository.
+
 ## How it works
 
 The tool is a local MCP server (Python, stdio). It points at a local directory of rule
@@ -54,13 +63,22 @@ The server runs with [uv](https://docs.astral.sh/uv/) (Python 3.10+), either str
 this repository via `uvx` or from a local clone. Every assistant needs the same two things:
 the MCP server registered, and a rules pack on disk to point it at.
 
+Every `uvx --from git+...` command below is pinned to a release tag (currently `@v0.4.0`), not
+to the moving default branch: an unpinned git dependency resolves to whatever is on `main` at
+install time, and to whatever `main` has moved to on every later `uvx` cache refresh. To find
+the current latest release, check [the Releases
+page](https://github.com/rodlunt/engineering-audit/releases) or run `git ls-remote --tags
+https://github.com/rodlunt/engineering-audit "v*"`. To update deliberately, change `@v0.4.0`
+in the install command below to the new tag and re-register the server (consult your
+assistant's MCP docs for how it handles re-registering a name that already exists).
+
 <details>
 <summary><strong>Claude Code</strong></summary>
 
 Register the server:
 
 ```sh
-claude mcp add engineering-audit -- uvx --from git+https://github.com/rodlunt/engineering-audit \
+claude mcp add engineering-audit -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.4.0 \
     engineering-audit-mcp --rules-dir /path/to/rules-clone/domains
 ```
 
@@ -84,14 +102,14 @@ Register the server (verified against codex-cli 0.114.0):
 ```sh
 codex mcp add engineering-audit \
     --env ENGINEERING_AUDIT_RULES_DIR=/path/to/rules-clone/domains \
-    -- uvx --from git+https://github.com/rodlunt/engineering-audit engineering-audit-mcp
+    -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.4.0 engineering-audit-mcp
 ```
 
 Inline mode: generate the trigger fragment and append it to your repo's `AGENTS.md` (or
 `~/.codex/AGENTS.md` for all repos):
 
 ```sh
-uvx --from git+https://github.com/rodlunt/engineering-audit engineering-audit-fragments \
+uvx --from git+https://github.com/rodlunt/engineering-audit@v0.4.0 engineering-audit-fragments \
     --rules-dir /path/to/rules-clone/domains --out-dir .
 cat AGENTS-fragment.md >> AGENTS.md
 ```
@@ -110,8 +128,11 @@ available to exercise it; check `gemini --help` against the README's flags befor
 unattended run):
 
 ```sh
-gemini extensions install https://github.com/rodlunt/engineering-audit
+gemini extensions install https://github.com/rodlunt/engineering-audit --ref v0.4.0
 ```
+
+`--ref v0.4.0` pins the install to the current tagged release rather than the moving `main`
+branch; see the note at the top of this section for how to find the latest tag.
 
 The extension registers the MCP server, adds an `/audit` command, and carries the inline
 trigger fragment as its context file. Manual alternative and details:
@@ -214,7 +235,7 @@ from the maintained pack. They are a working rules directory: point the server a
 and run a real audit before asking for anything.
 
 ```sh
-claude mcp add engineering-audit -- uvx --from git+https://github.com/rodlunt/engineering-audit \
+claude mcp add engineering-audit -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.4.0 \
     engineering-audit-mcp --rules-dir /path/to/engineering-audit/examples/taster-rules
 ```
 
@@ -236,6 +257,18 @@ uv run pytest -q
 CI runs the same suite on every push and pull request. Tests use an invented fixture rules
 pack; no private rule content exists in this repository. The renderer and configuration
 page are deterministic and fully testable with no LLM involved.
+
+This is a solo-maintainer repository, and its merge gate is deliberately CI-only: every change
+lands via a pull request that must pass the `check` status; no human review requirement is
+configured.
+
+### Tracking issues and PRs
+
+Up to now, the PR description has been the deliberate change record for this project: each PR
+body explains what changed and why, and that has been treated as sufficient in place of a
+separate issue-linked history. From now on, every PR links its tracking issue with a
+`Closes #N` line (or `Fixes #N`), so the issue tracker and the merge history stay in step
+instead of relying on the PR description alone.
 
 ### Eval harness
 
