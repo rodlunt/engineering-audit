@@ -58,17 +58,25 @@ from engineering_audit.issues import (
 )
 from engineering_audit.report import ReportError, write_report
 from engineering_audit.rules import Rule, RulesPack, RulesPackError, get_domain_text, load_pack
+from engineering_audit.run_state_io import (
+    PROGRESS_FILENAME,
+    RunStateLoadError,
+    atomic_write_text,
+    load_run_progress_file,
+    save_run_progress,
+)
 from engineering_audit.schema import (
     AuditConfig,
     DomainResult,
     Finding,
     RunMeta,
+    RunProgress,
     RunState,
     validate_completeness,
 )
 from engineering_audit.update_check import check_for_update
 
-__all__ = ["AppState", "FinishedRun", "RunTracker", "build_server", "main"]
+__all__ = ["AppState", "FinishedRun", "PriorRun", "RunTracker", "build_server", "main"]
 
 _SEVERITY_ORDER = ("critical", "high", "medium", "low")
 
@@ -186,6 +194,14 @@ class RunTracker:
     # makes the second finding look already-filed on a retry.
     filed_issues: dict[str, str] = field(default_factory=dict)
     feedback_issue_url: str | None = None
+    resumed: bool = False
+    # Persistence failures waiting to be reported, and the set of facts
+    # already reported. A failed write must be visible in a tool response,
+    # but repeating the same line on every later call trains the agent
+    # reading them to skip the whole field, so each distinct fact is said
+    # once and then remembered here as said.
+    persist_warnings: list[str] = field(default_factory=list)
+    persist_warnings_seen: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -203,6 +219,24 @@ class FinishedRun:
     run_state: RunState
     report_path: Path
     run_state_path: Path
+
+
+@dataclass(frozen=True)
+class PriorRun:
+    """A crash-recovery file found in the output directory begin_run was
+    pointed at.
+
+    ``progress`` is None when the file is present but could not be loaded,
+    with ``error`` carrying why. The two are kept distinct on purpose: a
+    recovery file that cannot be read is a prior run whose contents are
+    unknown, which is never the same thing as no prior run at all. Collapsing
+    them would turn an unreadable file into a silent fresh start over the top
+    of it.
+    """
+
+    path: Path
+    progress: RunProgress | None
+    error: str | None
 
 
 @dataclass
@@ -271,6 +305,210 @@ def _filed_urls_by_rule(run: RunTracker) -> dict[str, str]:
     return by_rule
 
 
+def _progress_path(output_dir: Path) -> Path:
+    """The crash-recovery file for a run whose output directory is this.
+
+    It lives beside the run's own report.html and run-state.json, and nowhere
+    else: the output directory is the one path the agent already has to name
+    and remember, so a resumed session finds the file by pointing begin_run at
+    the same place it pointed the interrupted one. A central per-user recovery
+    directory would need its own naming, its own cleanup, and its own answer
+    to "which of these three is my run", none of which this needs.
+    """
+    return output_dir / PROGRESS_FILENAME
+
+
+def _run_progress(run: RunTracker, *, completed: bool = False) -> RunProgress:
+    """Snapshot the tracker as the record written to disk."""
+    return RunProgress(
+        meta=run.meta,
+        config=run.config,
+        config_mode=run.config_mode,
+        repo_dir=str(run.repo_dir) if run.repo_dir is not None else None,
+        domain_results=run.domain_results,
+        filed_issues=run.filed_issues,
+        feedback_issue_url=run.feedback_issue_url,
+        completed=completed,
+    )
+
+
+def _queue_persist_warning(run: RunTracker, warning: str) -> None:
+    """Queue a warning for the next tool response, once per distinct fact."""
+    if warning in run.persist_warnings_seen:
+        return
+    run.persist_warnings_seen.add(warning)
+    run.persist_warnings.append(warning)
+
+
+def _with_warnings(run: RunTracker, response: dict[str, Any]) -> dict[str, Any]:
+    """Attach any queued warnings to a tool response and mark them as said.
+
+    Draining here is what makes "once per fact" true rather than "once per
+    call": the fact travels in exactly one response, the one that comes back
+    first after it happened. The key is left off entirely when there is
+    nothing to say, so a healthy run's response shape is unchanged.
+    """
+    if not run.persist_warnings:
+        return response
+    existing = response.get("warnings")
+    response["warnings"] = [*(existing if isinstance(existing, list) else []), *run.persist_warnings]
+    run.persist_warnings.clear()
+    return response
+
+
+def _persist_run(run: RunTracker, *, completed: bool = False) -> None:
+    """Write the run's crash-recovery record, atomically.
+
+    Never raises. The results are still intact in memory at this point, so
+    failing the tool call would throw away work the user has already paid for
+    to punish a disk that is only *maybe* going to matter. It is never a
+    silent pass either: the failure is queued as a warning the next response
+    carries, saying plainly that this run is no longer recoverable, which is
+    the fact the person driving the audit needs in order to decide whether to
+    keep going.
+
+    The broad except is deliberate and this is its reason: every failure mode
+    here (a full disk, a read-only directory, a serialisation bug) has the
+    same correct response, and a crash-recovery mechanism that can itself
+    crash the run it is protecting is worse than not having one.
+    """
+    path = _progress_path(run.output_dir)
+    try:
+        save_run_progress(path, _run_progress(run, completed=completed))
+    except Exception as exc:
+        _queue_persist_warning(
+            run,
+            f"Could not save this run's crash-recovery state to {path}: {exc}. The run itself "
+            "is unaffected and its results are still held in memory, but if this server stops "
+            "before render_report, they cannot be resumed and the audit has to be run again. "
+            "Tell the user.",
+        )
+
+
+def _remove_progress_file(run: RunTracker) -> None:
+    """Delete the crash-recovery file once the run's real output is written."""
+    path = _progress_path(run.output_dir)
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        _queue_persist_warning(
+            run,
+            f"Could not remove the crash-recovery file {path}: {exc}. It has already been "
+            "marked completed, so it will not be offered as a resumable run; it can be "
+            "deleted by hand.",
+        )
+
+
+def _find_prior_run(output_dir: Path) -> PriorRun | None:
+    """The unfinished run persisted in this output directory, if any.
+
+    None means there is genuinely nothing to resume: either no file, or a file
+    describing a run that already rendered its report. A file that cannot be
+    read comes back as a PriorRun with progress=None, never as None.
+    """
+    path = _progress_path(output_dir)
+    if not path.is_file():
+        return None
+    try:
+        progress = load_run_progress_file(path)
+    except RunStateLoadError as exc:
+        return PriorRun(path=path, progress=None, error=str(exc))
+    if progress.completed:
+        # render_report marks the record completed and then removes it. A
+        # record that survived that (an unlink that failed, a file restored
+        # from a backup) describes a finished run, and offering to resume it
+        # would invite the agent to re-audit an audit that is already done.
+        return None
+    return PriorRun(path=path, progress=progress, error=None)
+
+
+def _prior_run_summary(progress: RunProgress, path: Path) -> dict[str, Any]:
+    """What the agent needs in order to describe a prior run to the user."""
+    config = progress.config
+    recorded = list(progress.domain_results)
+    return {
+        "path": str(path),
+        "readable": True,
+        "repo_name": progress.meta.repo_name,
+        "repo_commit": progress.meta.repo_commit,
+        "started": progress.meta.started,
+        "assistant": progress.meta.assistant,
+        "model": progress.meta.model,
+        "configured": config is not None,
+        "selected_domain_ids": config.selected_domain_ids if config is not None else None,
+        "recorded_domain_ids": recorded,
+        "missing_domain_ids": (
+            [d for d in config.selected_domain_ids if d not in progress.domain_results]
+            if config is not None
+            else None
+        ),
+        "finding_count": sum(len(r.findings) for r in progress.domain_results.values()),
+        "filed_issue_count": len(progress.filed_issues),
+    }
+
+
+def _resume_offer(prior: PriorRun, repo_name: str) -> dict[str, Any]:
+    """The answer begin_run gives when it finds a prior run and was not told
+    what to do about it: a description of what is there, and nothing done.
+
+    Deliberately carries no "meta" key, unlike every started-run response: an
+    agent that ignores this and reads the result as a run it just started gets
+    a KeyError rather than a plausible-looking run that does not exist.
+    """
+    if prior.progress is None:
+        return {
+            "run_started": False,
+            "resumable": False,
+            "prior_run": {"path": str(prior.path), "readable": False, "error": prior.error},
+            "reason": (
+                f"A previous unfinished audit run is saved at {prior.path}, but its state "
+                f"cannot be read: {prior.error}"
+            ),
+            "instruction": (
+                "Nothing has been started. Tell the user that a previous unfinished run was "
+                "left in this output directory and its saved state cannot be read, quoting "
+                "the error, and that its recorded results cannot be recovered. Do not start "
+                "over on your own: ask them first, and only then call begin_run again with "
+                "resume=False, which overwrites that file. Pointing output_dir somewhere "
+                "else instead keeps the unreadable file for them to inspect."
+            ),
+        }
+
+    summary = _prior_run_summary(prior.progress, prior.path)
+    if prior.progress.meta.repo_name != repo_name:
+        return {
+            "run_started": False,
+            "resumable": False,
+            "prior_run": summary,
+            "reason": (
+                f"The unfinished run saved at {prior.path} audits repository "
+                f"{prior.progress.meta.repo_name!r}, but this call is for "
+                f"{repo_name!r}. Results from one repository are never continued into a run "
+                "for another."
+            ),
+            "instruction": (
+                "Nothing has been started. This is almost always the wrong output_dir: give "
+                "begin_run an output_dir inside the repository you are auditing. If the user "
+                "genuinely wants the other repository's unfinished run thrown away, call "
+                "begin_run again with resume=False, which discards it."
+            ),
+        }
+
+    return {
+        "run_started": False,
+        "resumable": True,
+        "prior_run": summary,
+        "instruction": (
+            "Nothing has been started. Show the user this prior run (when it started, which "
+            "domains it already covers, how many findings it holds) and ask whether to "
+            "continue it. Call begin_run again with resume=True to continue it, keeping those "
+            "results and auditing only missing_domain_ids, or resume=False to discard it and "
+            "start a fresh run. Do not choose for them: resume=False permanently throws away "
+            "audit work that has already been done."
+        ),
+    }
+
+
 def _require_run(state: AppState) -> RunTracker:
     if state.run is None:
         raise ValueError(
@@ -313,6 +551,146 @@ def _validate_selected_domains(state: AppState, config: AuditConfig) -> None:
             f"selected_domain_ids includes id(s) not in the loaded rules pack: {unknown}. "
             f"Valid ids: {sorted(valid_ids)}"
         )
+
+
+def _resume_run(
+    state: AppState,
+    prior: PriorRun,
+    output_dir: Path,
+    repo_dir: Path | None,
+    repo_name: str,
+    repo_commit: str,
+) -> dict[str, Any]:
+    """Rebuild the tracker from a persisted run and install it as the run in
+    progress.
+
+    Raises rather than resuming when the saved run cannot honestly be
+    continued: an unreadable record, a different repository, or a
+    configuration naming domains the currently loaded rules pack does not
+    have. Mismatches that are merely suspicious rather than disqualifying (the
+    repository has moved on a commit, the rules pack has) come back as
+    warnings, because both are legitimate mid-audit and only the user can say
+    whether they matter.
+    """
+    if prior.progress is None:
+        raise ValueError(
+            f"Cannot resume the run saved at {prior.path}: {prior.error}. Nothing was "
+            "started and the file was not touched. Its recorded results cannot be "
+            "recovered; call begin_run with resume=False to discard it and start fresh, "
+            "or point output_dir elsewhere to keep it for inspection."
+        )
+    progress = prior.progress
+    if progress.meta.repo_name != repo_name:
+        raise ValueError(
+            f"Refusing to resume: the run saved at {prior.path} audits repository "
+            f"{progress.meta.repo_name!r}, but this call is for {repo_name!r}. Recorded "
+            "results are attributed to the repository they were found in; continuing one "
+            "repository's run as another's would publish findings against a repository "
+            "they were never checked on. Check output_dir, or pass resume=False to discard "
+            "the saved run and start fresh."
+        )
+
+    warnings: list[str] = []
+    config = progress.config
+    if config is not None:
+        try:
+            _validate_selected_domains(state, config)
+        except ValueError as exc:
+            raise ValueError(
+                f"Cannot resume the run saved at {prior.path}: {exc} The rules pack loaded "
+                "now does not define every domain that run selected, so the run cannot be "
+                "completed against it. Point the server at the rules pack that run used, or "
+                "start a fresh run with resume=False."
+            ) from exc
+
+    if progress.meta.repo_commit != repo_commit:
+        warnings.append(
+            f"The saved run was started against repo_commit {progress.meta.repo_commit}, and "
+            f"this call gave {repo_commit}. The resumed run keeps the original commit, because "
+            "that is what the already-recorded results were audited against; anything recorded "
+            "from here on is against the newer working tree. Tell the user, and offer to start "
+            "fresh (resume=False) if the repository has moved on materially."
+        )
+    current_pack_commit = _git_commit(state.pack.root)
+    if progress.meta.rules_pack_commit != current_pack_commit:
+        warnings.append(
+            f"The saved run was started against rules pack commit "
+            f"{progress.meta.rules_pack_commit}, and the pack loaded now is at "
+            f"{current_pack_commit}. Its recorded results were reached against different rule "
+            "text; the report will carry the original commit. Tell the user."
+        )
+
+    resolved_repo_dir = repo_dir
+    if resolved_repo_dir is None and progress.repo_dir is not None:
+        candidate = Path(progress.repo_dir)
+        if candidate.is_dir():
+            resolved_repo_dir = candidate
+        else:
+            warnings.append(
+                f"The saved run recorded repo_dir {candidate}, which is no longer a directory. "
+                "file_issues cannot detect the target repository from it; pass repo='owner/name' "
+                "explicitly, or repo_dir to this call."
+            )
+
+    run = RunTracker(
+        meta=progress.meta,
+        output_dir=output_dir,
+        repo_dir=resolved_repo_dir,
+        config=config,
+        # Only meaningful alongside a resolved config: a saved "interactive"
+        # mode with no config describes a config page served by a process that
+        # is gone, and restoring it would leave get_config waiting on a server
+        # that no longer exists. Without it, start_config opens a fresh page,
+        # which is the honest state of things.
+        config_mode=progress.config_mode if config is not None else None,
+        domain_results=dict(progress.domain_results),
+        filed_issues=dict(progress.filed_issues),
+        feedback_issue_url=progress.feedback_issue_url,
+        resumed=True,
+    )
+    state.run = run
+    # Resuming closes the previous run's late-feedback window, exactly as
+    # starting a fresh one does: feedback from here belongs to this run.
+    state.finished = None
+    # Rewrite immediately, so any detail this call resolved differently (a new
+    # repo_dir) is in the record before the next interruption, not only in
+    # memory.
+    _persist_run(run)
+
+    recorded = list(run.domain_results)
+    missing = (
+        [d for d in config.selected_domain_ids if d not in run.domain_results]
+        if config is not None
+        else None
+    )
+    return _with_warnings(
+        run,
+        {
+            "run_started": True,
+            "resumed": True,
+            "meta": run.meta.model_dump(mode="json"),
+            "output_dir": str(output_dir),
+            "repo_dir": str(resolved_repo_dir) if resolved_repo_dir is not None else None,
+            "config": config.model_dump(mode="json") if config is not None else None,
+            "selected_domain_ids": config.selected_domain_ids if config is not None else None,
+            "recorded_domain_ids": recorded,
+            "missing_domain_ids": missing,
+            "filed_issues": dict(run.filed_issues),
+            "warnings": warnings,
+            "instruction": (
+                "This run's configuration is already resolved: do not call start_config or "
+                "get_config again. Audit only the domains in missing_domain_ids; the ones in "
+                "recorded_domain_ids already have results and must not be re-audited unless "
+                "the user asks. Tell the user which domains were recovered."
+                if config is not None
+                else (
+                    "The saved run was interrupted before its configuration was chosen, so "
+                    "there are no results to recover: call start_config next, as for a fresh "
+                    "run."
+                )
+            ),
+        },
+    )
 
 
 def _config_summary(run: RunTracker) -> dict[str, Any]:
@@ -427,6 +805,11 @@ def _file_pending_issues(
             ) from exc
         run.filed_issues[issue.key] = created.url
         filed_this_call[issue.key] = created.url
+        # Per issue, not once at the end: an issue that exists on the user's
+        # repository but is missing from the saved state gets filed a second
+        # time by a resumed run. Duplicate issues on someone else's repository
+        # are the one failure here that cannot be undone from this side.
+        _persist_run(run)
         # create_issue's own missing-label retry can still fire (a label
         # deleted or renamed mid-run), and it reports the same fact for
         # every issue after that. One line per distinct warning.
@@ -533,8 +916,10 @@ def _register_run_tools(mcp: MCPServer, state: AppState) -> None:
         environment: dict[str, str] | None = None,
         repo_dir: str | None = None,
         replace: bool = False,
+        resume: bool | None = None,
     ) -> dict[str, Any]:
-        """Start a fresh audit run and create its output directory.
+        """Start a fresh audit run and create its output directory, or resume
+        an interrupted one.
 
         assistant/model/repo_name/repo_commit/started are supplied by the
         calling agent; tool_version defaults to the installed package version
@@ -546,6 +931,21 @@ def _register_run_tools(mcp: MCPServer, state: AppState) -> None:
         render_report) is an error, since it would silently discard whatever
         domain results have already been recorded; pass replace=True to
         explicitly discard the in-progress run and start over.
+
+        A run's progress is saved to a crash-recovery file in output_dir as it
+        goes, so a server that stops mid-run (host restart, dropped
+        connection, machine asleep) loses at most the domain in flight. When
+        this call finds such a file for an unfinished run in output_dir it
+        starts nothing and returns a description of it plus an instruction:
+        run_started is False, "meta" is absent, and "resumable" says whether
+        it can be continued at all. Call begin_run again with resume=True to
+        continue that run (its recorded domains are kept, and the response
+        lists which domains are still missing), or resume=False to discard it
+        and start fresh. resume=False is the only way to overwrite saved
+        results, and replace=True counts as the same explicit decision.
+        Resuming a run for a DIFFERENT repository is refused outright, as is
+        resuming one whose saved state cannot be read; either way, nothing is
+        started and nothing is deleted until told.
 
         The recorded metadata also stamps two provenance SHAs, best-effort:
         tool_commit (the git commit the installed tool build was made from,
@@ -574,11 +974,45 @@ def _register_run_tools(mcp: MCPServer, state: AppState) -> None:
                 f"repo {state.run.meta.repo_name}). Finish it with render_report, or "
                 "pass replace=True to discard it and start a new run."
             )
+
+        output_dir_path = Path(output_dir).expanduser()
+        repo_dir_path: Path | None = None
+        if repo_dir is not None:
+            repo_dir_path = Path(repo_dir).expanduser()
+            if not repo_dir_path.is_dir():
+                raise ValueError(
+                    f"repo_dir '{repo_dir}' does not exist or is not a directory."
+                )
+
+        # Crash recovery, before anything is created or discarded. An
+        # unfinished run saved here is work someone has already paid for, so
+        # it is never written over without being offered first. replace=True
+        # is already an explicit "throw away the run in progress and start
+        # over", so it counts as declining rather than raising a second
+        # question the caller has already answered.
+        prior = _find_prior_run(output_dir_path)
+        decision = resume if resume is not None else (False if replace else None)
+        if resume is True and prior is None:
+            raise ValueError(
+                f"resume=True, but there is no unfinished run saved in {output_dir_path} "
+                f"(no {PROGRESS_FILENAME} there). Nothing was started. Check that output_dir "
+                "is the same directory the interrupted run used, or call begin_run with "
+                "resume=False to start a fresh run there."
+            )
+        if prior is not None and decision is None:
+            return _resume_offer(prior, repo_name)
+
         if state.run is not None and state.run.config_server is not None:
             # Discarding an in-progress run must not leak its interactive
             # config page's HTTP server: a second one would bind a different
             # port and leave the first orphaned but still listening.
             state.run.config_server.shutdown()
+
+        if decision is True:
+            assert prior is not None  # resume=True with no prior run raised above
+            return _resume_run(
+                state, prior, output_dir_path, repo_dir_path, repo_name, repo_commit
+            )
 
         tool_version_value = tool_version or _default_tool_version()
         tool_commit_value = _default_tool_commit()
@@ -595,26 +1029,33 @@ def _register_run_tools(mcp: MCPServer, state: AppState) -> None:
             started=started,
             environment=environment,
         )
-        output_dir_path = Path(output_dir).expanduser()
         output_dir_path.mkdir(parents=True, exist_ok=True)
 
-        repo_dir_path: Path | None = None
-        if repo_dir is not None:
-            repo_dir_path = Path(repo_dir).expanduser()
-            if not repo_dir_path.is_dir():
-                raise ValueError(
-                    f"repo_dir '{repo_dir}' does not exist or is not a directory."
-                )
-
-        state.run = RunTracker(meta=meta, output_dir=output_dir_path, repo_dir=repo_dir_path)
+        run = RunTracker(meta=meta, output_dir=output_dir_path, repo_dir=repo_dir_path)
+        state.run = run
         # A new run closes the previous one's late-feedback window: feedback
         # sent from here on belongs to this run, never to the last one.
         state.finished = None
-        return {
+        # First save, before a single domain is audited: an interruption
+        # between here and the first result still leaves a record saying a run
+        # was started and never finished, rather than nothing at all.
+        _persist_run(run)
+        response: dict[str, Any] = {
+            "run_started": True,
+            "resumed": False,
             "meta": meta.model_dump(mode="json"),
             "output_dir": str(output_dir_path),
             "repo_dir": str(repo_dir_path) if repo_dir_path else None,
         }
+        if prior is not None:
+            # Saying what was thrown away is the difference between a discard
+            # the user chose and one they will only find out about later.
+            response["discarded_prior_run"] = (
+                _prior_run_summary(prior.progress, prior.path)
+                if prior.progress is not None
+                else {"path": str(prior.path), "readable": False, "error": prior.error}
+            )
+        return _with_warnings(run, response)
 
 
 def _register_config_tools(mcp: MCPServer, state: AppState) -> None:
@@ -666,7 +1107,8 @@ def _register_config_tools(mcp: MCPServer, state: AppState) -> None:
             _validate_selected_domains(state, config)
             run.config = config
             run.config_mode = "preset"
-            return _config_summary(run)
+            _persist_run(run)
+            return _with_warnings(run, _config_summary(run))
 
         config_server = ConfigServer(state.pack.domains)
         url = config_server.start()
@@ -718,7 +1160,12 @@ def _register_config_tools(mcp: MCPServer, state: AppState) -> None:
         _validate_selected_domains(state, config)
         run.config = config
         run.config_server.shutdown()
-        return _config_summary(run)
+        # Saved as soon as it is resolved: the configuration is the one step
+        # of a run that costs a person's time rather than the agent's, and an
+        # interruption before the first domain must not make them fill the
+        # page in again.
+        _persist_run(run)
+        return _with_warnings(run, _config_summary(run))
 
 
 def _register_result_tools(mcp: MCPServer, state: AppState) -> None:
@@ -761,17 +1208,26 @@ def _register_result_tools(mcp: MCPServer, state: AppState) -> None:
             )
 
         run.domain_results[domain_id] = result
-        return {
-            "domain_id": domain_id,
-            "status": result.status,
-            "finding_count": len(result.findings),
-        }
+        # Saved before the response goes back, so a server that dies between
+        # this domain and the next one loses nothing that has been reported as
+        # recorded. A save failure is reported in warnings, never raised: the
+        # result is accepted either way.
+        _persist_run(run)
+        return _with_warnings(
+            run,
+            {
+                "domain_id": domain_id,
+                "status": result.status,
+                "finding_count": len(result.findings),
+            },
+        )
 
     @mcp.tool()
     def run_status() -> dict[str, Any]:
         """Report progress for the current run: which selected domains have
         recorded results, which are still missing, and the findings count so
-        far. Read-only."""
+        far. Read-only over the run itself; it also carries any queued
+        crash-recovery warning that no earlier response has reported yet."""
         run = _require_run(state)
         config = _require_config(run)
 
@@ -783,13 +1239,16 @@ def _register_result_tools(mcp: MCPServer, state: AppState) -> None:
             if d in run.domain_results and run.domain_results[d].status == "could-not-run"
         ]
         finding_count = sum(len(r.findings) for r in run.domain_results.values())
-        return {
-            "selected_domain_ids": selected,
-            "recorded_domain_ids": recorded,
-            "missing_domain_ids": missing,
-            "could_not_run_domain_ids": could_not_run,
-            "finding_count": finding_count,
-        }
+        return _with_warnings(
+            run,
+            {
+                "selected_domain_ids": selected,
+                "recorded_domain_ids": recorded,
+                "missing_domain_ids": missing,
+                "could_not_run_domain_ids": could_not_run,
+                "finding_count": finding_count,
+            },
+        )
 
 
 def _register_issue_tools(mcp: MCPServer, state: AppState) -> None:
@@ -847,13 +1306,16 @@ def _register_issue_tools(mcp: MCPServer, state: AppState) -> None:
 
         pending = _pending_issues(run)
         if not confirm:
-            return _issue_preview(pending, repo)
+            return _with_warnings(run, _issue_preview(pending, repo))
 
         target_repo = _resolve_target_repo(run, repo)
-        return {
-            "repo": target_repo,
-            **_file_pending_issues(run, target_repo, pending, state.pack.rule_index),
-        }
+        return _with_warnings(
+            run,
+            {
+                "repo": target_repo,
+                **_file_pending_issues(run, target_repo, pending, state.pack.rule_index),
+            },
+        )
 
 
 def _register_feedback_tools(mcp: MCPServer, state: AppState) -> None:
@@ -921,7 +1383,13 @@ def _register_feedback_tools(mcp: MCPServer, state: AppState) -> None:
 
         run.feedback_issue_url = created.url
         if finished is None:
-            return {"mode": "issue", "url": created.url, "warnings": created.warnings}
+            # Only the still-running case saves: a finished run's recovery
+            # file is already gone, and rewriting one now would advertise a
+            # completed run as unfinished work to resume.
+            _persist_run(run)
+            return _with_warnings(
+                run, {"mode": "issue", "url": created.url, "warnings": list(created.warnings)}
+            )
 
         warnings = list(created.warnings)
         updated_state = finished.run_state.model_copy(
@@ -929,7 +1397,7 @@ def _register_feedback_tools(mcp: MCPServer, state: AppState) -> None:
         )
         try:
             write_report(updated_state, state.pack, finished.report_path)
-            finished.run_state_path.write_text(updated_state.to_json(), encoding="utf-8")
+            atomic_write_text(finished.run_state_path, updated_state.to_json())
         except (OSError, ReportError) as exc:
             warnings.append(
                 f"Feedback issue {created.url} was filed, but the already-written report at "
@@ -978,6 +1446,11 @@ def _register_report_tools(mcp: MCPServer, state: AppState) -> None:
         order AUDIT.md documents), which rewrites both files to carry the
         feedback issue's link. It stops being reachable at the next
         begin_run.
+
+        Both files are written atomically, and the run's crash-recovery file
+        is removed once they are on disk: from here the run-state.json is the
+        record, and a later begin_run on this output directory starts clean
+        rather than offering to resume a run that is already finished.
         """
         run = _require_run(state)
         config = _require_config(run)
@@ -998,7 +1471,14 @@ def _register_report_tools(mcp: MCPServer, state: AppState) -> None:
             run.output_dir / "report.html",
         )
         run_state_path = run.output_dir / "run-state.json"
-        run_state_path.write_text(run_state.to_json(), encoding="utf-8")
+        atomic_write_text(run_state_path, run_state.to_json())
+
+        # The run's real output is on disk now, so the crash-recovery file has
+        # done its job. It is marked completed before being removed, so that a
+        # removal which fails cannot resurrect a finished run as resumable
+        # work at the next begin_run.
+        _persist_run(run, completed=True)
+        _remove_progress_file(run)
 
         all_findings = [f for r in run.domain_results.values() for f in r.findings]
         severity_counts = Counter(f.severity.value for f in all_findings)
@@ -1018,11 +1498,14 @@ def _register_report_tools(mcp: MCPServer, state: AppState) -> None:
             run_state_path=run_state_path,
         )
 
-        return {
-            "report_path": str(report_path),
-            "run_state_path": str(run_state_path),
-            "findings_summary": findings_summary,
-        }
+        return _with_warnings(
+            run,
+            {
+                "report_path": str(report_path),
+                "run_state_path": str(run_state_path),
+                "findings_summary": findings_summary,
+            },
+        )
 
 
 def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:

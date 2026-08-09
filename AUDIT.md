@@ -40,6 +40,47 @@ same server process never finished. Either resume by calling the remaining tools
 against the existing run, or, if you are deliberately restarting, call `begin_run` again with
 `replace=True`.
 
+### 2a. If a previous run was interrupted
+
+A run's progress is saved to a `run-state.progress.json` file in its `output_dir` as it goes:
+after `begin_run`, once the configuration is resolved, after every `record_domain_result`, after
+every issue filed, and after feedback is sent. So an audit that was cut short (the host
+application restarted, the connection dropped, the machine slept) can be picked up where it
+stopped instead of run again from the beginning.
+
+When `begin_run` finds such a file for an unfinished run in `output_dir`, **it starts nothing**
+and returns a description of what it found instead: `run_started` is `false`, there is no `meta`
+key, and `resumable` says whether that run can be continued. Check `run_started` before reading
+anything else out of a `begin_run` response.
+
+- **`resumable: true`**: `prior_run` tells you when it started, which domains it already
+  recorded (`recorded_domain_ids`), which are still outstanding (`missing_domain_ids`), how many
+  findings it holds, and how many issues it already filed. **Show this to the user and ask
+  whether to continue it.** Then call `begin_run` again with the same arguments plus
+  `resume=True` to continue it, or `resume=False` to throw it away and start fresh. This is not
+  your decision to make silently: `resume=False` permanently discards audit work that was
+  already done, and continuing means the report is attributed to the run's original start time,
+  assistant and model.
+- **`resumable: false`**: the `reason` says why. Either the saved run audits a **different
+  repository** (almost always a wrong `output_dir`: point it at a directory inside the
+  repository you are auditing), or its saved state **cannot be read** (its results are not
+  recoverable; tell the user, quote the error, and do not start over until they say to). In both
+  cases `resume=True` is refused outright, and only an explicit `resume=False` will overwrite
+  the file. Choosing a different `output_dir` leaves it alone entirely.
+
+On a successful resume, the response carries `resumed: true`, the recovered `config`, and
+`recorded_domain_ids` / `missing_domain_ids`. Skip step 3 (the configuration is already
+resolved: do not call `start_config` again) and audit only the domains in
+`missing_domain_ids`. Do not re-audit the recovered domains unless the user asks. Any `warnings`
+in the response are things the user needs to hear before you carry on: most commonly that the
+repository's HEAD commit or the rules pack has changed since the run started, in which case the
+run keeps the original commit, because that is what the recorded results were actually checked
+against.
+
+If any later tool response carries a `warnings` entry about crash-recovery state not being
+saved, pass it on to the user: the run itself is fine and its results are intact, but from that
+point it can no longer be resumed if the server stops.
+
 `begin_run`'s response also includes `meta.update_check`, the result of a best-effort check
 against this tool's latest tagged release on GitHub. If it starts with `stale` or
 `could-not-check`, tell the user before continuing: a stale tool still audits fine, but the user
@@ -178,7 +219,9 @@ Check `config.issue_mode` from step 3's `get_config` response.
 Call `render_report` with a `finished` ISO timestamp (the current time, same format as `started`
 in step 1). It writes `report.html` and `run-state.json` into the run's `output_dir` and returns
 their paths along with a findings summary. Any issues filed in step 6 are linked automatically;
-there is nothing further to pass.
+there is nothing further to pass. The run's `run-state.progress.json` recovery file is removed
+at this point: `run-state.json` is the record from here, and a later `begin_run` on the same
+`output_dir` starts a clean run rather than offering to resume this one.
 
 Tell the user directly where `report.html` is, give them a one-line summary of what was
 found (e.g. "3 findings: 1 high, 2 medium, across 2 domains"), and offer to open the report

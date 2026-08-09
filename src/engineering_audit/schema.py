@@ -34,6 +34,7 @@ __all__ = [
     "TelemetryConsent",
     "AuditConfig",
     "RunState",
+    "RunProgress",
     "RUN_STATE_SCHEMA_VERSION",
     "RunStateVersionError",
     "IncompleteResultError",
@@ -44,6 +45,11 @@ __all__ = [
 # against an older version could not safely ignore. See RunState.from_json
 # for the compatibility gate this backs: a run-state file naming a version
 # higher than this is refused outright rather than partially parsed.
+#
+# RunProgress (the crash-recovery record) shares this constant deliberately
+# rather than versioning itself separately: it carries the same component
+# models, so a bump that makes an old reader unsafe for one makes it unsafe
+# for the other, and one number cannot drift out of step with itself.
 RUN_STATE_SCHEMA_VERSION = 2
 
 
@@ -334,6 +340,38 @@ class AuditConfig(BaseModel):
         return value
 
 
+def _parse_versioned(data: str, label: str) -> object:
+    """Parse a run-state or run-progress JSON document and enforce the
+    schema-version gate, returning the raw object for the caller to validate.
+
+    Shared by :meth:`RunState.from_json` and :meth:`RunProgress.from_json` so
+    the two files on disk cannot end up with two different ideas of what a
+    version number means; ``label`` is the only difference between them, and
+    only in the error text.
+    """
+    raw = json.loads(data)
+    if isinstance(raw, dict):
+        version = raw.get("schema_version", 1)
+        # bool is an int subclass, and `True > 2` is a valid comparison that
+        # would sail through the gate below; a non-integer version is a
+        # corrupt file, and must be named as one rather than raising a raw
+        # TypeError out of the comparison or being read as version 1.
+        if not isinstance(version, int) or isinstance(version, bool):
+            raise RunStateVersionError(
+                f"{label} has schema_version {version!r}, which is not an integer version "
+                f"number. The file is corrupt or was not written by engineering-audit."
+            )
+        if version > RUN_STATE_SCHEMA_VERSION:
+            raise RunStateVersionError(
+                f"{label} is schema_version {version}, but this version of "
+                f"engineering-audit only understands up to schema_version "
+                f"{RUN_STATE_SCHEMA_VERSION}. Upgrade engineering-audit to a version that "
+                f"supports this {label}."
+            )
+        raw.setdefault("schema_version", 1)
+    return raw
+
+
 class RunState(BaseModel):
     """The full state of one audit run: metadata, config and per-domain results."""
 
@@ -388,18 +426,87 @@ class RunState(BaseModel):
         expecting either a ``RunState`` or a named parse error should never
         see.
         """
-        raw = json.loads(data)
-        if isinstance(raw, dict):
-            version = raw.get("schema_version", 1)
-            if version > RUN_STATE_SCHEMA_VERSION:
-                raise RunStateVersionError(
-                    f"run-state file is schema_version {version}, but this version of "
-                    f"engineering-audit only understands up to schema_version "
-                    f"{RUN_STATE_SCHEMA_VERSION}. Upgrade engineering-audit to a version that "
-                    "supports this run-state file."
-                )
-            raw.setdefault("schema_version", 1)
-        return cls.model_validate(raw)
+        return cls.model_validate(_parse_versioned(data, "run-state file"))
+
+
+class RunProgress(BaseModel):
+    """The crash-recovery record of a run that is still in progress.
+
+    Written to the run's output directory as it advances, so a server that is
+    killed mid-run loses at most the domain in flight rather than every result
+    recorded so far. It is deliberately a sibling of :class:`RunState` rather
+    than a reuse of it, for two reasons the finished-run model cannot bend to
+    without weakening what it guarantees:
+
+    * ``config`` is optional here. A run genuinely exists between begin_run
+      and the user submitting the configuration page, and RunState's required
+      ``config`` is what lets everything downstream trust that a rendered
+      report was produced against a configuration a person actually chose.
+    * ``filed_issues`` is keyed by finding (``"<rule id>#<n>"``), not by rule
+      id like RunState.filed_issue_urls, which is knowingly lossy where one
+      rule carries two findings. Resuming from the lossy map would re-file an
+      already-filed issue on the user's repository, so the recovery record
+      keeps the full-fidelity map.
+
+    Everything else is shared with RunState verbatim: the same component
+    models, the same schema_version constant and the same version gate.
+    """
+
+    schema_version: int = RUN_STATE_SCHEMA_VERSION
+    meta: RunMeta
+    config: AuditConfig | None = None
+    config_mode: str | None = Field(
+        default=None,
+        description="'preset' or 'interactive', so a resumed run does not re-open a config page.",
+    )
+    repo_dir: str | None = Field(
+        default=None,
+        description="The audited repository's path on disk, as given to begin_run.",
+    )
+    domain_results: dict[str, DomainResult] = Field(default_factory=dict)
+    filed_issues: dict[str, str] = Field(
+        default_factory=dict,
+        description="Finding key ('<rule id>#<n>') -> GitHub issue URL, for issues already filed.",
+    )
+    feedback_issue_url: str | None = None
+    completed: bool = Field(
+        default=False,
+        description=(
+            "True once render_report has written the run's report and run-state. A completed "
+            "record is never offered as resumable work: the file is normally removed at that "
+            "point, and this flag is what stops a removal that failed from resurrecting a run "
+            "that is already finished."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _domain_results_keys_match_domain_id(self) -> "RunProgress":
+        mismatched = [
+            (key, result.domain_id)
+            for key, result in self.domain_results.items()
+            if key != result.domain_id
+        ]
+        if mismatched:
+            raise ValueError(
+                "domain_results key(s) do not match their DomainResult.domain_id: "
+                f"{mismatched}"
+            )
+        return self
+
+    def to_json(self) -> str:
+        return self.model_dump_json(indent=2)
+
+    @classmethod
+    def from_json(cls, data: str) -> "RunProgress":
+        """Parse a run-progress JSON document, enforcing the same
+        schema-version gate as :meth:`RunState.from_json`.
+
+        A recovery file this tool cannot fully understand must never be read
+        as a partial run and resumed from: the domains it appears to be
+        missing would be re-audited, and whatever the newer version recorded
+        would be dropped without a word.
+        """
+        return cls.model_validate(_parse_versioned(data, "run-progress file"))
 
 
 class RunStateVersionError(Exception):
