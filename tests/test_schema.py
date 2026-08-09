@@ -165,6 +165,12 @@ def test_finding_rejects_a_location_with_no_path_before_the_line_suffix() -> Non
     assert "D01-R10" in str(excinfo.value)
 
 
+def test_finding_rejects_a_reversed_line_range() -> None:
+    with pytest.raises(ValidationError) as excinfo:
+        _finding("beds.py:30-24", rule_id="D01-R12")
+    assert "D01-R12" in str(excinfo.value)
+
+
 def test_finding_rejects_a_zero_line_number() -> None:
     with pytest.raises(ValidationError) as excinfo:
         _finding("beds.py:0", rule_id="D01-R11")

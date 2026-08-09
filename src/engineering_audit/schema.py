@@ -126,6 +126,11 @@ class Finding(BaseModel):
                     f"rule {self.rule_id}: location {self.location!r} has end line "
                     f"{end_line}, which must be a positive integer"
                 )
+            if end_line is not None and int(end_line) < start_line:
+                raise ValueError(
+                    f"rule {self.rule_id}: location {self.location!r} has end line "
+                    f"{end_line} before start line {start_line}; a range must run forwards"
+                )
         return self
 
 
