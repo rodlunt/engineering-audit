@@ -5,6 +5,13 @@ on:
     branches: [main]
   pull_request:
 
+# Read-only by default: this workflow only checks out code, installs
+# dependencies and runs lint/type/test steps, so it never needs to write
+# back to the repo. Matches tag-version-guard.yml rather than inheriting
+# whatever the org or repo default happens to be.
+permissions:
+  contents: read
+
 jobs:
   check:
     name: check
