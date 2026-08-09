@@ -95,6 +95,7 @@ def _form_state_from_fields(fields: dict[str, list[str]]) -> _FormState:
             rollup="consent_rollup" in fields,
             self_assessment="consent_self_assessment" in fields,
             environment="consent_environment" in fields,
+            consulted_sources="consent_consulted_sources" in fields,
         ),
     )
 
@@ -292,6 +293,7 @@ class ConfigServer:
             consent_rollup_checked="checked" if consent.rollup else "",
             consent_self_assessment_checked="checked" if consent.self_assessment else "",
             consent_environment_checked="checked" if consent.environment else "",
+            consent_consulted_sources_checked="checked" if consent.consulted_sources else "",
             csrf_token=html.escape(self._csrf_token),
         )
 
@@ -304,6 +306,7 @@ class ConfigServer:
             rollup="consent_rollup" in fields,
             self_assessment="consent_self_assessment" in fields,
             environment="consent_environment" in fields,
+            consulted_sources="consent_consulted_sources" in fields,
         )
         # No fallback to "all domains" here: an empty selection is a real user
         # choice (or a broken form) and AuditConfig rejects it below, loudly,

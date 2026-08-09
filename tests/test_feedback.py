@@ -17,6 +17,7 @@ from engineering_audit.feedback import (
 )
 from engineering_audit.rules import Rule
 from engineering_audit.schema import (
+    ConsultedSource,
     Coverage,
     DomainResult,
     Finding,
@@ -65,6 +66,15 @@ def _domain_results() -> dict[str, DomainResult]:
             findings=[finding],
             self_assessment=SelfAssessment(confidence="high", limits="did not check archives"),
             coverage=Coverage(files_inspected=12, files_skipped=1),
+            consulted_sources=[
+                ConsultedSource(
+                    rule_id="D01-R01",
+                    url="https://example.invalid/standard",
+                    title="an external standard, which must never appear in feedback",
+                    why="checked the standard's definition of a shared bed",
+                    accessed="2026-08-09T09:02:00Z",
+                )
+            ],
         ),
         "d02": DomainResult(
             domain_id="d02",
@@ -117,18 +127,22 @@ def test_run_metadata_reports_full_tool_and_rules_commit_when_known() -> None:
 
 def test_unconsented_sections_are_omitted_entirely() -> None:
     body = build_feedback_body("hi", _meta(), TelemetryConsent(
-        coverage=False, rollup=False, self_assessment=False, environment=False
+        coverage=False, rollup=False, self_assessment=False, environment=False,
+        consulted_sources=False,
     ), _domain_results())
 
     assert "Coverage" not in body
     assert "Findings rollup" not in body
     assert "Self-assessment" not in body
     assert "Environment" not in body
+    assert "Sources consulted" not in body
+    assert "example.invalid/standard" not in body
 
 
 def test_consented_sections_are_included_with_correct_totals() -> None:
     body = build_feedback_body("hi", _meta(), TelemetryConsent(
-        coverage=True, rollup=True, self_assessment=True, environment=True
+        coverage=True, rollup=True, self_assessment=True, environment=True,
+        consulted_sources=True,
     ), _domain_results())
 
     assert "Coverage" in body
@@ -146,6 +160,9 @@ def test_consented_sections_are_included_with_correct_totals() -> None:
     assert "d02: confidence medium." in body
 
     assert "Environment" in body
+
+    assert "Sources consulted" in body
+    assert "D01-R01: https://example.invalid/standard (why: checked the standard's " in body
 
 
 def test_environment_section_reports_absence_when_none_recorded() -> None:
@@ -175,6 +192,19 @@ def test_finding_text_never_appears_in_the_body_even_when_rollup_consented() -> 
     assert "the finding body, which must also never appear in feedback" not in body
 
 
+def test_consulted_source_carries_only_rule_id_url_and_why_never_title_or_accessed() -> None:
+    # Design decision: consulted_sources also carries title and accessed,
+    # for the local report to display, but the feedback body sent off the
+    # machine is deliberately thinner, the same way findings carry only
+    # counts and never their body text.
+    body = build_feedback_body(
+        "hi", _meta(), TelemetryConsent(consulted_sources=True), _domain_results()
+    )
+    assert "D01-R01: https://example.invalid/standard" in body
+    assert "an external standard, which must never appear in feedback" not in body
+    assert "2026-08-09T09:02:00Z" not in body
+
+
 def test_build_mailto_url_encodes_subject_and_body() -> None:
     url = build_mailto_url(FEEDBACK_EMAIL, "Feedback: audit run 2026-08-09 (claude-code)", "line one\nline two & more")
     parsed = urlparse(url)
@@ -189,7 +219,7 @@ def test_feedback_repo_constant_is_the_tool_authors_repo() -> None:
     assert FEEDBACK_REPO == "rodlunt/engineering-audit"
 
 
-def test_build_feedback_sections_returns_the_five_fixed_sections_regardless_of_consent() -> None:
+def test_build_feedback_sections_returns_the_six_fixed_sections_regardless_of_consent() -> None:
     # build_feedback_sections computes every section unconditionally; only
     # build_feedback_body (and the report's own consent gating) decides
     # which ones make it into a given message.
@@ -200,12 +230,24 @@ def test_build_feedback_sections_returns_the_five_fixed_sections_regardless_of_c
         "rollup",
         "self_assessment",
         "environment",
+        "consulted_sources",
     }
     assert "Run metadata" in sections["run_metadata"]
     assert "widgets-app" in sections["run_metadata"]
     assert "Files inspected: 17" in sections["coverage"]
     assert "Total: 1" in sections["rollup"]
     assert "d01: confidence high." in sections["self_assessment"]
+    assert "D01-R01: https://example.invalid/standard" in sections["consulted_sources"]
+
+
+def test_consulted_sources_section_reports_absence_when_none_recorded() -> None:
+    # d02 in _domain_results() has no consulted_sources; a domain_results dict
+    # where nothing at all was recorded must say so explicitly rather than
+    # rendering an empty section indistinguishable from one that was never
+    # built.
+    domain_results = {"d02": _domain_results()["d02"]}
+    sections = build_feedback_sections(_meta(), domain_results)
+    assert "No sources were consulted outside the rules pack this run." in sections["consulted_sources"]
 
 
 def test_rollup_by_domain_includes_a_domain_that_was_audited_and_came_back_clean() -> None:
@@ -226,16 +268,18 @@ def test_build_feedback_body_matches_build_feedback_sections_for_every_consent_c
     domain_results = _domain_results()
     sections = build_feedback_sections(meta, domain_results)
 
-    for coverage, rollup, self_assessment, environment in (
-        (True, False, False, False),
-        (False, True, False, False),
-        (False, False, True, False),
-        (False, False, False, True),
-        (True, True, True, True),
-        (False, False, False, False),
+    for coverage, rollup, self_assessment, environment, consulted_sources in (
+        (True, False, False, False, False),
+        (False, True, False, False, False),
+        (False, False, True, False, False),
+        (False, False, False, True, False),
+        (False, False, False, False, True),
+        (True, True, True, True, True),
+        (False, False, False, False, False),
     ):
         consent = TelemetryConsent(
-            coverage=coverage, rollup=rollup, self_assessment=self_assessment, environment=environment
+            coverage=coverage, rollup=rollup, self_assessment=self_assessment, environment=environment,
+            consulted_sources=consulted_sources,
         )
         body = build_feedback_body("hi", meta, consent, domain_results)
         expected_parts = ["hi", sections["run_metadata"]]
@@ -247,6 +291,8 @@ def test_build_feedback_body_matches_build_feedback_sections_for_every_consent_c
             expected_parts.append(sections["self_assessment"])
         if environment:
             expected_parts.append(sections["environment"])
+        if consulted_sources:
+            expected_parts.append(sections["consulted_sources"])
         assert body == "\n\n".join(expected_parts)
 
 

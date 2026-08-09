@@ -29,12 +29,15 @@ from engineering_audit.feedback import (
 )
 from engineering_audit.rules import citation, Rule, RulesPack
 from engineering_audit.schema import (
+    ConsultedSource,
     DomainResult,
     Finding,
     IncompleteResultError,
     RunState,
+    UnknownRuleIdError,
     Verdict,
     validate_completeness,
+    validate_consulted_sources,
 )
 
 __all__ = ["ReportError", "render_report", "write_report"]
@@ -297,6 +300,58 @@ def _self_assessment_list(selected: dict[str, DomainResult], domain_titles: dict
     return f"<ul>{''.join(rows)}</ul>"
 
 
+def _consulted_source_link(source: ConsultedSource) -> str:
+    """A consulted source's title as a link, when its url is genuinely
+    http(s), or the title and raw url as plain escaped text otherwise.
+
+    Unlike the filed-issue and feedback-issue links elsewhere in this file,
+    a consulted source's url is self-reported by the driving agent, not
+    produced by this tool's own gh integration: it is display only, and a
+    scheme this page will not turn into a clickable link must degrade to
+    text rather than raise ReportError and take down the whole report over
+    one bad citation.
+    """
+    scheme = urlparse(source.url).scheme.lower()
+    if scheme in ("http", "https"):
+        return f'<a href="{_esc(source.url)}">{_esc(source.title)}</a>'
+    return _esc(f"{source.title} ({source.url})")
+
+
+def _consulted_sources_section(
+    selected: dict[str, DomainResult], rule_index: dict[str, Rule]
+) -> str:
+    """The 'Sources consulted this run' block: every ConsultedSource across
+    the selected domains, grouped by rule id.
+
+    Always rendered, even when nothing was recorded: an empty run must say
+    "none recorded" rather than the section vanishing, since a vanished
+    section and a genuinely clean run are otherwise indistinguishable to
+    whoever is reading the report (see issue #54 for the same reasoning
+    applied to could-not-evaluate).
+    """
+    by_rule: dict[str, list[ConsultedSource]] = {}
+    for result in selected.values():
+        for source in result.consulted_sources:
+            by_rule.setdefault(source.rule_id, []).append(source)
+
+    if not by_rule:
+        return '<p class="muted">none recorded</p>'
+
+    blocks = []
+    for rule_id in sorted(by_rule):
+        # render_report has already confirmed every consulted source's
+        # rule_id is one of its own domain's rules, so this lookup cannot
+        # miss.
+        rule = rule_index[rule_id]
+        items = "".join(
+            f"<li>{_consulted_source_link(source)}: {_esc(source.why)} "
+            f'<span class="muted">(accessed {_esc(source.accessed)})</span></li>'
+            for source in by_rule[rule_id]
+        )
+        blocks.append(f"<h4>{_esc(rule_id)} ({_esc(rule.title)})</h4><ul>{items}</ul>")
+    return "".join(blocks)
+
+
 def _environment_info(run_state: RunState) -> str:
     environment = run_state.meta.environment
     if not environment:
@@ -501,6 +556,7 @@ def _feedback_section(run_state: RunState, feedback_issue_url: str | None) -> st
         "rollup": sections["rollup"],
         "self_assessment": sections["self_assessment"],
         "environment": sections["environment"],
+        "consulted_sources": sections["consulted_sources"],
     }
 
     # Same wording as the configuration page's consent section, so a user
@@ -525,6 +581,13 @@ def _feedback_section(run_state: RunState, feedback_issue_url: str | None) -> st
             "consent-environment",
             "Environment information (assistant, model, tool version)",
             consent.environment,
+        )
+        + _consent_row(
+            "consent-consulted-sources",
+            "Send fetched references to the maintainer (rule id, URL and why, for each "
+            "source consulted outside the rules pack). Off by default: URLs fetched while "
+            "auditing a private repository can hint at what that repository is about.",
+            consent.consulted_sources,
         )
         + '<label class="consent-row locked"><input type="checkbox" checked disabled> '
         "Run metadata (always included when sending feedback)</label>"
@@ -596,9 +659,9 @@ def render_report(run_state: RunState, pack: RulesPack) -> str:
         selected[domain_id] = result
 
     for domain_id, result in selected.items():
+        domain = pack.get_domain(domain_id)
+        assert domain is not None  # already checked above
         if result.status == "completed":
-            domain = pack.get_domain(domain_id)
-            assert domain is not None  # already checked above
             try:
                 validate_completeness(domain, result)
             except IncompleteResultError as exc:
@@ -616,6 +679,15 @@ def render_report(run_state: RunState, pack: RulesPack) -> str:
                     "A finding is a published claim; this tool does not publish claims "
                     "without evidence. Fix the rule's Source: footer or drop the finding."
                 )
+        if result.consulted_sources:
+            # Re-checked here, not trusted from record_domain_result: a
+            # report can be rendered straight from a saved run-state.json
+            # (see render_cli.py) that never passed through the live server
+            # at all.
+            try:
+                validate_consulted_sources(domain, result)
+            except UnknownRuleIdError as exc:
+                raise ReportError(str(exc)) from exc
 
     all_findings = [
         (domain_id, finding)
@@ -632,6 +704,8 @@ def render_report(run_state: RunState, pack: RulesPack) -> str:
         f'<div class="perf-block"><h3>Self-assessment by domain</h3>'
         f"{_self_assessment_list(selected, domain_titles)}</div>"
         f'<div class="perf-block"><h3>Environment</h3>{_environment_info(run_state)}</div>'
+        f'<div class="perf-block"><h3>Sources consulted this run</h3>'
+        f"{_consulted_sources_section(selected, rule_index)}</div>"
     )
 
     repo_name = run_state.meta.repo_name
