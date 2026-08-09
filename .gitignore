@@ -15,3 +15,6 @@ build/
 
 # Audit run output (never commit a target repo's audit artefacts)
 audit-output/
+
+# Session handoff notes
+next-session.md
