@@ -1181,6 +1181,102 @@ def test_submit_feedback_filing_failure_falls_back_to_mailto(
     assert "The gnome export was slow." in result["body"]
 
 
+def test_submit_feedback_after_render_report_still_sends_and_updates_the_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # AUDIT.md documents feedback as the step after rendering the report, so
+    # that order must work: before the fix this raised "No audit run in
+    # progress" because render_report cleared the tracker, and the user's
+    # feedback was silently dropped.
+    _fake, calls = _fake_create_issue()
+    monkeypatch.setattr(server_module, "create_issue", _fake)
+    monkeypatch.setattr(server_module, "gh_available", lambda: True)
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    _configured_run(mcp, tmp_path, monkeypatch, feedback_text="The gnome export was slow.")
+    _record_d01_with_finding(mcp)
+    _record_d02_all_pass(mcp)
+
+    report_result = _call(mcp, "render_report", {"finished": "2026-08-09T10:00:00Z"})
+    feedback_result = _call(mcp, "submit_feedback", {})
+
+    assert feedback_result["mode"] == "issue"
+    assert "The gnome export was slow." in calls[0]["body"]
+    assert feedback_result["report_updated"] is True
+
+    # The already-written report and run-state must be rewritten to carry the
+    # link, or they claim no feedback was ever sent.
+    report_text = Path(report_result["report_path"]).read_text(encoding="utf-8")
+    assert feedback_result["url"] in report_text
+    restored = RunState.from_json(
+        Path(report_result["run_state_path"]).read_text(encoding="utf-8")
+    )
+    assert restored.feedback_issue_url == feedback_result["url"]
+
+
+def test_submit_feedback_after_render_report_warns_when_the_report_cannot_be_rewritten(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The feedback issue is already filed by then, so a rewrite failure must
+    # never raise (that would invite a double-file on a retry) and must never
+    # pass silently either: one clear warning, with the URL still returned.
+    _fake, _calls = _fake_create_issue()
+    monkeypatch.setattr(server_module, "create_issue", _fake)
+    monkeypatch.setattr(server_module, "gh_available", lambda: True)
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    _configured_run(mcp, tmp_path, monkeypatch, feedback_text="The gnome export was slow.")
+    _record_d01_with_finding(mcp)
+    _record_d02_all_pass(mcp)
+    _call(mcp, "render_report", {"finished": "2026-08-09T10:00:00Z"})
+
+    def _explode(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(server_module, "write_report", _explode)
+
+    result = _call(mcp, "submit_feedback", {})
+    assert result["mode"] == "issue"
+    assert result["url"]
+    assert result["report_updated"] is False
+    assert len(result["warnings"]) == 1
+    assert "could not be updated" in result["warnings"][0]
+
+
+def test_submit_feedback_after_begin_run_of_a_new_run_targets_the_new_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A finished run stays reachable for a late submit_feedback, but only
+    # until the next run starts: feedback must never be attached to the wrong
+    # run's report.
+    _fake, _calls = _fake_create_issue()
+    monkeypatch.setattr(server_module, "create_issue", _fake)
+    monkeypatch.setattr(server_module, "gh_available", lambda: True)
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    _configured_run(mcp, tmp_path, monkeypatch, feedback_text="The gnome export was slow.")
+    _record_d01_with_finding(mcp)
+    _record_d02_all_pass(mcp)
+    first_report = _call(mcp, "render_report", {"finished": "2026-08-09T10:00:00Z"})
+
+    _begin_run(mcp, tmp_path / "audit-output-2", repo_name="second-repo")
+    with pytest.raises(ToolError) as excinfo:
+        _call(mcp, "submit_feedback", {})
+    # The new run has no configuration yet, so this is the new run's error,
+    # not the finished run's feedback being resent.
+    assert "no configuration yet" in str(excinfo.value)
+
+    report_text = Path(first_report["report_path"]).read_text(encoding="utf-8")
+    assert "https://github.com/rodlunt/engineering-audit/issues/1" not in report_text
+
+
+def test_submit_feedback_without_any_run_still_errors(tmp_path: Path) -> None:
+    mcp, _state = build_server(FIXTURE_PACK)
+    with pytest.raises(ToolError) as excinfo:
+        _call(mcp, "submit_feedback", {})
+    assert "No audit run in progress" in str(excinfo.value)
+
+
 def test_submit_feedback_then_render_report_links_the_filed_issue(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

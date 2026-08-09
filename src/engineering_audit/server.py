@@ -46,7 +46,7 @@ from engineering_audit.feedback import (
     feedback_subject,
 )
 from engineering_audit.issues import IssueFilingError, create_issue, detect_repo, gh_available
-from engineering_audit.report import write_report
+from engineering_audit.report import ReportError, write_report
 from engineering_audit.rules import Rule, RulesPack, RulesPackError, get_domain_text, load_pack
 from engineering_audit.schema import (
     AuditConfig,
@@ -57,7 +57,7 @@ from engineering_audit.schema import (
 )
 from engineering_audit.update_check import check_for_update
 
-__all__ = ["AppState", "RunTracker", "build_server", "main"]
+__all__ = ["AppState", "FinishedRun", "RunTracker", "build_server", "main"]
 
 _SEVERITY_ORDER = ("critical", "high", "medium", "low")
 
@@ -174,11 +174,29 @@ class RunTracker:
 
 
 @dataclass
+class FinishedRun:
+    """A run that render_report has already written out.
+
+    Kept so a late submit_feedback (the order AUDIT.md documents: feedback is
+    offered after the report is handed over) still has a run to send feedback
+    for, and so the written report and run-state can be rewritten to carry the
+    feedback issue's URL. Without the rewrite the two files would claim no
+    feedback was ever sent while an issue existed for it.
+    """
+
+    tracker: RunTracker
+    run_state: RunState
+    report_path: Path
+    run_state_path: Path
+
+
+@dataclass
 class AppState:
     """Process-wide state for one server run."""
 
     pack: RulesPack
     run: RunTracker | None = None
+    finished: FinishedRun | None = None
 
 
 def _resolve_rules_dir(argv: list[str]) -> Path:
@@ -283,6 +301,23 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
                 "No audit run in progress. Call begin_run first."
             )
         return state.run
+
+    def _feedback_target() -> tuple[RunTracker, FinishedRun | None]:
+        """The run submit_feedback should send for: the run in progress, or
+        else the last run this process finished.
+
+        Only submit_feedback falls back to a finished run. Every other tool
+        keeps requiring a live run, because recording results or filing issues
+        against a run whose report is already written would silently produce
+        a report that no longer matches its own run state.
+        """
+        if state.run is not None:
+            return state.run, None
+        if state.finished is not None:
+            return state.finished.tracker, state.finished
+        raise ValueError(
+            "No audit run in progress. Call begin_run first."
+        )
 
     def _require_config(run: RunTracker) -> AuditConfig:
         if run.config is None:
@@ -394,6 +429,9 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
                 )
 
         state.run = RunTracker(meta=meta, output_dir=output_dir_path, repo_dir=repo_dir_path)
+        # A new run closes the previous one's late-feedback window: feedback
+        # sent from here on belongs to this run, never to the last one.
+        state.finished = None
         return {
             "meta": meta.model_dump(mode="json"),
             "output_dir": str(output_dir_path),
@@ -720,8 +758,16 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
         feedback is never lost: this returns a mailto fallback instead,
         with the same body, so the agent can offer to open the user's mail
         client or hand over the text to paste in manually.
+
+        May be called either before or after render_report. Called after,
+        it sends feedback for the run just finished and rewrites that run's
+        report.html and run-state.json so both carry the feedback issue's
+        link; the response's report_updated field says whether that rewrite
+        succeeded, and a failed rewrite is reported as a warning rather than
+        an error, because the issue is already filed by then and raising
+        would invite a retry that double-files it.
         """
-        run = _require_run()
+        run, finished = _feedback_target()
         config = _require_config(run)
 
         free_text = config.feedback_text or extra_text
@@ -751,7 +797,38 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
             }
 
         run.feedback_issue_url = created.url
-        return {"mode": "issue", "url": created.url, "warnings": created.warnings}
+        if finished is None:
+            return {"mode": "issue", "url": created.url, "warnings": created.warnings}
+
+        warnings = list(created.warnings)
+        updated_state = finished.run_state.model_copy(
+            update={"feedback_issue_url": created.url}
+        )
+        try:
+            write_report(updated_state, state.pack, finished.report_path)
+            finished.run_state_path.write_text(updated_state.to_json(), encoding="utf-8")
+        except (OSError, ReportError) as exc:
+            warnings.append(
+                f"Feedback issue {created.url} was filed, but the already-written report at "
+                f"{finished.report_path} could not be updated to link it: {exc}. The report "
+                "and run-state.json still say no feedback was sent; do not resend the "
+                "feedback, it is filed."
+            )
+            return {
+                "mode": "issue",
+                "url": created.url,
+                "warnings": warnings,
+                "report_updated": False,
+            }
+
+        finished.run_state = updated_state
+        return {
+            "mode": "issue",
+            "url": created.url,
+            "warnings": warnings,
+            "report_updated": True,
+            "report_path": str(finished.report_path),
+        }
 
     @mcp.tool()
     def render_report(finished: str) -> dict[str, Any]:
@@ -769,6 +846,11 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
         it (and its schema_version) can be handed to
         engineering-audit-render later to re-render the same report without
         this server, this run tracker, or either URL, still in memory.
+
+        The finished run stays reachable for one last submit_feedback (the
+        order AUDIT.md documents), which rewrites both files to carry the
+        feedback issue's link. It stops being reachable at the next
+        begin_run.
         """
         run = _require_run()
         config = _require_config(run)
@@ -799,8 +881,15 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
         }
 
         # A rendered report is a finished run: free the slot so the next
-        # begin_run does not need replace=True to start clean.
+        # begin_run does not need replace=True to start clean, while keeping
+        # the run itself reachable for a final submit_feedback.
         state.run = None
+        state.finished = FinishedRun(
+            tracker=run,
+            run_state=run_state,
+            report_path=report_path,
+            run_state_path=run_state_path,
+        )
 
         return {
             "report_path": str(report_path),

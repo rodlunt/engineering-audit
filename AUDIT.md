@@ -191,5 +191,13 @@ unavailable or filing failed), tell the user their feedback was not lost: offer 
 email themselves. The rendered report also carries this same mailto fallback in its Feedback
 section, so nothing is lost even if this step is skipped.
 
+Calling `submit_feedback` at this point, after the report is already written, is supported: the
+run just finished stays reachable for exactly this, until the next `begin_run`. When the feedback
+is filed as an issue, `report.html` and `run-state.json` are rewritten so both carry its link, and
+the response's `report_updated` field says whether that rewrite succeeded. If it is `false`, the
+response carries a warning explaining that the issue is filed but the report could not be updated:
+pass that on to the user rather than resending the feedback, which would file it twice. If the
+user already has the report open in a browser, tell them to reload it to see the link.
+
 Do not call `submit_feedback` if the user gave no feedback text and did not ask you to send
 anything: an unprompted, empty submission is not consent.
