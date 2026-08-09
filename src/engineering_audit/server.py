@@ -535,18 +535,24 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
         filed_this_call: dict[str, str] = {}
         warnings: list[str] = []
         for _domain_id, finding in pending:
-            # record_domain_result already validated (via DomainResult's own
-            # consistency check plus validate_completeness) that every
-            # finding's rule_id is a real rule in this domain's slice of the
-            # pack, so this lookup should never miss; treat a genuinely
-            # absent rule the same as an unsourced one rather than crashing
-            # issue filing on something that should be unreachable.
+            # A filed issue is a published claim. It never goes out without
+            # the evidence backing it: a finding whose rule is missing from
+            # the pack or has no cited source stops filing loudly, before
+            # anything is created on the target repository.
             rule = rule_index.get(finding.rule_id)
-            reference = (
-                f"Reference: {rule.source}"
-                if rule is not None and rule.source
-                else "Reference: no external source cited in the rules pack."
-            )
+            if rule is None or not rule.source:
+                problem = (
+                    "is not in the rules pack"
+                    if rule is None
+                    else "has no cited source in the rules pack"
+                )
+                raise ValueError(
+                    f"Refusing to file issue for finding on rule {finding.rule_id}: the rule "
+                    f"{problem}. A filed issue is a published claim; this tool does not "
+                    "publish claims without evidence. Nothing was filed for this finding. "
+                    f"Already filed before this stop: {run.filed_issue_urls or 'none'}."
+                )
+            reference = f"Reference: {rule.source}"
             body = (
                 f"{finding.issue_body}\n\n"
                 f"Found by an engineering-practice audit (rule {finding.rule_id}, severity "
