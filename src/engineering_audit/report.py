@@ -445,6 +445,7 @@ def _render_meta_block(run_state: RunState) -> str:
         ("Model", meta.model),
         ("Tool version", meta.tool_version),
         ("Tool commit", meta.tool_commit or "unknown"),
+        ("Tool update", meta.update_check or "not checked"),
         ("Started", meta.started),
         ("Finished", meta.finished or "in progress"),
     ]

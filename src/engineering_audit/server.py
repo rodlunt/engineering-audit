@@ -55,6 +55,7 @@ from engineering_audit.schema import (
     RunState,
     validate_completeness,
 )
+from engineering_audit.update_check import check_for_update
 
 __all__ = ["AppState", "RunTracker", "build_server", "main"]
 
@@ -342,6 +343,17 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
         guessing: a report must be traceable to the exact tool build and
         rules version that produced it, not just a package version number
         that can lag behind either.
+
+        The run also performs a best-effort tool update check, comparing
+        tool_commit against the tool's latest tagged release on GitHub. The
+        result lands in the returned meta's update_check field, tri-state:
+        "current", "stale", or "could-not-check" (see
+        engineering_audit.update_check for the exact strings). The calling
+        agent MUST tell the user when this reports stale or could-not-check,
+        rather than silently proceeding as if the installed build were
+        confirmed current: this tool is installed via a pinned uvx
+        reference, and a stale pin or cache would otherwise serve an old
+        build forever with nothing to say so.
         """
         if state.run is not None and not replace:
             raise ValueError(
@@ -355,11 +367,14 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
             # port and leave the first orphaned but still listening.
             state.run.config_server.shutdown()
 
+        tool_version_value = tool_version or _default_tool_version()
+        tool_commit_value = _default_tool_commit()
         meta = RunMeta(
-            tool_version=tool_version or _default_tool_version(),
-            tool_commit=_default_tool_commit(),
+            tool_version=tool_version_value,
+            tool_commit=tool_commit_value,
             rules_pack_name=state.pack.root.name,
             rules_pack_commit=_git_commit(state.pack.root),
+            update_check=check_for_update(tool_commit_value, tool_version_value),
             assistant=assistant,
             model=model,
             repo_name=repo_name,

@@ -197,6 +197,19 @@ class RunMeta(BaseModel):
             "a repo, or the lookup failed), never a fabricated value."
         ),
     )
+    update_check: str | None = Field(
+        default=None,
+        description=(
+            "Tri-state result of comparing the installed tool build against the "
+            "tool's latest GitHub release tag, prefixed 'current', 'stale', or "
+            "'could-not-check'. None means the check was not performed at all (e.g. "
+            "an older run-state file predating this field). 'could-not-check' is "
+            "deliberately distinct from 'current': it means the comparison could not "
+            "be made (no network, git missing, no version tags found), not that the "
+            "installed build was confirmed up to date. A failed check must never be "
+            "reported as current."
+        ),
+    )
     assistant: str
     model: str
     repo_name: str
