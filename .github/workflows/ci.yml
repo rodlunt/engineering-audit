@@ -12,6 +12,12 @@ on:
 permissions:
   contents: read
 
+# Cancel a run that a newer push on the same ref has already superseded,
+# instead of leaving it queued to report a stale result after the fact.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check:
     name: check
