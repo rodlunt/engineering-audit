@@ -1,0 +1,68 @@
+{
+  "golden_repo": "evals/golden/repo",
+  "domains": ["d01", "d05", "d16"],
+  "expectations": [
+    {
+      "rule_id": "D01-R05",
+      "expect": "finding",
+      "location_contains": "schema.sql",
+      "why": "Planted. The visits table in schema.sql declares only the autoincrement id as a constraint; nothing covers (customer_id, store_id, visited_at) or any other natural key, so a retried till write or a replayed webhook can duplicate the same visit with no constraint in the way."
+    },
+    {
+      "rule_id": "D01-R06",
+      "expect": "finding",
+      "location_contains": "schema.sql",
+      "why": "Planted. redemptions.points_spent in schema.sql is left nullable with no comment and no explicit decision, unlike customers.phone in the same file, which is deliberately nullable and says why. A redemption with no points spent recorded makes no domain sense."
+    },
+    {
+      "rule_id": "D01-R14",
+      "expect": "finding",
+      "location_contains": "loyalty_writer.py",
+      "why": "Planted. record_redemption in loyalty_writer.py commits the redemption insert and the points-balance update as two separate autocommitted statements, with no transaction wrapping both and no rollback path. A crash between the two commits leaves the ledger and the balance disagreeing."
+    },
+    {
+      "rule_id": "D01-R07",
+      "expect": "no-finding",
+      "why": "Control. schema.sql bounds every domain-constrained attribute it defines with an explicit CHECK: amount_spent >= 0 on visits, loyalty_tier restricted to a known set on customers, points_balance >= 0 on customers. That last bound was missing until the first live eval run correctly flagged this control as a false positive (a points balance had no lower bound); it was added to the fixture the same day, and the control is now genuinely exercised and satisfied."
+    },
+    {
+      "rule_id": "D05-R08",
+      "expect": "finding",
+      "location_contains": "tests/",
+      "why": "Planted. The whole test suite (tests/test_signup_flow.py, tests/test_redemption_flow.py) runs the full write path against a real sqlite connection; there is no unit-level test of any function in isolation, so the suite has no fast-feedback layer at all."
+    },
+    {
+      "rule_id": "D05-R17",
+      "expect": "finding",
+      "location_contains": "perf/latency_check.py",
+      "why": "Planted. check_average_latency in perf/latency_check.py gates pass/fail on the mean latency across the run rather than a percentile. Naming it an average-load check does not make a mean an acceptable pass/fail criterion; the target should be expressed as p95/p99 plus an error rate, set before the run."
+    },
+    {
+      "rule_id": "D05-R16",
+      "expect": "no-finding",
+      "why": "Control. perf/latency_check.py names the question it answers, 'does the system meet its targets on a normal day', and matches it to an average-load test type rather than reaching for a generic load test. The rule is exercised and satisfied, independently of the pass/fail defect on D05-R17."
+    },
+    {
+      "rule_id": "D16-R07",
+      "expect": "finding",
+      "location_contains": "reports/charts.py",
+      "why": "Planted. plot_monthly_visits_bar in reports/charts.py sets ax.set_ylim(850, 1000) on a filled bar chart, with no visible break mark and no note in the caption or surrounding text. The reader reads the bar-length ratio as the value ratio, and the crop falsifies it."
+    },
+    {
+      "rule_id": "D16-R11",
+      "expect": "finding",
+      "location_contains": "reports/monthly_summary.md",
+      "why": "Planted. reports/monthly_summary.md states the tier relaunch 'drove' a 12% rise in return visits from a single before/after comparison, with no controlled comparison ruling out other causes for the period. That is a causal verb applied to associational evidence."
+    },
+    {
+      "rule_id": "D16-R05",
+      "expect": "no-finding",
+      "why": "Control. plot_daily_active_customers_line in reports/charts.py encodes quantity as a single-axis 2D line position: no dual axis, no pie, no 3D, no area or angle encoding. The rule is exercised and satisfied."
+    },
+    {
+      "rule_id": "D16-R06",
+      "expect": "no-finding",
+      "why": "Control. plot_daily_active_customers_line in reports/charts.py labels its one series directly with ax.annotate and never builds a legend. The rule is exercised and satisfied."
+    }
+  ]
+}

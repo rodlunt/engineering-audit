@@ -283,17 +283,28 @@ class RunState(BaseModel):
         recognises would drop whatever the newer version added without
         saying so, and a report built from that partial read would look
         complete while being wrong.
+
+        A document whose top level is valid JSON but not an object (a bare
+        array, string, number or ``null``) has no ``schema_version`` to read
+        in the first place. That case is deliberately left for
+        :meth:`model_validate` below to reject on its own terms, as a
+        :class:`~pydantic.ValidationError` naming the actual type it got:
+        calling ``.get`` on it here would raise a raw ``AttributeError``
+        instead, which is exactly the kind of unhandled crash a caller
+        expecting either a ``RunState`` or a named parse error should never
+        see.
         """
         raw = json.loads(data)
-        version = raw.get("schema_version", 1)
-        if version > RUN_STATE_SCHEMA_VERSION:
-            raise RunStateVersionError(
-                f"run-state file is schema_version {version}, but this version of "
-                f"engineering-audit only understands up to schema_version "
-                f"{RUN_STATE_SCHEMA_VERSION}. Upgrade engineering-audit to a version that "
-                "supports this run-state file."
-            )
-        raw.setdefault("schema_version", 1)
+        if isinstance(raw, dict):
+            version = raw.get("schema_version", 1)
+            if version > RUN_STATE_SCHEMA_VERSION:
+                raise RunStateVersionError(
+                    f"run-state file is schema_version {version}, but this version of "
+                    f"engineering-audit only understands up to schema_version "
+                    f"{RUN_STATE_SCHEMA_VERSION}. Upgrade engineering-audit to a version that "
+                    "supports this run-state file."
+                )
+            raw.setdefault("schema_version", 1)
         return cls.model_validate(raw)
 
 

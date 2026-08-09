@@ -16,6 +16,7 @@ dependencies = [
 engineering-audit-mcp = "engineering_audit.server:main"
 engineering-audit-fragments = "engineering_audit.fragments:main"
 engineering-audit-render = "engineering_audit.render_cli:main"
+engineering-audit-eval = "engineering_audit.evals:main"
 
 [build-system]
 requires = ["uv_build>=0.11.8,<0.12.0"]

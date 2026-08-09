@@ -813,7 +813,7 @@ def render_report(run_state: RunState, pack: RulesPack) -> str:
     finding references a rule id that is not in the pack.
     """
     domain_titles: dict[str, str] = {d.id: d.title for d in pack.domains}
-    rule_index: dict[str, Rule] = {rule.id: rule for domain in pack.domains for rule in domain.rules}
+    rule_index: dict[str, Rule] = pack.rule_index
 
     selected: dict[str, DomainResult] = {}
     for domain_id in run_state.config.selected_domain_ids:

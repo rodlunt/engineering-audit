@@ -143,12 +143,11 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
     """
     pack = load_pack(rules_dir)
     state = AppState(pack=pack)
-    # Built once from the loaded pack; used by file_issues to look up each
-    # finding's rule so the filed issue can carry the rule's cited source
-    # without file_issues re-walking the pack on every call.
-    rule_index: dict[str, Rule] = {
-        rule.id: rule for domain in pack.domains for rule in domain.rules
-    }
+    # pack.rule_index is built once (and cached) from the loaded pack; used
+    # by file_issues to look up each finding's rule so the filed issue can
+    # carry the rule's cited source without re-walking the pack on every
+    # call.
+    rule_index: dict[str, Rule] = pack.rule_index
 
     mcp = MCPServer("engineering-audit")
     # The SDK installs OpenTelemetry span middleware on every server by
