@@ -57,4 +57,6 @@ retirement changes the population it is drawn from, so the stored average must b
 recomputed at retirement time rather than left to drift until the next full
 recalculation sweep.
 
-*Source: invented for test fixtures only, no external source. Rule id: D01-R04. Volatility: volatile. Verified: 2026-08-09 (fixture, not a real citation).*
+*Deliberately unsourced: this rule reflects the fixture pack's own invented practice, with
+no external reference to cite. Rule id: D01-R04. Volatility: volatile. Verified: 2026-08-09
+(fixture, not a real citation).*

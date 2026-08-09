@@ -661,7 +661,58 @@ def test_file_issues_confirm_files_one_issue_per_finding(
             "body": (
                 "bed-14 has two occupants and no shared-bed flag.\n\n"
                 "Found by an engineering-practice audit (rule D01-R02, severity high, "
-                "at ledger/beds.py:42)."
+                "at ledger/beds.py:42). Reference: invented for test fixtures only, "
+                "no external source"
+            ),
+            "labels": ["engineering-audit"],
+        }
+    ]
+
+
+def test_file_issues_body_states_no_source_for_a_sourceless_rule(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # D01-R04's footer in the fixture pack deliberately carries no Source:
+    # fragment. The filed issue body must say so plainly rather than
+    # fabricating a citation or silently dropping the reference sentence.
+    _fake, calls = _fake_create_issue()
+    monkeypatch.setattr(server_module, "create_issue", _fake)
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    _configured_github_run(mcp, tmp_path, monkeypatch)
+
+    verdicts = _all_pass_verdicts(_domain(mcp, "d01"))
+    verdicts[3] = {"rule_id": "D01-R04", "verdict": "finding"}
+    result = {
+        "domain_id": "d01",
+        "status": "completed",
+        "rule_verdicts": verdicts,
+        "findings": [
+            {
+                "rule_id": "D01-R04",
+                "severity": "low",
+                "title": "beard-length average not recalculated on retirement",
+                "location": "ledger/beards.py:10",
+                "body_md": "x",
+                "issue_title": "x",
+                "issue_body": "x",
+            }
+        ],
+    }
+    _call(mcp, "record_domain_result", {"result": result})
+    _record_d02_all_pass(mcp)
+
+    _call(mcp, "file_issues", {"confirm": True, "repo": "rodlunt/widgets-app"})
+
+    assert calls == [
+        {
+            "repo": "rodlunt/widgets-app",
+            "title": "x",
+            "body": (
+                "x\n\n"
+                "Found by an engineering-practice audit (rule D01-R04, severity low, "
+                "at ledger/beards.py:10). Reference: no external source cited in the "
+                "rules pack."
             ),
             "labels": ["engineering-audit"],
         }
