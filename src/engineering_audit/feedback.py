@@ -25,6 +25,7 @@ __all__ = [
     "FEEDBACK_REPO",
     "FEEDBACK_EMAIL",
     "feedback_subject",
+    "rules_pack_label",
     "build_feedback_sections",
     "build_feedback_body",
     "build_mailto_url",
@@ -47,6 +48,19 @@ def feedback_subject(meta: RunMeta) -> str:
     return f"Feedback: audit run {date} ({meta.assistant})"
 
 
+def rules_pack_label(meta: RunMeta) -> str:
+    """The human-readable rules pack label: the pack name, plus its version
+    in parentheses when one is recorded.
+
+    Built here once so build_feedback_sections (this module), report.py's
+    _render_meta_block and report.py's _render_footer cannot drift apart on
+    how the same run's rules pack is described.
+    """
+    if meta.rules_pack_version:
+        return f"{meta.rules_pack_name} ({meta.rules_pack_version})"
+    return meta.rules_pack_name
+
+
 def build_feedback_sections(
     meta: RunMeta,
     domain_results: dict[str, DomainResult],
@@ -62,13 +76,10 @@ def build_feedback_sections(
     section unconditionally and letting the caller decide which to use
     keeps consent purely a selection concern, never a wording concern.
     """
-    rules_pack_label = meta.rules_pack_name
-    if meta.rules_pack_version:
-        rules_pack_label = f"{rules_pack_label} ({meta.rules_pack_version})"
     meta_lines = [
         f"Tool version: {meta.tool_version}",
         f"Tool commit: {meta.tool_commit or 'unknown'}",
-        f"Rules pack: {rules_pack_label}",
+        f"Rules pack: {rules_pack_label(meta)}",
         f"Rules commit: {meta.rules_pack_commit or 'unknown'}",
         f"Assistant: {meta.assistant}",
         f"Model: {meta.model}",
