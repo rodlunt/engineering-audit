@@ -16,29 +16,37 @@ into a green tick nobody re-checks by hand. A run-state file this module
 cannot parse is a structural failure, not a zero-findings result, and it
 exits loudly and non-zero rather than reading as "nothing wrong". A finding
 in the wrong location and a missing finding are both counted as missed,
-never silently accepted because the rule id happened to match. Every
-finding the run-state carries that this eval spec did not anticipate is
-printed, never dropped, because a scorer that only checks the boxes it was
-told to check cannot notice an audit that started hallucinating rule ids.
+never silently accepted because the rule id happened to match. A control
+whose rule was never actually verdicted "pass" (not-applicable,
+could-not-evaluate, or no verdict at all) is not silently treated as held:
+that is a dead instrument, not a clean one, and scores as its own failing
+outcome. Every finding the run-state carries that this eval spec did not
+anticipate is printed, never dropped, because a scorer that only checks the
+boxes it was told to check cannot notice an audit that started
+hallucinating rule ids. Anything this module cannot itself verify (rule-verdict
+completeness, or an expectation's rule id genuinely belonging to a spec
+domain) without a supplied rules pack is recorded as could-not-check rather
+than silently skipped.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationError, computed_field, field_validator, model_validator
 
-from engineering_audit.rules import Domain, RulesPack, RulesPackError, load_pack
+from engineering_audit.rules import RulesPack, RulesPackError, load_pack
+from engineering_audit.run_state_io import RunStateLoadError, load_run_state_file
 from engineering_audit.schema import (
     Finding,
     IncompleteResultError,
     RunState,
-    RunStateVersionError,
     Verdict,
     validate_completeness,
 )
@@ -57,8 +65,11 @@ __all__ = [
 ]
 
 # Bumped whenever EvalResult gains or changes a field in a way a reader
-# written against an older version could not safely ignore.
-EVAL_RESULT_SCHEMA_VERSION = 1
+# written against an older version could not safely ignore. Bumped to 2
+# when the "control-not-evaluated" outcome and its counter were added: a
+# reader built against version 1 would not know that outcome exists and
+# would misread a dead control as neither a pass nor a counted failure.
+EVAL_RESULT_SCHEMA_VERSION = 2
 
 
 class EvalStructuralError(Exception):
@@ -135,11 +146,28 @@ class EvalSpec(BaseModel):
 
 
 class ExpectationOutcome(BaseModel):
-    """The scored result for one expectation."""
+    """The scored result for one expectation.
+
+    For an ``expect="finding"`` expectation, ``outcome`` is one of ``hit``,
+    ``missed`` or ``found-wrong-location``. For an ``expect="no-finding"``
+    control, ``outcome`` is one of ``held`` (the rule was explicitly
+    verdicted ``pass``), ``false-positive`` (a finding was recorded against
+    it) or ``control-not-evaluated`` (the rule was verdicted something
+    other than ``pass`` and carries no finding, e.g. not-applicable,
+    could-not-evaluate, or no verdict at all: the control never actually
+    ran, so it proves nothing).
+    """
 
     rule_id: str
     expect: Literal["finding", "no-finding"]
-    outcome: Literal["hit", "missed", "found-wrong-location", "held", "false-positive"]
+    outcome: Literal[
+        "hit",
+        "missed",
+        "found-wrong-location",
+        "held",
+        "false-positive",
+        "control-not-evaluated",
+    ]
     why: str
     detail: str | None = Field(
         default=None, description="What was actually found (or not), for the human reading the report."
@@ -155,43 +183,125 @@ class UnexpectedFinding(BaseModel):
 
 
 class CompletenessNote(BaseModel):
-    """A per-domain note on whether verdict completeness was checked."""
+    """A note on a check that could not be run without a supplied rules
+    pack. ``domain_id`` names the domain the note concerns, or
+    ``"(all domains)"`` for a note about a spec-wide check (the orphan
+    rule-id and rule-to-domain-ownership cross-check) rather than one tied
+    to a single domain."""
 
     domain_id: str
     note: str
 
 
 class EvalResult(BaseModel):
-    """The scored outcome of one eval run, written to eval-result.json."""
+    """The scored outcome of one eval run, written to eval-result.json.
+
+    Every count and ``exit_code`` is a computed field derived from
+    ``outcomes`` and ``unexpected_findings`` rather than hand-accumulated
+    during scoring, so the numbers in the report can never drift from the
+    outcomes list that is also in the same document: there is exactly one
+    source of truth for each, and re-deriving them is how a reader checks
+    this file's own arithmetic.
+    """
 
     schema_version: int = EVAL_RESULT_SCHEMA_VERSION
     golden_repo: str
-    run_state_path: str
-    expected_path: str
-    expected_hit: int
-    expected_missed: int
-    expected_found_wrong_location: int
-    controls_held: int
-    controls_false_positive: int
-    unexpected_findings_count: int
+    run_state_path: str = ""
+    expected_path: str = ""
     outcomes: list[ExpectationOutcome]
     unexpected_findings: list[UnexpectedFinding]
     completeness_notes: list[CompletenessNote]
-    exit_code: int
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def expected_hit(self) -> int:
+        return sum(1 for o in self.outcomes if o.expect == "finding" and o.outcome == "hit")
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def expected_missed(self) -> int:
+        return sum(1 for o in self.outcomes if o.outcome == "missed")
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def expected_found_wrong_location(self) -> int:
+        return sum(1 for o in self.outcomes if o.outcome == "found-wrong-location")
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def controls_held(self) -> int:
+        return sum(1 for o in self.outcomes if o.outcome == "held")
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def controls_false_positive(self) -> int:
+        return sum(1 for o in self.outcomes if o.outcome == "false-positive")
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def controls_not_evaluated(self) -> int:
+        return sum(1 for o in self.outcomes if o.outcome == "control-not-evaluated")
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def unexpected_findings_count(self) -> int:
+        return len(self.unexpected_findings)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def exit_code(self) -> int:
+        """0 only if every finding expectation hit and every control held.
+
+        A missed finding, a finding in the wrong location, a false-positive
+        control and a control that was never actually evaluated are all
+        failures: the last of those is a dead instrument (see the
+        ExpectationOutcome docstring), not a clean pass, so it fails the
+        run exactly like the other three.
+        """
+        clean = (
+            self.expected_missed == 0
+            and self.expected_found_wrong_location == 0
+            and self.controls_false_positive == 0
+            and self.controls_not_evaluated == 0
+        )
+        return 0 if clean else 1
 
     def to_json(self) -> str:
         return self.model_dump_json(indent=2)
 
 
-def _rule_domain_map(pack: RulesPack, domain_ids: list[str]) -> dict[str, str]:
-    mapping: dict[str, str] = {}
-    for domain_id in domain_ids:
-        domain: Domain | None = pack.get_domain(domain_id)
-        if domain is None:
-            continue
-        for rule in domain.rules:
-            mapping[rule.id] = domain_id
-    return mapping
+_LINE_SUFFIX_RE = re.compile(r":\d+$")
+
+
+def _location_matches(expected: str, location: str) -> bool:
+    """True if expected occurs in location as a whole path segment (or a
+    run of them), not as an arbitrary substring.
+
+    A trailing ``:<line number>`` on location is stripped first, so
+    ``"schema.sql:18"`` is matched exactly as ``"schema.sql"`` alone would
+    be. What remains must then match at path-segment boundaries: the
+    character immediately before the match must be the start of the string
+    or a ``/``, and, unless expected itself ends with ``/`` (a deliberate
+    directory-prefix anchor, whose own trailing slash already supplies the
+    boundary), the character immediately after the match must be the end of
+    the string or a ``/``. This is what stops ``"schema.sql"`` from matching
+    ``"old_schema.sql.bak"``, and ``"tests/"`` from matching
+    ``"integration_tests/helpers.py"``, while still matching
+    ``"schema.sql"`` against ``"repo/schema.sql:12"`` and ``"tests/"``
+    against ``"tests/test_signup_flow.py"``.
+    """
+    stripped = _LINE_SUFFIX_RE.sub("", location)
+    search_from = 0
+    while True:
+        idx = stripped.find(expected, search_from)
+        if idx == -1:
+            return False
+        left_ok = idx == 0 or stripped[idx - 1] == "/"
+        end = idx + len(expected)
+        right_ok = expected.endswith("/") or end == len(stripped) or stripped[end] == "/"
+        if left_ok and right_ok:
+            return True
+        search_from = idx + 1
 
 
 def _check_structural_gates(
@@ -199,12 +309,15 @@ def _check_structural_gates(
 ) -> list[CompletenessNote]:
     """Raise EvalStructuralError for anything that makes scoring meaningless.
 
-    Every domain the spec names must be present in the run and completed;
-    if a rules pack was supplied, every completed domain must also carry a
+    Every domain the spec names must be present in the run and completed.
+    If a rules pack was supplied, every completed domain must also carry a
     verdict for every rule it defines (validate_completeness), and every
     expectation's rule id must actually belong to one of the spec's
     domains, since an expectation on a rule id the run never covered would
-    otherwise score as a silent, always-passing control.
+    otherwise score as a silent, always-passing control. If no rules pack
+    was supplied, none of that second half can be checked, and this
+    function records that explicitly rather than skipping it without a
+    trace.
     """
     notes: list[CompletenessNote] = []
 
@@ -228,55 +341,78 @@ def _check_structural_gates(
                     "completeness was not verified for this domain",
                 )
             )
-    else:
-        for domain_id in spec.domains:
-            domain = pack.get_domain(domain_id)
-            if domain is None:
-                raise EvalStructuralError(
-                    f"spec domain '{domain_id}' is not present in the supplied rules pack"
-                )
-            result = run_state.domain_results[domain_id]
-            try:
-                validate_completeness(domain, result)
-            except IncompleteResultError as exc:
-                raise EvalStructuralError(str(exc)) from exc
-
-        rule_domain = _rule_domain_map(pack, spec.domains)
-        orphan_rule_ids = sorted(
-            {e.rule_id for e in spec.expectations} - set(rule_domain)
-        )
-        if orphan_rule_ids:
-            raise EvalStructuralError(
-                f"expectation rule id(s) {orphan_rule_ids} do not belong to any domain in "
-                f"spec.domains ({spec.domains}); an expectation on a rule the run never "
-                "covered would score as a silently always-passing control"
+        notes.append(
+            CompletenessNote(
+                domain_id="(all domains)",
+                note="could-not-check: no --rules-dir supplied, so the rule-to-domain "
+                "ownership and orphan rule id cross-check was not run; an expectation on "
+                "a rule id outside spec.domains cannot be told apart from one genuinely "
+                "covered by the run in this mode",
             )
+        )
+        return notes
+
+    for domain_id in spec.domains:
+        domain = pack.get_domain(domain_id)
+        if domain is None:
+            raise EvalStructuralError(
+                f"spec domain '{domain_id}' is not present in the supplied rules pack"
+            )
+        result = run_state.domain_results[domain_id]
+        try:
+            validate_completeness(domain, result)
+        except IncompleteResultError as exc:
+            raise EvalStructuralError(str(exc)) from exc
+
+    orphan_rule_ids = sorted(
+        e.rule_id for e in spec.expectations if pack.domain_id_for_rule(e.rule_id) not in spec.domains
+    )
+    if orphan_rule_ids:
+        raise EvalStructuralError(
+            f"expectation rule id(s) {orphan_rule_ids} do not belong to any domain in "
+            f"spec.domains ({spec.domains}); an expectation on a rule the run never "
+            "covered would score as a silently always-passing control"
+        )
 
     return notes
 
 
-def score(run_state: RunState, spec: EvalSpec, pack: RulesPack | None = None) -> EvalResult:
+def score(
+    run_state: RunState,
+    spec: EvalSpec,
+    pack: RulesPack | None = None,
+    *,
+    run_state_path: str = "",
+    expected_path: str = "",
+) -> EvalResult:
     """Score run_state against spec, raising EvalStructuralError if the run
     cannot be scored at all.
 
     pack is optional: when supplied, verdict completeness is checked for
     every spec domain and expectation rule ids are cross-checked against
-    it; when omitted, that check is recorded as could-not-check rather than
-    silently skipped.
+    it; when omitted, both checks are recorded as could-not-check rather
+    than silently skipped. run_state_path and expected_path are carried
+    through unchanged into the result purely for the report to display;
+    score() itself never reads either path.
     """
     completeness_notes = _check_structural_gates(run_state, spec, pack)
 
+    # Scoring only ever looks at the DomainResults the spec's own domains
+    # cover. A finding or verdict recorded against a domain outside
+    # spec.domains (an extra domain the run happened to also audit) must
+    # never count towards an expectation, or a coincidental rule id match
+    # in territory this eval does not cover could silently hit a finding
+    # expectation or clear a control it was never meant to speak to.
     findings_by_rule: dict[str, list[Finding]] = defaultdict(list)
     verdicts_by_rule: dict[str, list[Verdict]] = defaultdict(list)
-    for result in run_state.domain_results.values():
+    for domain_id in spec.domains:
+        result = run_state.domain_results[domain_id]
         for finding in result.findings:
             findings_by_rule[finding.rule_id].append(finding)
         for rule_verdict in result.rule_verdicts:
             verdicts_by_rule[rule_verdict.rule_id].append(rule_verdict.verdict)
 
     outcomes: list[ExpectationOutcome] = []
-    expected_hit = expected_missed = expected_wrong_location = 0
-    controls_held = controls_false_positive = 0
 
     for expectation in spec.expectations:
         matches = findings_by_rule.get(expectation.rule_id, [])
@@ -285,20 +421,17 @@ def score(run_state: RunState, spec: EvalSpec, pack: RulesPack | None = None) ->
             if not matches:
                 outcome = "missed"
                 detail = "no finding recorded for this rule id"
-                expected_missed += 1
             elif expectation.location_contains is None or any(
-                expectation.location_contains in f.location for f in matches
+                _location_matches(expectation.location_contains, f.location) for f in matches
             ):
                 outcome = "hit"
                 detail = "; ".join(f.location for f in matches)
-                expected_hit += 1
             else:
                 outcome = "found-wrong-location"
                 detail = (
                     f"expected a location containing {expectation.location_contains!r}, "
                     f"found: {'; '.join(f.location for f in matches)}"
                 )
-                expected_wrong_location += 1
         else:
             verdicts = verdicts_by_rule.get(expectation.rule_id, [])
             if Verdict.FINDING in verdicts or matches:
@@ -308,11 +441,21 @@ def score(run_state: RunState, spec: EvalSpec, pack: RulesPack | None = None) ->
                     if matches
                     else "rule verdicted as finding with no Finding record"
                 )
-                controls_false_positive += 1
-            else:
+            elif Verdict.pass_ in verdicts:
                 outcome = "held"
                 detail = None
-                controls_held += 1
+            else:
+                # Not a finding, and never explicitly passed either: the
+                # rule was verdicted not-applicable, could-not-evaluate, or
+                # carries no verdict at all in this run's spec domains. The
+                # control never actually ran, so it cannot be counted as
+                # having held.
+                outcome = "control-not-evaluated"
+                if verdicts:
+                    seen = ", ".join(sorted({v.value for v in verdicts}))
+                    detail = f"verdicted {seen}, never pass"
+                else:
+                    detail = "no verdict recorded for this rule id"
 
         outcomes.append(
             ExpectationOutcome(
@@ -324,6 +467,12 @@ def score(run_state: RunState, spec: EvalSpec, pack: RulesPack | None = None) ->
             )
         )
 
+    # Unexpected findings, unlike the scoring above, are gathered from
+    # every domain the run recorded, not just spec.domains: full visibility
+    # into what the audit found is the point of this listing, and
+    # restricting it to the spec's own domains would silently drop
+    # exactly the kind of surprise (a finding in a domain the eval never
+    # asked about) it exists to surface.
     expected_ids = {e.rule_id for e in spec.expectations}
     unexpected_findings = [
         UnexpectedFinding(rule_id=finding.rule_id, title=finding.title, location=finding.location)
@@ -332,26 +481,13 @@ def score(run_state: RunState, spec: EvalSpec, pack: RulesPack | None = None) ->
         if finding.rule_id not in expected_ids
     ]
 
-    exit_code = (
-        0
-        if (expected_missed == 0 and expected_wrong_location == 0 and controls_false_positive == 0)
-        else 1
-    )
-
     return EvalResult(
         golden_repo=spec.golden_repo,
-        run_state_path="",
-        expected_path="",
-        expected_hit=expected_hit,
-        expected_missed=expected_missed,
-        expected_found_wrong_location=expected_wrong_location,
-        controls_held=controls_held,
-        controls_false_positive=controls_false_positive,
-        unexpected_findings_count=len(unexpected_findings),
+        run_state_path=run_state_path,
+        expected_path=expected_path,
         outcomes=outcomes,
         unexpected_findings=unexpected_findings,
         completeness_notes=completeness_notes,
-        exit_code=exit_code,
     )
 
 
@@ -363,7 +499,8 @@ def _render_summary(result: EvalResult) -> str:
         "",
         f"Expected findings: {result.expected_hit} hit, {result.expected_missed} missed, "
         f"{result.expected_found_wrong_location} found in the wrong location",
-        f"Controls: {result.controls_held} held, {result.controls_false_positive} false-positive",
+        f"Controls: {result.controls_held} held, {result.controls_false_positive} false-positive, "
+        f"{result.controls_not_evaluated} not evaluated",
         f"Unexpected findings: {result.unexpected_findings_count}",
         "",
     ]
@@ -394,18 +531,10 @@ def _fail_structural(message: str) -> None:
 
 
 def _load_run_state(path: Path) -> RunState:
-    if not path.is_file():
-        _fail_structural(f"run-state file does not exist: {path}")
     try:
-        raw_text = path.read_text(encoding="utf-8")
-    except OSError as exc:
-        _fail_structural(f"could not read {path}: {exc}")
-    try:
-        return RunState.from_json(raw_text)
-    except RunStateVersionError as exc:
+        return load_run_state_file(path)
+    except RunStateLoadError as exc:
         _fail_structural(str(exc))
-    except (json.JSONDecodeError, ValidationError) as exc:
-        _fail_structural(f"{path} is not a valid run-state file: {exc}")
     raise AssertionError("unreachable")  # pragma: no cover
 
 
@@ -450,8 +579,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--rules-dir",
         default=None,
-        help="Rules pack directory, for verdict-completeness checking. If omitted, "
-        "completeness is recorded as could-not-check rather than skipped silently.",
+        help="Rules pack directory, for verdict-completeness and rule-ownership checking. If "
+        "omitted, both are recorded as could-not-check rather than skipped silently.",
     )
     parser.add_argument("--out", default=None, help="Path to write eval-result.json.")
     args = parser.parse_args(argv if argv is not None else sys.argv[1:])
@@ -464,14 +593,16 @@ def main(argv: list[str] | None = None) -> None:
     pack = _load_pack(args.rules_dir)
 
     try:
-        result = score(run_state, spec, pack)
+        result = score(
+            run_state,
+            spec,
+            pack,
+            run_state_path=str(run_state_path),
+            expected_path=str(expected_path),
+        )
     except EvalStructuralError as exc:
         _fail_structural(str(exc))
         raise AssertionError("unreachable")  # pragma: no cover
-
-    result = result.model_copy(
-        update={"run_state_path": str(run_state_path), "expected_path": str(expected_path)}
-    )
 
     print(_render_summary(result))
 
