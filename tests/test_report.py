@@ -688,7 +688,7 @@ def test_footer_contains_author_link_tool_link_version_and_locality_sentence() -
 
     assert 'href="https://github.com/rodlunt"' in rendered
     assert 'href="https://github.com/rodlunt/engineering-audit"' in rendered
-    assert "engineering-audit 0.1.0" in rendered
+    assert "engineering-audit v0.1.0" in rendered
     assert "fixture-pack" in rendered
     assert "2026-08-09T09:10:00+00:00" in rendered
     assert (
