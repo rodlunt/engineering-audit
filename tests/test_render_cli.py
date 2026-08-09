@@ -131,6 +131,20 @@ def test_main_invalid_json_exits_non_zero(tmp_path: Path) -> None:
     assert "not a valid run-state file" in str(excinfo.value)
 
 
+@pytest.mark.parametrize("document", ["[1, 2, 3]", "null", '"just a string"', "42"])
+def test_main_non_dict_top_level_json_exits_non_zero(tmp_path: Path, document: str) -> None:
+    # RunState.from_json used to raise a raw AttributeError for a JSON top
+    # level that parses but is not an object (calling .get on a list or
+    # None); this must surface as the CLI's usual clean, non-zero SystemExit,
+    # never an unhandled traceback.
+    state_path = tmp_path / "run-state.json"
+    state_path.write_text(document, encoding="utf-8")
+
+    with pytest.raises(SystemExit) as excinfo:
+        render_cli.main([str(state_path), "--rules-dir", str(FIXTURE_PACK)])
+    assert "not a valid run-state file" in str(excinfo.value)
+
+
 def test_main_higher_schema_version_exits_non_zero_naming_both_versions(tmp_path: Path) -> None:
     data = json.loads(_run_state().to_json())
     data["schema_version"] = RUN_STATE_SCHEMA_VERSION + 1

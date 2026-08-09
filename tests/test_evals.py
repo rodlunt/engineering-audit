@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from functools import lru_cache
 from pathlib import Path
 
 import pytest
@@ -29,27 +30,29 @@ EXPECTED_PATH = REPO_ROOT / "evals" / "golden" / "expected.json"
 
 DOMAIN_IDS = ("d01", "d05", "d16")
 
-# Rule id -> the location the golden repo's planted violation would be
-# reported at. Mirrors evals/golden/expected.json; a change to one without
-# the other is exactly the fixture rot test_expected_json_locations_exist_
-# in_golden_repo guards against.
-PLANTED_FINDINGS = {
-    "D01-R05": "schema.sql",
-    "D01-R06": "schema.sql",
-    "D01-R14": "loyalty_writer.py",
-    "D05-R08": "tests/test_signup_flow.py",
-    "D05-R17": "perf/latency_check.py",
-    "D16-R07": "reports/charts.py",
-    "D16-R11": "reports/monthly_summary.md",
-}
 
-
+# Both the taster pack and the committed eval spec are read-only for the
+# whole test run (RulesPack is a frozen dataclass; nothing here mutates the
+# EvalSpec it loads), so caching them avoids re-reading and re-parsing the
+# same two files once per test.
+@lru_cache(maxsize=1)
 def _load_taster_pack() -> RulesPack:
     return load_pack(TASTER_PACK)
 
 
+@lru_cache(maxsize=1)
 def _load_expected_spec() -> EvalSpec:
     return EvalSpec.model_validate(json.loads(EXPECTED_PATH.read_text(encoding="utf-8")))
+
+
+# Rule id -> the location the golden repo's planted violation is expected
+# at, derived directly from the committed spec rather than hand-mirrored,
+# so this dict cannot drift out of step with evals/golden/expected.json.
+PLANTED_FINDINGS = {
+    e.rule_id: e.location_contains
+    for e in _load_expected_spec().expectations
+    if e.expect == "finding"
+}
 
 
 def _meta() -> RunMeta:
@@ -77,10 +80,22 @@ def _finding(rule_id: str, location: str) -> Finding:
     )
 
 
-def _build_run_state(pack: RulesPack, findings: dict[str, str]) -> RunState:
-    """Build a RunState against pack covering d01, d05 and d16, where every
-    rule verdicts pass except the rule ids in findings, which verdict
-    finding and carry a matching Finding at the given location."""
+def _build_run_state(
+    pack: RulesPack,
+    findings: dict[str, str],
+    *,
+    verdict_overrides: dict[str, Verdict] | None = None,
+    omit_verdicts: frozenset[str] = frozenset(),
+) -> RunState:
+    """Build a RunState against pack covering d01, d05 and d16.
+
+    Every rule verdicts pass, except: rule ids in findings, which verdict
+    finding and carry a matching Finding at the given location; rule ids in
+    verdict_overrides, which carry the given verdict instead (a required
+    note is filled in automatically for could-not-evaluate); and rule ids in
+    omit_verdicts, which carry no verdict at all.
+    """
+    verdict_overrides = verdict_overrides or {}
     domain_results: dict[str, DomainResult] = {}
     for domain_id in DOMAIN_IDS:
         domain = pack.get_domain(domain_id)
@@ -88,9 +103,19 @@ def _build_run_state(pack: RulesPack, findings: dict[str, str]) -> RunState:
         verdicts = []
         result_findings = []
         for rule in domain.rules:
+            if rule.id in omit_verdicts:
+                continue
             if rule.id in findings:
                 verdicts.append(RuleVerdict(rule_id=rule.id, verdict=Verdict.FINDING))
                 result_findings.append(_finding(rule.id, findings[rule.id]))
+            elif rule.id in verdict_overrides:
+                overridden = verdict_overrides[rule.id]
+                note = (
+                    "planted for the eval harness test suite"
+                    if overridden == Verdict.COULD_NOT_EVALUATE
+                    else None
+                )
+                verdicts.append(RuleVerdict(rule_id=rule.id, verdict=overridden, note=note))
             else:
                 verdicts.append(RuleVerdict(rule_id=rule.id, verdict=Verdict.pass_))
         domain_results[domain_id] = DomainResult(
@@ -112,6 +137,25 @@ def _write_run_state(path: Path, run_state: RunState) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# Location matching (segment-anchored, not a bare substring test)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("expected", "location", "want"),
+    [
+        ("schema.sql", "schema.sql", True),
+        ("schema.sql", "repo/schema.sql:12", True),
+        ("schema.sql", "old_schema.sql.bak", False),
+        ("tests/", "tests/test_signup_flow.py", True),
+        ("tests/", "integration_tests/helpers.py", False),
+    ],
+)
+def test_location_matches_is_segment_anchored(expected: str, location: str, want: bool) -> None:
+    assert evals._location_matches(expected, location) is want
+
+
+# ---------------------------------------------------------------------------
 # Scorer happy path
 # ---------------------------------------------------------------------------
 
@@ -127,6 +171,7 @@ def test_scorer_happy_path_hits_every_expectation_and_exits_zero() -> None:
     assert result.expected_missed == 0
     assert result.expected_found_wrong_location == 0
     assert result.controls_false_positive == 0
+    assert result.controls_not_evaluated == 0
     assert result.unexpected_findings_count == 0
     expected_finding_count = sum(1 for e in spec.expectations if e.expect == "finding")
     control_count = sum(1 for e in spec.expectations if e.expect == "no-finding")
@@ -142,13 +187,18 @@ def test_scorer_happy_path_without_rules_dir_still_scores_and_notes_could_not_ch
     result = score(run_state, spec, pack=None)
 
     assert result.exit_code == 0
-    assert len(result.completeness_notes) == 3
+    # One could-not-check note per spec domain (completeness), plus one
+    # spec-wide note for the orphan rule-id / rule-to-domain ownership
+    # cross-check, which also cannot run without a pack.
+    assert len(result.completeness_notes) == len(spec.domains) + 1
     for note in result.completeness_notes:
         assert "could-not-check" in note.note
+    ownership_note = next(n for n in result.completeness_notes if n.domain_id == "(all domains)")
+    assert "ownership" in ownership_note.note
 
 
 # ---------------------------------------------------------------------------
-# Scoring failures
+# Scoring failures: finding expectations
 # ---------------------------------------------------------------------------
 
 
@@ -183,6 +233,17 @@ def test_found_wrong_location_counts_as_missed_and_exits_non_zero() -> None:
     assert outcome.outcome == "found-wrong-location"
 
 
+# ---------------------------------------------------------------------------
+# Scoring failures: control semantics
+#
+# A control (expect="no-finding") only counts as held when the rule was
+# explicitly verdicted pass. A finding recorded against it is a
+# false-positive; anything else (not-applicable, could-not-evaluate, or no
+# verdict at all) is control-not-evaluated: the control never actually ran,
+# so it proves nothing and must not read as a clean pass.
+# ---------------------------------------------------------------------------
+
+
 def test_false_positive_on_a_control_exits_non_zero() -> None:
     pack = _load_taster_pack()
     spec = _load_expected_spec()
@@ -196,6 +257,116 @@ def test_false_positive_on_a_control_exits_non_zero() -> None:
     assert result.controls_false_positive == 1
     outcome = next(o for o in result.outcomes if o.rule_id == "D01-R07")
     assert outcome.outcome == "false-positive"
+
+
+def test_control_verdicted_not_applicable_is_control_not_evaluated_and_exits_non_zero() -> None:
+    pack = _load_taster_pack()
+    spec = _load_expected_spec()
+    run_state = _build_run_state(
+        pack, PLANTED_FINDINGS, verdict_overrides={"D01-R07": Verdict.NOT_APPLICABLE}
+    )
+
+    result = score(run_state, spec, pack)
+
+    assert result.exit_code == 1
+    assert result.controls_not_evaluated == 1
+    assert result.controls_held == sum(1 for e in spec.expectations if e.expect == "no-finding") - 1
+    outcome = next(o for o in result.outcomes if o.rule_id == "D01-R07")
+    assert outcome.outcome == "control-not-evaluated"
+    assert "not-applicable" in outcome.detail
+
+
+def test_control_verdicted_could_not_evaluate_is_control_not_evaluated_and_exits_non_zero() -> None:
+    pack = _load_taster_pack()
+    spec = _load_expected_spec()
+    run_state = _build_run_state(
+        pack, PLANTED_FINDINGS, verdict_overrides={"D01-R07": Verdict.COULD_NOT_EVALUATE}
+    )
+
+    result = score(run_state, spec, pack)
+
+    assert result.exit_code == 1
+    assert result.controls_not_evaluated == 1
+    outcome = next(o for o in result.outcomes if o.rule_id == "D01-R07")
+    assert outcome.outcome == "control-not-evaluated"
+    assert "could-not-evaluate" in outcome.detail
+
+
+def test_control_with_no_verdict_at_all_is_control_not_evaluated_and_exits_non_zero() -> None:
+    # validate_completeness would reject a completed domain missing a
+    # verdict for one of its rules, so this scenario (no verdict recorded
+    # for the control's rule id at all) can only reach the scorer when no
+    # rules pack is supplied, which is exactly when that check does not run.
+    pack = _load_taster_pack()
+    spec = _load_expected_spec()
+    run_state = _build_run_state(pack, PLANTED_FINDINGS, omit_verdicts=frozenset({"D01-R07"}))
+
+    result = score(run_state, spec, pack=None)
+
+    assert result.exit_code == 1
+    assert result.controls_not_evaluated == 1
+    outcome = next(o for o in result.outcomes if o.rule_id == "D01-R07")
+    assert outcome.outcome == "control-not-evaluated"
+    assert "no verdict recorded" in outcome.detail
+
+
+# ---------------------------------------------------------------------------
+# Scoring is restricted to spec.domains
+# ---------------------------------------------------------------------------
+
+
+def test_finding_in_a_domain_outside_spec_domains_does_not_count_towards_scoring() -> None:
+    pack = _load_taster_pack()
+    spec = _load_expected_spec()
+    findings = dict(PLANTED_FINDINGS)
+    del findings["D01-R05"]  # never actually raised in d01
+    run_state = _build_run_state(pack, findings)
+
+    # Graft an extra domain result that carries a Finding and a FINDING
+    # verdict for D01-R05 under domain id "d02", outside spec.domains. A
+    # real audit could never produce this (D01-R05 only exists in domain
+    # d01's own rule list), but constructing it directly is the only way to
+    # prove the scorer ignores domains outside spec.domains rather than
+    # trusting that behaviour by inspection alone.
+    extra_domain_result = DomainResult(
+        domain_id="d02",
+        status="completed",
+        rule_verdicts=[RuleVerdict(rule_id="D01-R05", verdict=Verdict.FINDING)],
+        findings=[_finding("D01-R05", "schema.sql")],
+    )
+    run_state = run_state.model_copy(
+        update={"domain_results": {**run_state.domain_results, "d02": extra_domain_result}}
+    )
+
+    result = score(run_state, spec, pack)
+
+    outcome = next(o for o in result.outcomes if o.rule_id == "D01-R05")
+    assert outcome.outcome == "missed"
+
+
+def test_unexpected_findings_include_findings_from_domains_outside_spec_domains() -> None:
+    pack = _load_taster_pack()
+    spec = _load_expected_spec()
+    run_state = _build_run_state(pack, PLANTED_FINDINGS)
+
+    extra_domain_result = DomainResult(
+        domain_id="d02",
+        status="completed",
+        rule_verdicts=[RuleVerdict(rule_id="D02-R99", verdict=Verdict.FINDING)],
+        findings=[_finding("D02-R99", "somewhere.py")],
+    )
+    run_state = run_state.model_copy(
+        update={"domain_results": {**run_state.domain_results, "d02": extra_domain_result}}
+    )
+
+    result = score(run_state, spec, pack)
+
+    assert any(uf.rule_id == "D02-R99" for uf in result.unexpected_findings)
+
+
+# ---------------------------------------------------------------------------
+# Unexpected findings
+# ---------------------------------------------------------------------------
 
 
 def test_unexpected_findings_are_listed_in_the_result_and_do_not_affect_exit_code() -> None:
@@ -214,7 +385,6 @@ def test_unexpected_findings_are_listed_in_the_result_and_do_not_affect_exit_cod
 
 def test_unexpected_findings_reach_eval_result_json(tmp_path: Path) -> None:
     pack = _load_taster_pack()
-    spec = _load_expected_spec()
     findings = dict(PLANTED_FINDINGS)
     findings["D01-R01"] = "schema.sql"
     run_state = _build_run_state(pack, findings)
@@ -260,6 +430,20 @@ def test_missing_run_state_file_exits_2(tmp_path: Path) -> None:
 def test_corrupt_run_state_json_exits_2(tmp_path: Path) -> None:
     bad_path = tmp_path / "run-state.json"
     bad_path.write_text("{ not valid json", encoding="utf-8")
+
+    with pytest.raises(SystemExit) as excinfo:
+        evals.main([str(bad_path), "--expected", str(EXPECTED_PATH)])
+    assert excinfo.value.code == 2
+
+
+@pytest.mark.parametrize("document", ["[1, 2, 3]", "null", '"just a string"', "42"])
+def test_non_dict_top_level_run_state_json_exits_2(tmp_path: Path, document: str) -> None:
+    # RunState.from_json used to raise a raw AttributeError for a JSON
+    # top level that parses but is not an object (calling .get on a list
+    # or None); this must surface as the CLI's usual clean, non-zero exit,
+    # never a traceback.
+    bad_path = tmp_path / "run-state.json"
+    bad_path.write_text(document, encoding="utf-8")
 
     with pytest.raises(SystemExit) as excinfo:
         evals.main([str(bad_path), "--expected", str(EXPECTED_PATH)])
@@ -350,10 +534,9 @@ def test_committed_expected_json_round_trips_through_eval_spec() -> None:
 
 def test_every_rule_id_in_expected_json_exists_in_the_taster_pack() -> None:
     pack = _load_taster_pack()
-    all_rule_ids = {rule.id for domain in pack.domains for rule in domain.rules}
     spec = _load_expected_spec()
     for expectation in spec.expectations:
-        assert expectation.rule_id in all_rule_ids, (
+        assert expectation.rule_id in pack.rule_index, (
             f"{expectation.rule_id} in evals/golden/expected.json is not a rule id in "
             "examples/taster-rules"
         )
@@ -361,12 +544,12 @@ def test_every_rule_id_in_expected_json_exists_in_the_taster_pack() -> None:
 
 def test_expected_json_covers_at_least_two_rules_per_domain() -> None:
     pack = _load_taster_pack()
-    rule_domain = {rule.id: domain.id for domain in pack.domains for rule in domain.rules}
     spec = _load_expected_spec()
     finding_expectations = [e for e in spec.expectations if e.expect == "finding"]
     per_domain: dict[str, int] = {}
     for expectation in finding_expectations:
-        domain_id = rule_domain[expectation.rule_id]
+        domain_id = pack.domain_id_for_rule(expectation.rule_id)
+        assert domain_id is not None
         per_domain[domain_id] = per_domain.get(domain_id, 0) + 1
     for domain_id in DOMAIN_IDS:
         assert per_domain.get(domain_id, 0) >= 2, f"{domain_id} has fewer than 2 planted findings"
