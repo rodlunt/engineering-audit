@@ -167,6 +167,12 @@ Check `config.issue_mode` from step 3's `get_config` response.
   is wrong) and call `file_issues(confirm=True)` again. Already-filed findings are skipped
   automatically, so a retry never double-files.
 
+  Filed issues carry an `engineering-audit` label, which the tool creates on the target
+  repository if it is not already there. The response's `label` field reports `present`,
+  `created` or `unavailable`. On `unavailable` the issues are still filed, just without the
+  label, and `warnings` carries one line saying why: pass that on to the user, because they are
+  the one who can add the label and re-label the issues.
+
 ## 7. Render the report
 
 Call `render_report` with a `finished` ISO timestamp (the current time, same format as `started`
@@ -190,6 +196,14 @@ unavailable or filing failed), tell the user their feedback was not lost: offer 
 `mailto_url`, and if that fails or is unavailable, offer the `body` text for them to paste into an
 email themselves. The rendered report also carries this same mailto fallback in its Feedback
 section, so nothing is lost even if this step is skipped.
+
+Calling `submit_feedback` at this point, after the report is already written, is supported: the
+run just finished stays reachable for exactly this, until the next `begin_run`. When the feedback
+is filed as an issue, `report.html` and `run-state.json` are rewritten so both carry its link, and
+the response's `report_updated` field says whether that rewrite succeeded. If it is `false`, the
+response carries a warning explaining that the issue is filed but the report could not be updated:
+pass that on to the user rather than resending the feedback, which would file it twice. If the
+user already has the report open in a browser, tell them to reload it to see the link.
 
 Do not call `submit_feedback` if the user gave no feedback text and did not ask you to send
 anything: an unprompted, empty submission is not consent.

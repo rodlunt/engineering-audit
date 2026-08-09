@@ -11,7 +11,14 @@ from pathlib import Path
 
 import pytest
 
-from engineering_audit.issues import CreatedIssue, IssueFilingError, create_issue, detect_repo, gh_available
+from engineering_audit.issues import (
+    CreatedIssue,
+    IssueFilingError,
+    create_issue,
+    detect_repo,
+    ensure_label,
+    gh_available,
+)
 
 
 def _proc(returncode: int, stdout: str = "", stderr: str = "") -> "subprocess.CompletedProcess[str]":
@@ -69,6 +76,64 @@ def test_detect_repo_returns_none_on_empty_stdout_with_zero_exit(tmp_path: Path)
     # mistaken for a real repo slug.
     runner = _FakeRunner([_proc(0, stdout="  \n")])
     assert detect_repo(tmp_path, runner) is None
+
+
+# ---------------------------------------------------------------------------
+# ensure_label
+# ---------------------------------------------------------------------------
+
+
+def test_ensure_label_reports_present_without_creating_anything() -> None:
+    runner = _FakeRunner([_proc(0, stdout="engineering-audit\n")])
+    status = ensure_label("rodlunt/widgets-app", runner=runner)
+    assert (status.state, status.warning, status.usable) == ("present", None, True)
+    assert len(runner.calls) == 1
+    assert runner.calls[0]["args"][:3] == ["gh", "label", "list"]
+
+
+def test_ensure_label_creates_the_label_when_it_is_missing() -> None:
+    runner = _FakeRunner([_proc(0, stdout="some-other-label\n"), _proc(0, stdout="")])
+    status = ensure_label("rodlunt/widgets-app", runner=runner)
+    assert (status.state, status.warning, status.usable) == ("created", None, True)
+
+    create_args = runner.calls[1]["args"]
+    assert create_args[:4] == ["gh", "label", "create", "engineering-audit"]
+    assert "--color" in create_args and "--description" in create_args
+
+
+def test_ensure_label_reports_unavailable_with_one_warning_when_creation_fails() -> None:
+    runner = _FakeRunner(
+        [
+            _proc(0, stdout=""),
+            _proc(1, stderr="HTTP 403: Resource not accessible by integration"),
+        ]
+    )
+    status = ensure_label("rodlunt/widgets-app", runner=runner)
+    assert status.state == "unavailable"
+    assert status.usable is False
+    assert status.warning is not None
+    assert "HTTP 403" in status.warning
+    assert "rodlunt/widgets-app" in status.warning
+
+
+def test_ensure_label_treats_an_already_exists_creation_error_as_present() -> None:
+    # The list call failing must not be read as "the label is absent": the
+    # create attempt is what settles it, and 'already exists' means present.
+    runner = _FakeRunner(
+        [
+            _proc(1, stderr="could not list labels"),
+            _proc(1, stderr="HTTP 422: Validation Failed (label already exists)"),
+        ]
+    )
+    status = ensure_label("rodlunt/widgets-app", runner=runner)
+    assert (status.state, status.warning) == ("present", None)
+
+
+def test_ensure_label_warning_names_the_exit_code_when_gh_says_nothing() -> None:
+    runner = _FakeRunner([_proc(0, stdout=""), _proc(3, stderr="   ")])
+    status = ensure_label("rodlunt/widgets-app", runner=runner)
+    assert status.state == "unavailable"
+    assert status.warning is not None and "exited 3" in status.warning
 
 
 # ---------------------------------------------------------------------------

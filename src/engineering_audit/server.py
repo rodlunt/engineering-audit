@@ -9,6 +9,10 @@ explicit confirmation step) and submit_feedback (an optional feedback
 channel to the tool author). The driving agent is expected to call these
 roughly in that order, once per audited domain in between
 record_domain_result calls; see AUDIT.md for the full procedure.
+
+The tools are registered per concern by the _register_*_tools functions,
+which build_server calls in sequence; adding or changing one tool means
+reading one of those, not the whole module.
 """
 
 from __future__ import annotations
@@ -45,19 +49,26 @@ from engineering_audit.feedback import (
     build_mailto_url,
     feedback_subject,
 )
-from engineering_audit.issues import IssueFilingError, create_issue, detect_repo, gh_available
-from engineering_audit.report import write_report
+from engineering_audit.issues import (
+    IssueFilingError,
+    create_issue,
+    detect_repo,
+    ensure_label,
+    gh_available,
+)
+from engineering_audit.report import ReportError, write_report
 from engineering_audit.rules import Rule, RulesPack, RulesPackError, get_domain_text, load_pack
 from engineering_audit.schema import (
     AuditConfig,
     DomainResult,
+    Finding,
     RunMeta,
     RunState,
     validate_completeness,
 )
 from engineering_audit.update_check import check_for_update
 
-__all__ = ["AppState", "RunTracker", "build_server", "main"]
+__all__ = ["AppState", "FinishedRun", "RunTracker", "build_server", "main"]
 
 _SEVERITY_ORDER = ("critical", "high", "medium", "low")
 
@@ -169,8 +180,29 @@ class RunTracker:
     config_url: str | None = None
     config_server: ConfigServer | None = None
     domain_results: dict[str, DomainResult] = field(default_factory=dict)
-    filed_issue_urls: dict[str, str] = field(default_factory=dict)
+    # Keyed by finding key (see _pending_issues), not by rule id: a domain
+    # result may legitimately carry two findings for the same rule, and a map
+    # keyed by rule id drops one of the two issue urls without saying so, and
+    # makes the second finding look already-filed on a retry.
+    filed_issues: dict[str, str] = field(default_factory=dict)
     feedback_issue_url: str | None = None
+
+
+@dataclass
+class FinishedRun:
+    """A run that render_report has already written out.
+
+    Kept so a late submit_feedback (the order AUDIT.md documents: feedback is
+    offered after the report is handed over) still has a run to send feedback
+    for, and so the written report and run-state can be rewritten to carry the
+    feedback issue's URL. Without the rewrite the two files would claim no
+    feedback was ever sent while an issue existed for it.
+    """
+
+    tracker: RunTracker
+    run_state: RunState
+    report_path: Path
+    run_state_path: Path
 
 
 @dataclass
@@ -179,6 +211,235 @@ class AppState:
 
     pack: RulesPack
     run: RunTracker | None = None
+    finished: FinishedRun | None = None
+
+
+@dataclass(frozen=True)
+class PendingIssue:
+    """One recorded finding, with the key its filing bookkeeping is under.
+
+    ``key`` is ``<rule id>#<n>``, where n counts occurrences of that rule id
+    across the run in recording order, so two findings on the same rule stay
+    distinguishable. The key is positional by construction: re-recording a
+    domain (record_domain_result with replace=True) after some of its issues
+    were filed can shift which finding a key refers to.
+    """
+
+    key: str
+    domain_id: str
+    finding: Finding
+
+
+def _run_issues(run: RunTracker) -> list[PendingIssue]:
+    """Every recorded finding in this run, in recording order, keyed by
+    finding identity rather than by rule id."""
+    seen: Counter[str] = Counter()
+    issues: list[PendingIssue] = []
+    for domain_id, result in run.domain_results.items():
+        for finding in result.findings:
+            seen[finding.rule_id] += 1
+            issues.append(
+                PendingIssue(
+                    key=f"{finding.rule_id}#{seen[finding.rule_id]}",
+                    domain_id=domain_id,
+                    finding=finding,
+                )
+            )
+    return issues
+
+
+def _pending_issues(run: RunTracker) -> list[PendingIssue]:
+    """The findings in this run that have not been filed as issues yet."""
+    return [issue for issue in _run_issues(run) if issue.key not in run.filed_issues]
+
+
+def _filed_urls_by_rule(run: RunTracker) -> dict[str, str]:
+    """Project the run's filed-issue bookkeeping onto the rule-id-keyed shape
+    RunState.filed_issue_urls uses.
+
+    The report marks a finding as already filed by looking its rule id up in
+    that map, so it cannot hold two urls for one rule: where a rule has two
+    findings, both show the first url filed for it. The tool's own file_issues
+    result keeps every url under its own finding key; this projection is
+    lossy only in the written run state, and only for that case.
+    """
+    by_rule: dict[str, str] = {}
+    for issue in _run_issues(run):
+        url = run.filed_issues.get(issue.key)
+        if url is not None:
+            by_rule.setdefault(issue.finding.rule_id, url)
+    return by_rule
+
+
+def _require_run(state: AppState) -> RunTracker:
+    if state.run is None:
+        raise ValueError(
+            "No audit run in progress. Call begin_run first."
+        )
+    return state.run
+
+
+def _feedback_target(state: AppState) -> tuple[RunTracker, FinishedRun | None]:
+    """The run submit_feedback should send for: the run in progress, or
+    else the last run this process finished.
+
+    Only submit_feedback falls back to a finished run. Every other tool
+    keeps requiring a live run, because recording results or filing issues
+    against a run whose report is already written would silently produce
+    a report that no longer matches its own run state.
+    """
+    if state.run is not None:
+        return state.run, None
+    if state.finished is not None:
+        return state.finished.tracker, state.finished
+    raise ValueError(
+        "No audit run in progress. Call begin_run first."
+    )
+
+
+def _require_config(run: RunTracker) -> AuditConfig:
+    if run.config is None:
+        raise ValueError(
+            "This run has no configuration yet. Call start_config and get_config first."
+        )
+    return run.config
+
+
+def _validate_selected_domains(state: AppState, config: AuditConfig) -> None:
+    valid_ids = {d.id for d in state.pack.domains}
+    unknown = sorted(set(config.selected_domain_ids) - valid_ids)
+    if unknown:
+        raise ValueError(
+            f"selected_domain_ids includes id(s) not in the loaded rules pack: {unknown}. "
+            f"Valid ids: {sorted(valid_ids)}"
+        )
+
+
+def _config_summary(run: RunTracker) -> dict[str, Any]:
+    assert run.config is not None  # only called once config is set
+    return {
+        "mode": run.config_mode,
+        "config": run.config.model_dump(mode="json"),
+        "selected_domain_ids": run.config.selected_domain_ids,
+    }
+
+
+def _issue_preview(pending: list[PendingIssue], repo: str | None) -> dict[str, Any]:
+    """The confirm=False answer: what would be filed, and nothing else.
+
+    Deliberately touches neither gh nor the target repository, so previewing
+    can never be the call that creates something on someone's repo.
+    """
+    return {
+        "repo": repo,
+        "count": len(pending),
+        "titles": [issue.finding.issue_title for issue in pending],
+        "instruction": (
+            "Show this list of issue titles, and the target repository once known, to "
+            "the user and ask for their explicit approval. Call file_issues again with "
+            "confirm=True only after the user has explicitly agreed to file these on "
+            "their repository."
+        ),
+    }
+
+
+def _resolve_target_repo(run: RunTracker, repo: str | None) -> str:
+    """The 'owner/name' repository to file this run's issues on.
+
+    An explicit `repo` wins and is taken at face value. Otherwise it is
+    detected from the audited repository directory recorded by begin_run,
+    which needs a working gh. Every way of failing to work it out raises,
+    naming what to do about it: filing on a guessed repository is worse than
+    not filing.
+    """
+    if repo is not None:
+        return repo
+    if run.repo_dir is None:
+        raise ValueError(
+            "No repo_dir was recorded for this run (pass it to begin_run) and no repo "
+            "argument was given to file_issues; cannot detect which GitHub repository "
+            "to file issues on."
+        )
+    if not gh_available():
+        raise ValueError(
+            "gh is not available or not authenticated (gh auth status failed). Install "
+            "and authenticate gh, or use issue_mode='report' instead."
+        )
+    detected = detect_repo(run.repo_dir)
+    if detected is None:
+        raise ValueError(
+            f"Could not detect a GitHub repository from {run.repo_dir}: no GitHub "
+            "remote found. Pass repo='owner/name' explicitly to file_issues."
+        )
+    return detected
+
+
+def _file_pending_issues(
+    run: RunTracker,
+    target_repo: str,
+    pending: list[PendingIssue],
+    rule_index: dict[str, Rule],
+) -> dict[str, Any]:
+    """File one issue per pending finding, recording each url on the run as
+    it goes.
+
+    Stops at the first failure and raises, naming what was filed and what was
+    not: the bookkeeping is updated per issue, so a retry resumes rather than
+    re-filing. Returns the filed map, the run's full filed map, the label
+    outcome and any warnings.
+    """
+    # Once per run, not once per issue: whether the label exists is one
+    # fact about the target repository.
+    label_status = ensure_label(target_repo)
+    labels = [label_status.name] if label_status.usable else []
+
+    filed_this_call: dict[str, str] = {}
+    warnings: list[str] = [label_status.warning] if label_status.warning else []
+    for issue in pending:
+        finding = issue.finding
+        # A filed issue is a published claim. It never goes out without
+        # the evidence backing it: a finding whose rule is missing from
+        # the pack or has no cited source stops filing loudly, before
+        # anything is created on the target repository.
+        rule = rule_index.get(finding.rule_id)
+        if rule is None or not rule.source:
+            problem = (
+                "is not in the rules pack"
+                if rule is None
+                else "has no cited source in the rules pack"
+            )
+            raise ValueError(
+                f"Refusing to file issue for finding on rule {finding.rule_id}: the rule "
+                f"{problem}. A filed issue is a published claim; this tool does not "
+                "publish claims without evidence. Nothing was filed for this finding. "
+                f"Already filed before this stop: {run.filed_issues or 'none'}."
+            )
+        trailing_line = build_issue_trailing_line(finding, rule)
+        body = f"{finding.issue_body}\n\n{trailing_line}"
+        try:
+            created = create_issue(target_repo, finding.issue_title, body, labels)
+        except IssueFilingError as exc:
+            unfiled = [p.key for p in pending if p.key not in run.filed_issues]
+            raise ValueError(
+                f"Filing stopped after {len(filed_this_call)} of {len(pending)} issue(s) "
+                f"this call. Filed: {run.filed_issues}. Not filed: {unfiled}. Failure "
+                f"filing finding '{issue.key}' on {target_repo}: {exc}"
+            ) from exc
+        run.filed_issues[issue.key] = created.url
+        filed_this_call[issue.key] = created.url
+        # create_issue's own missing-label retry can still fire (a label
+        # deleted or renamed mid-run), and it reports the same fact for
+        # every issue after that. One line per distinct warning.
+        for warning in created.warnings:
+            if warning not in warnings:
+                warnings.append(warning)
+
+    return {
+        "filed": filed_this_call,
+        "all_filed_issue_urls": dict(run.filed_issues),
+        "label": {"name": label_status.name, "state": label_status.state},
+        "warnings": warnings,
+    }
 
 
 def _resolve_rules_dir(argv: list[str]) -> Path:
@@ -216,29 +477,8 @@ def _resolve_rules_dir(argv: list[str]) -> Path:
     return rules_dir
 
 
-def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
-    """Load the rules pack and construct the MCPServer app.
-
-    Raises RulesPackError (or RulesPackParseError) if the pack cannot be
-    loaded; this is intentionally not caught here so callers that want the
-    exception (tests, alternative entry points) can see it directly. main()
-    is the one place that turns it into a clean CLI error.
-    """
-    pack = load_pack(rules_dir)
-    state = AppState(pack=pack)
-    # pack.rule_index is built once (and cached) from the loaded pack; used
-    # by file_issues to look up each finding's rule so the filed issue can
-    # carry the rule's cited source without re-walking the pack on every
-    # call.
-    rule_index: dict[str, Rule] = pack.rule_index
-
-    mcp = MCPServer("engineering-audit")
-    # The SDK installs OpenTelemetry span middleware on every server by
-    # default. This project's design requires explicit consent for any
-    # telemetry, so it is stripped here rather than left ambient.
-    mcp.middleware[:] = [
-        m for m in mcp.middleware if not isinstance(m, OpenTelemetryMiddleware)
-    ]
+def _register_pack_tools(mcp: MCPServer, state: AppState) -> None:
+    """Read-only inspection of the loaded rules pack."""
 
     @mcp.tool()
     def list_domains() -> dict[str, Any]:
@@ -277,36 +517,9 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
             raise ValueError(f"Unknown domain id '{domain_id}'. Valid ids: {valid_ids}")
         return get_domain_text(domain)
 
-    def _require_run() -> RunTracker:
-        if state.run is None:
-            raise ValueError(
-                "No audit run in progress. Call begin_run first."
-            )
-        return state.run
 
-    def _require_config(run: RunTracker) -> AuditConfig:
-        if run.config is None:
-            raise ValueError(
-                "This run has no configuration yet. Call start_config and get_config first."
-            )
-        return run.config
-
-    def _validate_selected_domains(config: AuditConfig) -> None:
-        valid_ids = {d.id for d in state.pack.domains}
-        unknown = sorted(set(config.selected_domain_ids) - valid_ids)
-        if unknown:
-            raise ValueError(
-                f"selected_domain_ids includes id(s) not in the loaded rules pack: {unknown}. "
-                f"Valid ids: {sorted(valid_ids)}"
-            )
-
-    def _config_summary(run: RunTracker) -> dict[str, Any]:
-        assert run.config is not None  # only called once config is set
-        return {
-            "mode": run.config_mode,
-            "config": run.config.model_dump(mode="json"),
-            "selected_domain_ids": run.config.selected_domain_ids,
-        }
+def _register_run_tools(mcp: MCPServer, state: AppState) -> None:
+    """Run lifecycle: starting a run and stamping its provenance."""
 
     @mcp.tool()
     def begin_run(
@@ -394,11 +607,18 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
                 )
 
         state.run = RunTracker(meta=meta, output_dir=output_dir_path, repo_dir=repo_dir_path)
+        # A new run closes the previous one's late-feedback window: feedback
+        # sent from here on belongs to this run, never to the last one.
+        state.finished = None
         return {
             "meta": meta.model_dump(mode="json"),
             "output_dir": str(output_dir_path),
             "repo_dir": str(repo_dir_path) if repo_dir_path else None,
         }
+
+
+def _register_config_tools(mcp: MCPServer, state: AppState) -> None:
+    """Resolving the run's configuration, interactively or from a preset."""
 
     @mcp.tool()
     def start_config() -> dict[str, Any]:
@@ -413,7 +633,7 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
         opened_in_browser field says whether a tab actually opened), and
         returns its URL for the agent to show the user as the fallback.
         """
-        run = _require_run()
+        run = _require_run(state)
 
         if run.config is not None:
             return _config_summary(run)
@@ -443,7 +663,7 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
                 raise ValueError(
                     f"ENGINEERING_AUDIT_CONFIG file '{path}' is not a valid AuditConfig: {exc}"
                 ) from exc
-            _validate_selected_domains(config)
+            _validate_selected_domains(state, config)
             run.config = config
             run.config_mode = "preset"
             return _config_summary(run)
@@ -478,7 +698,7 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
         user never actually chose. Call it again (the user's submission is
         still awaited) rather than treating a timeout as a green light.
         """
-        run = _require_run()
+        run = _require_run(state)
         if run.config_mode is None:
             raise ValueError("start_config must be called before get_config.")
 
@@ -495,10 +715,14 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
                 "rather than proceeding with a default configuration."
             ) from exc
 
-        _validate_selected_domains(config)
+        _validate_selected_domains(state, config)
         run.config = config
         run.config_server.shutdown()
         return _config_summary(run)
+
+
+def _register_result_tools(mcp: MCPServer, state: AppState) -> None:
+    """Recording per-domain results, and reporting progress over them."""
 
     @mcp.tool()
     def record_domain_result(result: DomainResult, replace: bool = False) -> dict[str, Any]:
@@ -514,7 +738,7 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
         passing. Re-recording an already-recorded domain requires
         replace=True, to guard against an accidental overwrite.
         """
-        run = _require_run()
+        run = _require_run(state)
         config = _require_config(run)
 
         domain_id = result.domain_id
@@ -548,7 +772,7 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
         """Report progress for the current run: which selected domains have
         recorded results, which are still missing, and the findings count so
         far. Read-only."""
-        run = _require_run()
+        run = _require_run(state)
         config = _require_config(run)
 
         selected = config.selected_domain_ids
@@ -567,12 +791,9 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
             "finding_count": finding_count,
         }
 
-    def _all_findings(run: RunTracker) -> list[tuple[str, Any]]:
-        return [
-            (domain_id, finding)
-            for domain_id, result in run.domain_results.items()
-            for finding in result.findings
-        ]
+
+def _register_issue_tools(mcp: MCPServer, state: AppState) -> None:
+    """GitHub issue filing for recorded findings, via the user's own gh."""
 
     @mcp.tool()
     def file_issues(confirm: bool = False, repo: str | None = None) -> dict[str, Any]:
@@ -591,16 +812,26 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
         this confirmation step is mandatory, not decorative.
 
         confirm=True files one issue per finding that has not already been
-        filed (a finding whose rule_id is already in this run's filed set is
-        skipped, so retrying after a partial failure does not double-file
-        the ones that succeeded). The target repository is `repo` if given,
+        filed, so retrying after a partial failure does not double-file the
+        ones that succeeded. Filed issues are tracked, and returned, per
+        finding under a key of the form "<rule id>#<n>" (n counting that
+        rule's findings in recording order), not per rule id: a domain result
+        may carry two findings for the same rule, and both of their issue
+        urls have to survive. The target repository is `repo` if given,
         otherwise detected from the audited repository directory recorded
         by begin_run's repo_dir. If any issue fails to file, filing stops
-        immediately and the error lists exactly which rule ids were filed
+        immediately and the error lists exactly which findings were filed
         (with their URLs) and which were not, so a retry knows where to
         resume.
+
+        Each filed issue carries the "engineering-audit" label. The label is
+        checked once per call and created on the target repository if it is
+        missing; the response's label field reports which of present,
+        created or unavailable happened. Unavailable (creation failed) files
+        the issues unlabelled and says so once, in warnings, rather than
+        once per issue.
         """
-        run = _require_run()
+        run = _require_run(state)
         config = _require_config(run)
 
         if config.issue_mode != "github":
@@ -614,89 +845,19 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
                 "domain before filing issues."
             )
 
-        pending = [
-            (domain_id, finding)
-            for domain_id, finding in _all_findings(run)
-            if finding.rule_id not in run.filed_issue_urls
-        ]
-
+        pending = _pending_issues(run)
         if not confirm:
-            return {
-                "repo": repo,
-                "count": len(pending),
-                "titles": [finding.issue_title for _, finding in pending],
-                "instruction": (
-                    "Show this list of issue titles, and the target repository once known, to "
-                    "the user and ask for their explicit approval. Call file_issues again with "
-                    "confirm=True only after the user has explicitly agreed to file these on "
-                    "their repository."
-                ),
-            }
+            return _issue_preview(pending, repo)
 
-        target_repo = repo
-        if target_repo is None:
-            if run.repo_dir is None:
-                raise ValueError(
-                    "No repo_dir was recorded for this run (pass it to begin_run) and no repo "
-                    "argument was given to file_issues; cannot detect which GitHub repository "
-                    "to file issues on."
-                )
-            if not gh_available():
-                raise ValueError(
-                    "gh is not available or not authenticated (gh auth status failed). Install "
-                    "and authenticate gh, or use issue_mode='report' instead."
-                )
-            detected = detect_repo(run.repo_dir)
-            if detected is None:
-                raise ValueError(
-                    f"Could not detect a GitHub repository from {run.repo_dir}: no GitHub "
-                    "remote found. Pass repo='owner/name' explicitly to file_issues."
-                )
-            target_repo = detected
-
-        filed_this_call: dict[str, str] = {}
-        warnings: list[str] = []
-        for _domain_id, finding in pending:
-            # A filed issue is a published claim. It never goes out without
-            # the evidence backing it: a finding whose rule is missing from
-            # the pack or has no cited source stops filing loudly, before
-            # anything is created on the target repository.
-            rule = rule_index.get(finding.rule_id)
-            if rule is None or not rule.source:
-                problem = (
-                    "is not in the rules pack"
-                    if rule is None
-                    else "has no cited source in the rules pack"
-                )
-                raise ValueError(
-                    f"Refusing to file issue for finding on rule {finding.rule_id}: the rule "
-                    f"{problem}. A filed issue is a published claim; this tool does not "
-                    "publish claims without evidence. Nothing was filed for this finding. "
-                    f"Already filed before this stop: {run.filed_issue_urls or 'none'}."
-                )
-            trailing_line = build_issue_trailing_line(finding, rule)
-            body = f"{finding.issue_body}\n\n{trailing_line}"
-            try:
-                created = create_issue(target_repo, finding.issue_title, body, ["engineering-audit"])
-            except IssueFilingError as exc:
-                unfiled = [
-                    f.rule_id for _, f in pending if f.rule_id not in run.filed_issue_urls
-                ]
-                raise ValueError(
-                    f"Filing stopped after {len(filed_this_call)} of {len(pending)} issue(s) "
-                    f"this call. Filed: {run.filed_issue_urls}. Not filed: {unfiled}. Failure "
-                    f"filing rule '{finding.rule_id}' on {target_repo}: {exc}"
-                ) from exc
-            run.filed_issue_urls[finding.rule_id] = created.url
-            filed_this_call[finding.rule_id] = created.url
-            warnings.extend(created.warnings)
-
+        target_repo = _resolve_target_repo(run, repo)
         return {
             "repo": target_repo,
-            "filed": filed_this_call,
-            "all_filed_issue_urls": dict(run.filed_issue_urls),
-            "warnings": warnings,
+            **_file_pending_issues(run, target_repo, pending, state.pack.rule_index),
         }
+
+
+def _register_feedback_tools(mcp: MCPServer, state: AppState) -> None:
+    """The optional feedback channel to the tool author."""
 
     @mcp.tool()
     def submit_feedback(extra_text: str | None = None) -> dict[str, Any]:
@@ -720,8 +881,16 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
         feedback is never lost: this returns a mailto fallback instead,
         with the same body, so the agent can offer to open the user's mail
         client or hand over the text to paste in manually.
+
+        May be called either before or after render_report. Called after,
+        it sends feedback for the run just finished and rewrites that run's
+        report.html and run-state.json so both carry the feedback issue's
+        link; the response's report_updated field says whether that rewrite
+        succeeded, and a failed rewrite is reported as a warning rather than
+        an error, because the issue is already filed by then and raising
+        would invite a retry that double-files it.
         """
-        run = _require_run()
+        run, finished = _feedback_target(state)
         config = _require_config(run)
 
         free_text = config.feedback_text or extra_text
@@ -751,7 +920,42 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
             }
 
         run.feedback_issue_url = created.url
-        return {"mode": "issue", "url": created.url, "warnings": created.warnings}
+        if finished is None:
+            return {"mode": "issue", "url": created.url, "warnings": created.warnings}
+
+        warnings = list(created.warnings)
+        updated_state = finished.run_state.model_copy(
+            update={"feedback_issue_url": created.url}
+        )
+        try:
+            write_report(updated_state, state.pack, finished.report_path)
+            finished.run_state_path.write_text(updated_state.to_json(), encoding="utf-8")
+        except (OSError, ReportError) as exc:
+            warnings.append(
+                f"Feedback issue {created.url} was filed, but the already-written report at "
+                f"{finished.report_path} could not be updated to link it: {exc}. The report "
+                "and run-state.json still say no feedback was sent; do not resend the "
+                "feedback, it is filed."
+            )
+            return {
+                "mode": "issue",
+                "url": created.url,
+                "warnings": warnings,
+                "report_updated": False,
+            }
+
+        finished.run_state = updated_state
+        return {
+            "mode": "issue",
+            "url": created.url,
+            "warnings": warnings,
+            "report_updated": True,
+            "report_path": str(finished.report_path),
+        }
+
+
+def _register_report_tools(mcp: MCPServer, state: AppState) -> None:
+    """Finishing a run: rendering and writing out its report."""
 
     @mcp.tool()
     def render_report(finished: str) -> dict[str, Any]:
@@ -769,8 +973,13 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
         it (and its schema_version) can be handed to
         engineering-audit-render later to re-render the same report without
         this server, this run tracker, or either URL, still in memory.
+
+        The finished run stays reachable for one last submit_feedback (the
+        order AUDIT.md documents), which rewrites both files to carry the
+        feedback issue's link. It stops being reachable at the next
+        begin_run.
         """
-        run = _require_run()
+        run = _require_run(state)
         config = _require_config(run)
 
         finished_meta = RunMeta(**{**run.meta.model_dump(), "finished": finished})
@@ -779,7 +988,7 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
             meta=finished_meta,
             config=config,
             domain_results=run.domain_results,
-            filed_issue_urls=run.filed_issue_urls,
+            filed_issue_urls=_filed_urls_by_rule(run),
             feedback_issue_url=run.feedback_issue_url,
         )
 
@@ -799,14 +1008,52 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
         }
 
         # A rendered report is a finished run: free the slot so the next
-        # begin_run does not need replace=True to start clean.
+        # begin_run does not need replace=True to start clean, while keeping
+        # the run itself reachable for a final submit_feedback.
         state.run = None
+        state.finished = FinishedRun(
+            tracker=run,
+            run_state=run_state,
+            report_path=report_path,
+            run_state_path=run_state_path,
+        )
 
         return {
             "report_path": str(report_path),
             "run_state_path": str(run_state_path),
             "findings_summary": findings_summary,
         }
+
+
+def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
+    """Load the rules pack and construct the MCPServer app.
+
+    Tool registration is split per concern into the _register_*_tools
+    functions above, which this calls in sequence; the call order is also the
+    order the tools are advertised in, and the order AUDIT.md walks them in.
+
+    Raises RulesPackError (or RulesPackParseError) if the pack cannot be
+    loaded; this is intentionally not caught here so callers that want the
+    exception (tests, alternative entry points) can see it directly. main()
+    is the one place that turns it into a clean CLI error.
+    """
+    state = AppState(pack=load_pack(rules_dir))
+
+    mcp = MCPServer("engineering-audit")
+    # The SDK installs OpenTelemetry span middleware on every server by
+    # default. This project's design requires explicit consent for any
+    # telemetry, so it is stripped here rather than left ambient.
+    mcp.middleware[:] = [
+        m for m in mcp.middleware if not isinstance(m, OpenTelemetryMiddleware)
+    ]
+
+    _register_pack_tools(mcp, state)
+    _register_run_tools(mcp, state)
+    _register_config_tools(mcp, state)
+    _register_result_tools(mcp, state)
+    _register_issue_tools(mcp, state)
+    _register_feedback_tools(mcp, state)
+    _register_report_tools(mcp, state)
 
     return mcp, state
 
