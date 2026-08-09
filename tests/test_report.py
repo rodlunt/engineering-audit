@@ -395,6 +395,53 @@ def test_feedback_issue_url_with_non_http_scheme_raises() -> None:
         render_report(run_state, pack, feedback_issue_url="javascript:alert(1)")
 
 
+def test_finding_reference_line_cites_the_rule_pack_source() -> None:
+    # D01-R02 (the finding in _base_run_state) carries a Source: fragment in
+    # the fixture pack, so the reference line must quote it, not the
+    # finding payload (the finding itself never carries a source field).
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    rendered = render_report(run_state, pack)
+    assert (
+        "Reference: D01-R02: invented for test fixtures only, no external source" in rendered
+    )
+
+
+def test_finding_reference_line_states_no_source_when_rule_has_none() -> None:
+    # D01-R04's footer deliberately has no Source: fragment; turn it into a
+    # finding and confirm the report says so plainly rather than fabricating
+    # a citation or silently omitting the line.
+    pack = _pack()
+    d01 = pack.get_domain("d01")
+    assert d01 is not None
+    verdicts = _all_pass_verdicts(d01)
+    verdicts[3] = RuleVerdict(rule_id="D01-R04", verdict=Verdict.FINDING)
+    run_state = RunState(
+        meta=_meta(),
+        config=AuditConfig(selected_domain_ids=["d01"], issue_mode="report"),
+        domain_results={
+            "d01": DomainResult(
+                domain_id="d01",
+                status="completed",
+                rule_verdicts=verdicts,
+                findings=[
+                    Finding(
+                        rule_id="D01-R04",
+                        severity=Severity.LOW,
+                        title="beard-length average not recalculated on retirement",
+                        location="ledger/beards.py:10",
+                        body_md="x",
+                        issue_title="x",
+                        issue_body="x",
+                    )
+                ],
+            )
+        },
+    )
+    rendered = render_report(run_state, pack)
+    assert "Reference: D01-R04 (no external source cited in the rules pack)" in rendered
+
+
 def test_write_report_writes_the_file(tmp_path: Path) -> None:
     pack = _pack()
     run_state = _base_run_state(pack)

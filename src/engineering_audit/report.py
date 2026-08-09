@@ -238,7 +238,28 @@ def _environment_info(run_state: RunState) -> str:
     return f"<ul>{rows}</ul>"
 
 
-def _findings_section(selected: dict[str, DomainResult], domain_titles: dict[str, str]) -> str:
+def _reference_line(rule: Rule) -> str:
+    """Build the deterministic reference line appended after every rendered
+    finding's body.
+
+    This is added by the report renderer itself, never by the auditing
+    agent: the citation grounding a finding comes from the rules pack's own
+    parsed ``Source:`` fragment (see rules.py), not from whatever the agent
+    recalls about the rule. A rule with no parsed source is a deliberately
+    unsourced rule (the rules pack's own sourcing policy allows this), so
+    that case states plainly that no source was cited rather than
+    fabricating one or omitting the line.
+    """
+    if rule.source:
+        return f"Reference: {rule.id}: {rule.source}"
+    return f"Reference: {rule.id} (no external source cited in the rules pack)"
+
+
+def _findings_section(
+    selected: dict[str, DomainResult],
+    domain_titles: dict[str, str],
+    rule_index: dict[str, Rule],
+) -> str:
     blocks = []
     for domain_id, result in selected.items():
         title = domain_titles[domain_id]
@@ -255,12 +276,16 @@ def _findings_section(selected: dict[str, DomainResult], domain_titles: dict[str
         for finding in result.findings:
             severity = finding.severity.value
             badge = f'<span class="severity-badge severity-{_esc(severity)}">{_esc(severity)}</span>'
+            # render_report has already confirmed every finding's rule_id is
+            # in the pack, so this lookup cannot miss.
+            rule = rule_index[finding.rule_id]
             items.append(
                 f'<div class="finding sev-{_esc(severity)}">'
                 f'<div class="finding-head">{badge} <strong>{_esc(finding.title)}</strong> '
                 f'<span class="finding-rule">({_esc(finding.rule_id)})</span></div>'
                 f'<div class="finding-location">{_esc(finding.location)}</div>'
                 f'<div class="finding-body">{_markdownish(finding.body_md)}</div>'
+                f'<div class="finding-reference">{_esc(_reference_line(rule))}</div>'
                 "</div>"
             )
         blocks.append(f"<h3>{_esc(title)}</h3>{''.join(items)}")
@@ -400,7 +425,7 @@ def render_report(
         page_title=f"Engineering practice audit report: {_esc(run_state.meta.repo_name)}",
         meta_block=_render_meta_block(run_state),
         performance_summary=performance_summary,
-        findings_section=_findings_section(selected, domain_titles),
+        findings_section=_findings_section(selected, domain_titles, rule_index),
         issues_section=_issues_section(selected, issue_urls),
         feedback_section=_feedback_section(run_state, feedback_issue_url),
         tool_version=_esc(run_state.meta.tool_version),

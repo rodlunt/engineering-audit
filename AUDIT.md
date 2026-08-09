@@ -111,7 +111,10 @@ For each domain id in `selected_domain_ids`, in order:
      you inspected (coverage belongs in the run's coverage numbers, not in every finding). If a
      finding genuinely needs supporting evidence (a quoted config block, a reproduction), append
      it after the three parts, kept minimal. A finding a developer can absorb in fifteen seconds
-     gets fixed; a page of prose gets skimmed.
+     gets fixed; a page of prose gets skimmed. A supporting reference (the rule's cited source, or
+     a plain statement that the rule carries none) is appended automatically from the rules pack
+     after every rendered finding; do not restate sources or the rule's literature-review rationale
+     in the body yourself. Keep the three parts about the repository, not about the literature.
 4. Once every rule in the domain has a verdict, decide the domain's overall `status`:
    - `completed`, if you were able to sweep the repository at all (even if some individual rules
      ended up could-not-evaluate).

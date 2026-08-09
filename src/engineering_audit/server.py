@@ -42,7 +42,7 @@ from engineering_audit.feedback import (
 )
 from engineering_audit.issues import IssueFilingError, create_issue, detect_repo, gh_available
 from engineering_audit.report import write_report
-from engineering_audit.rules import RulesPack, RulesPackError, get_domain_text, load_pack
+from engineering_audit.rules import Rule, RulesPack, RulesPackError, get_domain_text, load_pack
 from engineering_audit.schema import (
     AuditConfig,
     DomainResult,
@@ -142,6 +142,12 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
     """
     pack = load_pack(rules_dir)
     state = AppState(pack=pack)
+    # Built once from the loaded pack; used by file_issues to look up each
+    # finding's rule so the filed issue can carry the rule's cited source
+    # without file_issues re-walking the pack on every call.
+    rule_index: dict[str, Rule] = {
+        rule.id: rule for domain in pack.domains for rule in domain.rules
+    }
 
     mcp = MCPServer("engineering-audit")
     # The SDK installs OpenTelemetry span middleware on every server by
@@ -529,10 +535,22 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
         filed_this_call: dict[str, str] = {}
         warnings: list[str] = []
         for _domain_id, finding in pending:
+            # record_domain_result already validated (via DomainResult's own
+            # consistency check plus validate_completeness) that every
+            # finding's rule_id is a real rule in this domain's slice of the
+            # pack, so this lookup should never miss; treat a genuinely
+            # absent rule the same as an unsourced one rather than crashing
+            # issue filing on something that should be unreachable.
+            rule = rule_index.get(finding.rule_id)
+            reference = (
+                f"Reference: {rule.source}"
+                if rule is not None and rule.source
+                else "Reference: no external source cited in the rules pack."
+            )
             body = (
                 f"{finding.issue_body}\n\n"
                 f"Found by an engineering-practice audit (rule {finding.rule_id}, severity "
-                f"{finding.severity.value}, at {finding.location})."
+                f"{finding.severity.value}, at {finding.location}). {reference}"
             )
             try:
                 created = create_issue(target_repo, finding.issue_title, body, ["engineering-audit"])

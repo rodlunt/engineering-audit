@@ -70,6 +70,7 @@ class Rule:
     title: str
     number: int
     volatility: str | None = None
+    source: str | None = None
 
 
 @dataclass(frozen=True)
@@ -117,6 +118,41 @@ def _slug_from_filename(path: Path) -> str:
     return match.group("slug") if match else stem
 
 
+def _extract_source(block: str, rule_id_start: int) -> str | None:
+    """Extract a rule's cited source, if any, from its metadata footer.
+
+    ``rule_id_start`` is the start of the winning ``Rule id:`` match (the
+    last one in the block, per the reasoning in :func:`_parse_rules`: prose
+    earlier in the block could reference a different rule's id). The search
+    for ``Source:`` is deliberately narrowed to that same footer paragraph,
+    not the whole block: the heuristic chosen here is "search backwards
+    only within the footer's own line/segment", found by walking back to
+    the nearest blank line (or the start of the block) before
+    ``rule_id_start``. Restricting the window this way stops an unrelated
+    "Source" mentioned in the rule's own body prose, or in trailing
+    domain-level text such as a revision log, from being mistaken for the
+    footer's own citation. Within that narrowed segment, the *last*
+    ``Source:`` occurrence wins, for the same reason the rule id itself
+    takes the last match.
+
+    A footer with no ``Source:`` fragment at all is a deliberately
+    unsourced rule (see the rules pack's own sourcing policy): that is a
+    legitimate result, so this returns ``None`` rather than raising.
+    """
+    segment_start = block.rfind("\n\n", 0, rule_id_start)
+    segment_start = 0 if segment_start == -1 else segment_start
+    footer_segment = block[segment_start:rule_id_start]
+
+    source_matches = list(re.finditer(r"Source:", footer_segment))
+    if not source_matches:
+        return None
+
+    source_text = footer_segment[source_matches[-1].end():]
+    source_text = " ".join(source_text.split())  # collapse whitespace/newlines
+    source_text = source_text.strip().rstrip(",.").strip()
+    return source_text or None
+
+
 def _parse_rules(path: Path, text: str) -> list[Rule]:
     headings = list(_RULE_HEADING_RE.finditer(text))
     if not headings:
@@ -159,7 +195,8 @@ def _parse_rules(path: Path, text: str) -> list[Rule]:
                 f"{path}: rule {heading_number} ('{heading_title}') has no parseable "
                 "'Rule id: ...' metadata line"
             )
-        rule_id = id_matches[-1].group("rule_id").upper()
+        winning_id_match = id_matches[-1]
+        rule_id = winning_id_match.group("rule_id").upper()
         if rule_id in seen_ids:
             raise RulesPackParseError(
                 f"{path}: rule id {rule_id} appears on both '{seen_ids[rule_id]}' and "
@@ -175,7 +212,17 @@ def _parse_rules(path: Path, text: str) -> list[Rule]:
             else None
         )
 
-        rules.append(Rule(id=rule_id, title=heading_title, number=heading_number, volatility=volatility))
+        source = _extract_source(block, winning_id_match.start())
+
+        rules.append(
+            Rule(
+                id=rule_id,
+                title=heading_title,
+                number=heading_number,
+                volatility=volatility,
+                source=source,
+            )
+        )
     return rules
 
 

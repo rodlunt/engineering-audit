@@ -50,6 +50,61 @@ def test_rule_ids_and_titles_parsed_correctly() -> None:
     assert d01.rules[1].volatility == "volatile"
 
 
+def test_sourced_rule_parses_the_source_fragment() -> None:
+    pack = load_pack(FIXTURE_PACK)
+    d01 = pack.get_domain("d01")
+    assert d01 is not None
+    assert d01.rules[0].source == "invented for test fixtures only, no external source"
+
+
+def test_sourceless_rule_gives_none_not_an_error() -> None:
+    # D01-R04's footer deliberately carries no 'Source:' fragment. Absent
+    # source is a legitimate, expected result, not a parse failure.
+    pack = load_pack(FIXTURE_PACK)
+    d01 = pack.get_domain("d01")
+    assert d01 is not None
+    rule = next(r for r in d01.rules if r.id == "D01-R04")
+    assert rule.source is None
+
+
+def test_multiline_source_fragment_collapses_to_one_line(tmp_path: Path) -> None:
+    scratch = _write_pack(
+        tmp_path,
+        "# Domain 01: Wrapped Source Domain\n\n"
+        "**Trigger:** you are about to exercise a wrapped source citation.\n\n"
+        "### 1. A rule whose source citation is hand-wrapped across lines.\n\n"
+        "Body.\n\n"
+        "*Source: a citation that was\n"
+        "hand-wrapped across several\n"
+        "lines in the source file. Rule id: D01-R01. Volatility: durable.*\n",
+    )
+    pack = load_pack(scratch)
+    d01 = pack.get_domain("d01")
+    assert d01 is not None
+    assert d01.rules[0].source == (
+        "a citation that was hand-wrapped across several lines in the source file"
+    )
+
+
+def test_source_footer_wins_over_earlier_source_mention_in_body(tmp_path: Path) -> None:
+    # A rule's own body prose could mention the word 'Source:' before its
+    # real footer (e.g. quoting another document). The last 'Source:'
+    # occurrence within the footer's own paragraph must win, not the first
+    # one found anywhere in the whole block.
+    scratch = _write_pack(
+        tmp_path,
+        "# Domain 01: Source Mention Domain\n\n"
+        "**Trigger:** you are about to exercise a body-level Source mention.\n\n"
+        "### 1. A rule whose body quotes a document that itself says Source: nothing.\n\n"
+        "The quoted document says Source: nothing useful here, in prose only.\n\n"
+        "*Source: the real citation for this rule. Rule id: D01-R01. Volatility: durable.*\n",
+    )
+    pack = load_pack(scratch)
+    d01 = pack.get_domain("d01")
+    assert d01 is not None
+    assert d01.rules[0].source == "the real citation for this rule"
+
+
 def test_second_domain_parsed_correctly() -> None:
     pack = load_pack(FIXTURE_PACK)
     d02 = pack.get_domain("d02")
