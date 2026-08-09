@@ -34,7 +34,7 @@ __all__ = [
 # The tool author's repository, for filing a feedback issue, and a personal
 # email as the fallback when gh is unavailable or filing fails.
 FEEDBACK_REPO = "rodlunt/engineering-audit"
-FEEDBACK_EMAIL = "rodneylunt79@gmail.com"
+FEEDBACK_EMAIL = "rodneylunt79+audit-feedback@gmail.com"
 
 _SEVERITY_ORDER = ("critical", "high", "medium", "low")
 

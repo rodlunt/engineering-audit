@@ -397,7 +397,7 @@ def test_feedback_section_renders_interactive_form_when_no_issue_filed() -> None
     # The embedded JSON carries the run metadata section too, built by the
     # same helper submit_feedback uses.
     assert "Run metadata" in rendered
-    assert "rodneylunt79@gmail.com" in rendered
+    assert "rodneylunt79+audit-feedback@gmail.com" in rendered
 
 
 def test_feedback_section_shows_filed_issue_link_and_still_offers_the_form() -> None:
@@ -551,7 +551,7 @@ def test_feedback_embedded_json_parses_and_matches_build_feedback_sections() -> 
     assert data["rollup"] == expected_sections["rollup"]
     assert data["self_assessment"] == expected_sections["self_assessment"]
     assert data["environment"] == expected_sections["environment"]
-    assert data["email"] == "rodneylunt79@gmail.com"
+    assert data["email"] == "rodneylunt79+audit-feedback@gmail.com"
 
     # Cross-check against the MCP path's own builder: with only one section
     # consented, build_feedback_body's output must be exactly the always-on
