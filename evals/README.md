@@ -106,6 +106,23 @@ maintained rules pack can be substituted for the taster pack in step 3, but `exp
 ids are taster-pack ids, so scoring a private-pack run against it would need its own mapping;
 this harness ships tested only against the taster pack.
 
+## Control semantics
+
+A finding expectation scores `hit`, `missed` or `found-wrong-location` (the last of those counts
+as missed): straightforward, since a finding either exists at the right place or it does not.
+
+A no-finding control (`expect: "no-finding"`) is stricter than "no finding was recorded". It only
+scores `held` when the rule's own verdict is explicitly `pass`. A finding recorded against it
+scores `false-positive`. Anything else, not-applicable, could-not-evaluate, or no verdict at all
+for that rule, scores `control-not-evaluated`, and that counts as a failure exactly like a
+false-positive does. The reasoning: a control exists to prove the auditor actually looked and
+found nothing wrong. A rule marked not-applicable or could-not-evaluate was not looked at in the
+way the control needs, and a rule with no verdict at all was not looked at either; treating any of
+those as `held` would let a control pass by never having run, which is the same shape of bug this
+project's own hardening rules exist to catch elsewhere (a skipped check must never be
+representable as a pass). `control-not-evaluated` gives that failure its own name instead of
+folding it into a false clean bill of health.
+
 ## Known limitations
 
 - **A single run is a point estimate, not a trend.** One audit run against GrindPoints tells you
@@ -124,3 +141,16 @@ this harness ships tested only against the taster pack.
   repository, which would make a passing score mean less than it appears to. There is no fix for
   this short of keeping the golden repo and its answers private, which was deliberately not done
   here so the harness itself could ship in the open.
+
+## First recorded run
+
+2026-08-09, Claude Code headless on Sonnet, taster pack, against GrindPoints: 6 of 7 planted
+findings hit, 1 missed (D05-R08, the test-suite-layering judgement call; the auditor recorded
+adjacent d05 findings instead of that one), 3 of 4 controls held, 1 false positive (D01-R07) and
+10 unexpected findings listed. The false positive turned out, on inspection, to be the auditor
+being right and the fixture being wrong: `customers.points_balance` in `schema.sql` had no lower
+bound, so the control's claim that every domain-constrained attribute was bounded did not hold.
+Fixed in the fixture the same day (see `schema.sql` and the D01-R07 entry in `expected.json`). One
+run is not a trend (see Known limitations above), but this is the harness doing the thing it
+exists to do: catching a defect in its own fixture on day one, from a real disagreement between
+the spec and a live audit, rather than from a human re-reading the schema by hand.
