@@ -208,6 +208,15 @@ def test_build_feedback_sections_returns_the_five_fixed_sections_regardless_of_c
     assert "d01: confidence high." in sections["self_assessment"]
 
 
+def test_rollup_by_domain_includes_a_domain_that_was_audited_and_came_back_clean() -> None:
+    # d02 in _domain_results() is completed with zero findings: it must
+    # appear in the rollup's "By domain" breakdown at zero, not be omitted
+    # as if it were never audited at all.
+    sections = build_feedback_sections(_meta(), _domain_results())
+    assert "d01: 1" in sections["rollup"]
+    assert "d02: 0" in sections["rollup"]
+
+
 def test_build_feedback_body_matches_build_feedback_sections_for_every_consent_combination() -> None:
     # The MCP path (build_feedback_body) must always be reconstructible from
     # build_feedback_sections' per-section chunks, since the report's JS

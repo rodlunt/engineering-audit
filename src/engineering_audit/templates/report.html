@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
 <title>$page_title</title>
 <style>
   :root {
@@ -15,7 +16,10 @@
     --accent: #2f5d50;
     --critical: #9b2226;
     --high: #bb4d00;
-    --medium: #9a7b00;
+    /* .severity-medium sets color: #1a1a1a on this background; #a08000 gives
+       a 4.63:1 contrast ratio against that text, clearing WCAG 2.2 SC 1.4.3's
+       4.5:1 minimum. */
+    --medium: #a08000;
     --low: #2c5f8a;
     --warn-bg: #fff4d6;
     --warn-border: #caa63d;
@@ -189,11 +193,59 @@
   .muted { color: var(--muted); font-size: 0.9rem; }
   footer { color: var(--muted); font-size: 0.85rem; border-top: 1px solid var(--border); padding-top: 1rem; }
   footer a { color: var(--accent); }
+  .print-button { margin: 0.35rem 0 0.75rem; }
+  @media print {
+    /* Force the light palette regardless of the OS colour scheme: this
+       block is deliberately placed after the dark-mode block above so it
+       wins the cascade when both media conditions match (printing while
+       the OS is in dark mode). */
+    :root {
+      --bg: #f7f7f5;
+      --fg: #1a1a1a;
+      --muted: #5b5b5b;
+      --card-bg: #ffffff;
+      --border: #d8d8d4;
+      --accent: #2f5d50;
+      --critical: #9b2226;
+      --high: #bb4d00;
+      --medium: #a08000;
+      --low: #2c5f8a;
+      --warn-bg: #fff4d6;
+      --warn-border: #caa63d;
+      --ok-bg: #e9f5ee;
+    }
+    body { margin: 0; }
+    /* The interactive filing UI makes no sense on paper: a tick box, a
+       token input and buttons cannot be acted on once printed. */
+    .print-button,
+    .issue-actions,
+    .issue-select,
+    .github-file-form,
+    .feedback-form,
+    button {
+      display: none !important;
+    }
+    /* Readonly textareas (issue text, feedback) are scrollable boxes on
+       screen; a scrollbar means nothing on paper, so expand them to show
+       their full content instead of clipping at their on-screen height. */
+    .issue-block textarea,
+    #feedback-textarea {
+      height: auto !important;
+      max-height: none !important;
+      overflow: visible !important;
+      border: none;
+      padding: 0;
+      white-space: pre-wrap;
+    }
+    .finding, .issue-block { break-inside: avoid; page-break-inside: avoid; }
+    a { color: #1a1a1a; }
+  }
 </style>
 </head>
 <body>
 <header>
   <h1>Engineering practice audit report</h1>
+  <button type="button" class="print-button" onclick="window.print()">Print / Save as PDF</button>
   $meta_block
 </header>
 
