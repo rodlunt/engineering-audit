@@ -40,6 +40,11 @@ same server process never finished. Either resume by calling the remaining tools
 against the existing run, or, if you are deliberately restarting, call `begin_run` again with
 `replace=True`.
 
+`begin_run`'s response also includes `meta.update_check`, the result of a best-effort check
+against this tool's latest tagged release on GitHub. If it starts with `stale` or
+`could-not-check`, tell the user before continuing: a stale tool still audits fine, but the user
+decides whether to update first, and that is not your call to make silently.
+
 ## 3. Configure the run
 
 Call `start_config`. It responds in one of two modes:
