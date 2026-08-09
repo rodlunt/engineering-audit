@@ -16,7 +16,10 @@
     --accent: #2f5d50;
     --critical: #9b2226;
     --high: #bb4d00;
-    --medium: #9a7b00;
+    /* .severity-medium sets color: #1a1a1a on this background; #a08000 gives
+       a 4.63:1 contrast ratio against that text, clearing WCAG 2.2 SC 1.4.3's
+       4.5:1 minimum. */
+    --medium: #a08000;
     --low: #2c5f8a;
     --warn-bg: #fff4d6;
     --warn-border: #caa63d;

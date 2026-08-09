@@ -720,6 +720,23 @@ def test_issue_embedded_body_ends_with_shared_trailing_line_byte_identical_to_fi
 
 
 # ---------------------------------------------------------------------------
+# Medium severity badge contrast (#52)
+# ---------------------------------------------------------------------------
+
+
+def test_light_mode_medium_severity_colour_meets_wcag_contrast_minimum() -> None:
+    # .severity-medium renders color: #1a1a1a text on background: var(--medium).
+    # #9a7b00 (the old value) gave a 4.31:1 contrast ratio against that text,
+    # short of WCAG 2.2 SC 1.4.3's 4.5:1 minimum for this badge's 0.75rem
+    # text. #a08000 gives 4.63:1.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    rendered = render_report(run_state, pack)
+    assert "--medium: #a08000;" in rendered
+    assert "#9a7b00" not in rendered
+
+
+# ---------------------------------------------------------------------------
 # Content Security Policy (part of #40)
 # ---------------------------------------------------------------------------
 
