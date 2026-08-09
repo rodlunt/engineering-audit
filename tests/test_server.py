@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import shutil
 import subprocess
 import urllib.request
@@ -491,9 +492,18 @@ def test_get_config_interactive_path_blocks_then_returns_after_form_post(tmp_pat
     started = _call(mcp, "start_config", {})
     url = started["url"]
 
-    payload = urlencode({"domain": ["d01", "d02"], "issue_mode": "report"}, doseq=True).encode(
-        "utf-8"
-    )
+    # The config page now embeds a per-run CSRF token (issue #39) that a
+    # POST must echo back, so fetch the page first and read it out of the
+    # hidden field, the same way a real browser submission would.
+    with urllib.request.urlopen(url, timeout=5) as resp:
+        page = resp.read().decode("utf-8")
+    token_match = re.search(r'name="csrf_token" value="([^"]+)"', page)
+    assert token_match is not None
+    token = token_match.group(1)
+
+    payload = urlencode(
+        {"domain": ["d01", "d02"], "issue_mode": "report", "csrf_token": token}, doseq=True
+    ).encode("utf-8")
     request = urllib.request.Request(url + "submit", data=payload, method="POST")
     with urllib.request.urlopen(request, timeout=5) as resp:
         assert resp.status == 200
