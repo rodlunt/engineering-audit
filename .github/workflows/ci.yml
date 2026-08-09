@@ -4,6 +4,20 @@ on:
   push:
     branches: [main]
   pull_request:
+    branches: [main]
+
+# Read-only by default: this workflow only checks out code, installs
+# dependencies and runs lint/type/test steps, so it never needs to write
+# back to the repo. Matches tag-version-guard.yml rather than inheriting
+# whatever the org or repo default happens to be.
+permissions:
+  contents: read
+
+# Cancel a run that a newer push on the same ref has already superseded,
+# instead of leaving it queued to report a stale result after the fact.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   check:
@@ -19,5 +33,28 @@ jobs:
           enable-cache: true
       - name: Sync dependencies
         run: uv sync --frozen
+      - name: Lint (ruff)
+        # ruff runs via a pinned, ephemeral `--with` overlay rather than a
+        # declared dev dependency, so this step needs no uv.lock change.
+        run: uv run --with ruff==0.15.16 ruff check .
       - name: Run tests
         run: uv run pytest -q
+
+  typecheck:
+    name: typecheck
+    runs-on: ubuntu-latest
+    # Not the branch-protection-required job (that is "check", above): mypy
+    # currently flags two pre-existing issues in src/ that are out of scope
+    # for this change, so this job is allowed to go red without blocking a
+    # merge. It stays visible rather than silenced; see the PR description
+    # for the follow-up to fix the underlying findings and fold this back
+    # into "check" once it is clean.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+      - name: Sync dependencies
+        run: uv sync --frozen
+      - name: Type-check (mypy)
+        run: uv run --with mypy==2.3.0 mypy src

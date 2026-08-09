@@ -26,3 +26,9 @@ build-backend = "uv_build"
 dev = [
     "pytest>=9.1.1",
 ]
+
+[tool.ruff]
+# Matches the floor in requires-python above. ruff itself is not pinned
+# here as a dependency; CI runs a pinned version via `uv run --with` so
+# this file only needs to carry the checked-in behaviour, not the tool.
+target-version = "py310"
