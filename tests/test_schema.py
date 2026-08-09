@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from pydantic import ValidationError
 
 from engineering_audit.rules import load_pack
 from engineering_audit.schema import (
+    RUN_STATE_SCHEMA_VERSION,
     AuditConfig,
     Coverage,
     DomainResult,
@@ -15,6 +18,7 @@ from engineering_audit.schema import (
     RuleVerdict,
     RunMeta,
     RunState,
+    RunStateVersionError,
     SelfAssessment,
     Severity,
     TelemetryConsent,
@@ -227,3 +231,73 @@ def test_validate_completeness_rejects_verdicts_for_unknown_rule_ids() -> None:
         validate_completeness(d01, result)
     assert "D01-T99" in str(excinfo.value)
     assert "not define" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# RunState schema versioning: schema_version, filed_issue_urls,
+# feedback_issue_url (src/engineering_audit/schema.py)
+# ---------------------------------------------------------------------------
+
+
+def test_run_state_defaults_to_current_schema_version_when_freshly_built() -> None:
+    state = RunState(meta=_meta(), config=_config())
+    assert state.schema_version == RUN_STATE_SCHEMA_VERSION == 2
+    assert state.filed_issue_urls == {}
+    assert state.feedback_issue_url is None
+
+
+def test_run_state_serialised_json_carries_schema_version_2() -> None:
+    state = RunState(meta=_meta(), config=_config())
+    dumped = json.loads(state.to_json())
+    assert dumped["schema_version"] == 2
+
+
+def test_run_state_from_json_missing_schema_version_is_treated_as_version_1() -> None:
+    # A run-state.json written before this field existed has no
+    # schema_version key at all. It must still be accepted, treated as
+    # version 1, with the newer fields defaulted rather than the file being
+    # rejected outright.
+    state = RunState(meta=_meta(), config=_config())
+    raw = json.loads(state.to_json())
+    del raw["schema_version"]
+    restored = RunState.from_json(json.dumps(raw))
+    assert restored.schema_version == 1
+    assert restored.filed_issue_urls == {}
+    assert restored.feedback_issue_url is None
+
+
+def test_run_state_from_json_accepts_current_version() -> None:
+    state = RunState(
+        meta=_meta(),
+        config=_config(),
+        filed_issue_urls={"D01-R01": "https://example.invalid/issues/1"},
+        feedback_issue_url="https://example.invalid/issues/2",
+    )
+    restored = RunState.from_json(state.to_json())
+    assert restored.schema_version == 2
+    assert restored == state
+
+
+def test_run_state_from_json_rejects_a_higher_schema_version_naming_both_numbers() -> None:
+    state = RunState(meta=_meta(), config=_config())
+    raw = json.loads(state.to_json())
+    raw["schema_version"] = 99
+    with pytest.raises(RunStateVersionError) as excinfo:
+        RunState.from_json(json.dumps(raw))
+    message = str(excinfo.value)
+    assert "99" in message
+    assert str(RUN_STATE_SCHEMA_VERSION) in message
+    assert "upgrade" in message.lower()
+
+
+def test_run_state_filed_issue_urls_and_feedback_issue_url_round_trip() -> None:
+    state = RunState(
+        meta=_meta(),
+        config=_config(),
+        filed_issue_urls={"D01-R01": "https://example.invalid/issues/7", "D01-R02": "https://example.invalid/issues/8"},
+        feedback_issue_url="https://example.invalid/issues/9",
+    )
+    restored = RunState.from_json(state.to_json())
+    assert restored.filed_issue_urls == state.filed_issue_urls
+    assert restored.feedback_issue_url == state.feedback_issue_url
+    assert restored == state

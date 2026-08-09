@@ -5,6 +5,7 @@ description = "Rules-pack-agnostic engineering practice audit tool delivered as 
 authors = [
     { name = "rodlunt", email = "181032093+rodlunt@users.noreply.github.com" }
 ]
+license = "Apache-2.0"
 requires-python = ">=3.10"
 dependencies = [
     "mcp>=2.0,<3.0",
@@ -14,6 +15,7 @@ dependencies = [
 [project.scripts]
 engineering-audit-mcp = "engineering_audit.server:main"
 engineering-audit-fragments = "engineering_audit.fragments:main"
+engineering-audit-render = "engineering_audit.render_cli:main"
 
 [build-system]
 requires = ["uv_build>=0.11.8,<0.12.0"]

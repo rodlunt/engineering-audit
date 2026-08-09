@@ -150,6 +150,10 @@ send or file it. It contains:
 - **Feedback to the author**: freeform text plus tick-box consent over which run
   statistics accompany it. Finding text never leaves your machine through this channel.
 
+A live example: [docs/demo/report.html](docs/demo/report.html) (download and open locally;
+GitHub does not render raw HTML in the browser). Generated from the invented demo rules pack
+in `tests/fixture_pack`, not a real audit against a real repository.
+
 ## Rules access
 
 This repository contains no rule content; the audit cannot run without a rules pack. The
@@ -178,4 +182,7 @@ page are deterministic and fully testable with no LLM involved.
 
 ## Licence
 
-To be finalised before the repository is made public. All rights reserved in the interim.
+The tooling in this repository (the MCP server, the deterministic report renderer, the
+configuration page, and every supporting script) is licensed under [Apache-2.0](LICENSE).
+Rules packs are licensed separately and are not covered by this repository's licence; see
+[Rules access](#rules-access).
