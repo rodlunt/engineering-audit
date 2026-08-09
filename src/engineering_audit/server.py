@@ -18,6 +18,7 @@ import json
 import os
 import subprocess
 import sys
+import webbrowser
 from collections import Counter
 from dataclasses import dataclass, field
 from importlib.metadata import PackageNotFoundError, distribution as _pkg_distribution
@@ -392,8 +393,10 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
         a valid AuditConfig JSON file, it is loaded immediately (the
         documented headless/CI path); an invalid or unreadable file is a
         loud error, never a silently-applied default. Otherwise this starts
-        the interactive localhost configuration page and returns its URL for
-        the agent to show the user.
+        the interactive localhost configuration page, opens it in the user's
+        browser when one is available (best-effort; the response's
+        opened_in_browser field says whether a tab actually opened), and
+        returns its URL for the agent to show the user as the fallback.
         """
         run = _require_run()
 
@@ -435,7 +438,18 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
         run.config_server = config_server
         run.config_mode = "interactive"
         run.config_url = url
-        return {"mode": "interactive", "url": url}
+        # Best-effort convenience, never load-bearing: the URL in the response
+        # stays the contract, because a remote or display-less session has no
+        # browser to open and must still work. The swallow is safe precisely
+        # because the result records whether a tab actually opened, so the
+        # agent can say "check your browser" or "open this URL" and never the
+        # wrong one. This only runs on the interactive path; the preset
+        # (headless) path returned above and never touches a browser.
+        try:
+            opened = webbrowser.open(url)
+        except webbrowser.Error:
+            opened = False
+        return {"mode": "interactive", "url": url, "opened_in_browser": opened}
 
     @mcp.tool()
     def get_config(timeout_s: float = 300) -> dict[str, Any]:
