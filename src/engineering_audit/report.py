@@ -356,7 +356,9 @@ def _github_file_form(repo_prefill: str) -> str:
         '<input type="password" id="gh-pat" autocomplete="off">'
         "</label><br>"
         '<button type="button" id="gh-file-button" onclick="fileSelectedIssues()">'
-        "File 0 selected issues</button>"
+        "File 0 selected issues</button> "
+        '<button type="button" id="gh-stop-button" onclick="stopFilingIssues()" '
+        'style="display:none">Stop</button>'
         '<p id="github-file-summary" class="muted"></p>'
         "</div>"
     )

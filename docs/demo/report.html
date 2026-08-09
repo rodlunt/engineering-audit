@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
 <title>Engineering practice audit report: rodlunt/demo-widgets-app</title>
 <style>
   :root {
@@ -15,7 +16,10 @@
     --accent: #2f5d50;
     --critical: #9b2226;
     --high: #bb4d00;
-    --medium: #9a7b00;
+    /* .severity-medium sets color: #1a1a1a on this background; #a08000 gives
+       a 4.63:1 contrast ratio against that text, clearing WCAG 2.2 SC 1.4.3's
+       4.5:1 minimum. */
+    --medium: #a08000;
     --low: #2c5f8a;
     --warn-bg: #fff4d6;
     --warn-border: #caa63d;
@@ -212,7 +216,7 @@
 
 <section id="issues">
   <h2>Issues</h2>
-  <div class="issue-actions"><button type="button" onclick="revealGithubFileForm()">Add selected issues to GitHub (requires GitHub PAT)</button> <button type="button" onclick="copySelectedIssues(this)">Copy selected issues (for pasting into an LLM or editor)</button></div><div id="github-file-form" class="github-file-form" style="display:none"><p class="muted">Files each selected issue directly from your browser to api.github.com over HTTPS, using the REST API. The token is used only in memory on this page: it is never stored (no localStorage, sessionStorage or cookies). A fine-grained personal access token with Issues read and write access on the one target repository is enough.</p><label>Repository (owner/name)<br><input type="text" id="gh-repo" value="rodlunt/demo-widgets-app" placeholder="owner/name"></label><br><label>Personal access token<br><input type="password" id="gh-pat" autocomplete="off"></label><br><button type="button" id="gh-file-button" onclick="fileSelectedIssues()">File 0 selected issues</button><p id="github-file-summary" class="muted"></p></div><div class="issue-block"><label class="issue-select"><input type="checkbox" id="issue-check-0" disabled> <a href="https://github.com/rodlunt/engineering-audit/issues/3">already filed</a></label><p><strong>Set shared-bed flag for bed-14</strong></p><textarea id="issue-text-0" readonly rows="6">Set shared-bed flag for bed-14
+  <div class="issue-actions"><button type="button" onclick="revealGithubFileForm()">Add selected issues to GitHub (requires GitHub PAT)</button> <button type="button" onclick="copySelectedIssues(this)">Copy selected issues (for pasting into an LLM or editor)</button></div><div id="github-file-form" class="github-file-form" style="display:none"><p class="muted">Files each selected issue directly from your browser to api.github.com over HTTPS, using the REST API. The token is used only in memory on this page: it is never stored (no localStorage, sessionStorage or cookies). A fine-grained personal access token with Issues read and write access on the one target repository is enough.</p><label>Repository (owner/name)<br><input type="text" id="gh-repo" value="rodlunt/demo-widgets-app" placeholder="owner/name"></label><br><label>Personal access token<br><input type="password" id="gh-pat" autocomplete="off"></label><br><button type="button" id="gh-file-button" onclick="fileSelectedIssues()">File 0 selected issues</button> <button type="button" id="gh-stop-button" onclick="stopFilingIssues()" style="display:none">Stop</button><p id="github-file-summary" class="muted"></p></div><div class="issue-block"><label class="issue-select"><input type="checkbox" id="issue-check-0" disabled> <a href="https://github.com/rodlunt/engineering-audit/issues/3">already filed</a></label><p><strong>Set shared-bed flag for bed-14</strong></p><textarea id="issue-text-0" readonly rows="6">Set shared-bed flag for bed-14
 
 bed-14 has two occupants (gnome-07, gnome-19) and neither carries the shared-bed flag. See ledger/beds.py:42.
 
@@ -421,6 +425,36 @@ function _markAlreadyFiled(index, existingUrl) {
   }
 }
 
+// Set once by stopFilingIssues() and read by fileNext() below. Module-level
+// (not local to fileSelectedIssues) so the button's onclick handler, fired
+// from a fresh call stack, can reach the flag a running fileSelectedIssues()
+// call is checking.
+var _fileStopRequested = false;
+
+function stopFilingIssues() {
+  // The in-flight fetch is left to finish; only the *next* one is skipped
+  // (see the check at the top of fileNext below). There is no way to abort
+  // a fetch already sent to GitHub without risking a filed issue whose
+  // network response never arrives back at this page.
+  _fileStopRequested = true;
+  var stopButton = document.getElementById("gh-stop-button");
+  if (stopButton) {
+    stopButton.disabled = true;
+    stopButton.textContent = "Stopping...";
+  }
+}
+
+function _setFilingInProgress(inProgress) {
+  var fileButton = document.getElementById("gh-file-button");
+  var stopButton = document.getElementById("gh-stop-button");
+  if (fileButton) { fileButton.disabled = inProgress; }
+  if (stopButton) {
+    stopButton.style.display = inProgress ? "inline-block" : "none";
+    stopButton.disabled = false;
+    stopButton.textContent = "Stop";
+  }
+}
+
 function fileSelectedIssues() {
   var repoInput = document.getElementById("gh-repo");
   var patInput = document.getElementById("gh-pat");
@@ -440,16 +474,22 @@ function fileSelectedIssues() {
 
   var data = _readJsonData("issues-data");
   var indexes = _selectedIssueIndexes();
-  var fileButton = document.getElementById("gh-file-button");
-  fileButton.disabled = true;
+  _fileStopRequested = false;
+  _setFilingInProgress(true);
   summary.textContent = "Checking " + repo + " for issues already filed...";
 
   var filedCount = 0;
 
   function fileNext(pending) {
+    if (_fileStopRequested) {
+      summary.textContent = "Filing stopped early. Filed " + filedCount + " of "
+        + indexes.length + " selected issue(s).";
+      _setFilingInProgress(false);
+      return;
+    }
     if (pending.length === 0) {
       summary.textContent = "Filed " + filedCount + " of " + indexes.length + " selected issue(s).";
-      fileButton.disabled = false;
+      _setFilingInProgress(false);
       return;
     }
     var i = pending[0];
@@ -472,7 +512,7 @@ function fileSelectedIssues() {
           if (statusEl) { statusEl.textContent = "Error: " + errorMessage; }
           summary.textContent = "Filed " + filedCount + " of " + indexes.length
             + " selected issue(s). Stopped after an error on \"" + issue.title + "\": " + errorMessage;
-          fileButton.disabled = false;
+          _setFilingInProgress(false);
           return;
         }
         var created = JSON.parse(bodyText);
@@ -496,7 +536,7 @@ function fileSelectedIssues() {
       if (statusEl) { statusEl.textContent = "Error: a network failure filing this issue"; }
       summary.textContent = "Filed " + filedCount + " of " + indexes.length
         + " selected issue(s). Stopped after a network error.";
-      fileButton.disabled = false;
+      _setFilingInProgress(false);
     });
   }
 
@@ -520,7 +560,7 @@ function fileSelectedIssues() {
     var message = (err && err.message) ? err.message : "the pre-check request failed";
     summary.textContent = "Could not check " + repo
       + " for already-filed issues, so nothing was filed: " + message + ".";
-    fileButton.disabled = false;
+    _setFilingInProgress(false);
   });
 }
 </script>

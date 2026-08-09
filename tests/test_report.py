@@ -871,3 +871,31 @@ def test_js_dedup_fails_closed_when_the_precheck_request_itself_fails() -> None:
     assert "so nothing was filed" in _INLINE_SCRIPT
     assert "fetchExistingIssueTitles(repo, pat).then(" in _INLINE_SCRIPT
     assert ").catch(function (err) {" in _INLINE_SCRIPT
+
+
+# ---------------------------------------------------------------------------
+# Cancel a bulk filing run in progress (#53)
+# ---------------------------------------------------------------------------
+
+
+def test_stop_button_rendered_hidden_alongside_file_button() -> None:
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    rendered = render_report(run_state, pack)
+
+    assert (
+        '<button type="button" id="gh-stop-button" onclick="stopFilingIssues()" '
+        'style="display:none">Stop</button>' in rendered
+    )
+
+
+def test_js_stop_flag_checked_before_each_fetch_and_resets_on_every_run() -> None:
+    # fileNext checks the stop flag before firing the *next* fetch, so an
+    # in-flight request is always allowed to finish; the flag is reset to
+    # false at the start of every fileSelectedIssues() call, so a stopped
+    # run does not leave a later run pre-cancelled.
+    assert "function stopFilingIssues() {" in _INLINE_SCRIPT
+    assert "_fileStopRequested = true;" in _INLINE_SCRIPT
+    assert "_fileStopRequested = false;" in _INLINE_SCRIPT
+    assert "if (_fileStopRequested) {" in _INLINE_SCRIPT
+    assert "Filing stopped early." in _INLINE_SCRIPT

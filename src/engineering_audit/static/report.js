@@ -190,6 +190,36 @@ function _markAlreadyFiled(index, existingUrl) {
   }
 }
 
+// Set once by stopFilingIssues() and read by fileNext() below. Module-level
+// (not local to fileSelectedIssues) so the button's onclick handler, fired
+// from a fresh call stack, can reach the flag a running fileSelectedIssues()
+// call is checking.
+var _fileStopRequested = false;
+
+function stopFilingIssues() {
+  // The in-flight fetch is left to finish; only the *next* one is skipped
+  // (see the check at the top of fileNext below). There is no way to abort
+  // a fetch already sent to GitHub without risking a filed issue whose
+  // network response never arrives back at this page.
+  _fileStopRequested = true;
+  var stopButton = document.getElementById("gh-stop-button");
+  if (stopButton) {
+    stopButton.disabled = true;
+    stopButton.textContent = "Stopping...";
+  }
+}
+
+function _setFilingInProgress(inProgress) {
+  var fileButton = document.getElementById("gh-file-button");
+  var stopButton = document.getElementById("gh-stop-button");
+  if (fileButton) { fileButton.disabled = inProgress; }
+  if (stopButton) {
+    stopButton.style.display = inProgress ? "inline-block" : "none";
+    stopButton.disabled = false;
+    stopButton.textContent = "Stop";
+  }
+}
+
 function fileSelectedIssues() {
   var repoInput = document.getElementById("gh-repo");
   var patInput = document.getElementById("gh-pat");
@@ -209,16 +239,22 @@ function fileSelectedIssues() {
 
   var data = _readJsonData("issues-data");
   var indexes = _selectedIssueIndexes();
-  var fileButton = document.getElementById("gh-file-button");
-  fileButton.disabled = true;
+  _fileStopRequested = false;
+  _setFilingInProgress(true);
   summary.textContent = "Checking " + repo + " for issues already filed...";
 
   var filedCount = 0;
 
   function fileNext(pending) {
+    if (_fileStopRequested) {
+      summary.textContent = "Filing stopped early. Filed " + filedCount + " of "
+        + indexes.length + " selected issue(s).";
+      _setFilingInProgress(false);
+      return;
+    }
     if (pending.length === 0) {
       summary.textContent = "Filed " + filedCount + " of " + indexes.length + " selected issue(s).";
-      fileButton.disabled = false;
+      _setFilingInProgress(false);
       return;
     }
     var i = pending[0];
@@ -241,7 +277,7 @@ function fileSelectedIssues() {
           if (statusEl) { statusEl.textContent = "Error: " + errorMessage; }
           summary.textContent = "Filed " + filedCount + " of " + indexes.length
             + " selected issue(s). Stopped after an error on \"" + issue.title + "\": " + errorMessage;
-          fileButton.disabled = false;
+          _setFilingInProgress(false);
           return;
         }
         var created = JSON.parse(bodyText);
@@ -265,7 +301,7 @@ function fileSelectedIssues() {
       if (statusEl) { statusEl.textContent = "Error: a network failure filing this issue"; }
       summary.textContent = "Filed " + filedCount + " of " + indexes.length
         + " selected issue(s). Stopped after a network error.";
-      fileButton.disabled = false;
+      _setFilingInProgress(false);
     });
   }
 
@@ -289,6 +325,6 @@ function fileSelectedIssues() {
     var message = (err && err.message) ? err.message : "the pre-check request failed";
     summary.textContent = "Could not check " + repo
       + " for already-filed issues, so nothing was filed: " + message + ".";
-    fileButton.disabled = false;
+    _setFilingInProgress(false);
   });
 }
