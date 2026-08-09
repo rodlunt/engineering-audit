@@ -407,10 +407,10 @@ def test_finding_reference_line_cites_the_rule_pack_source() -> None:
     )
 
 
-def test_finding_reference_line_states_no_source_when_rule_has_none() -> None:
-    # D01-R04's footer deliberately has no Source: fragment; turn it into a
-    # finding and confirm the report says so plainly rather than fabricating
-    # a citation or silently omitting the line.
+def test_finding_on_a_sourceless_rule_refuses_to_render() -> None:
+    # D01-R04's footer deliberately has no Source: fragment. A finding is a
+    # published claim; the report must refuse to publish a claim without
+    # evidence, and must never print an "unsourced" admission instead.
     pack = _pack()
     d01 = pack.get_domain("d01")
     assert d01 is not None
@@ -438,8 +438,12 @@ def test_finding_reference_line_states_no_source_when_rule_has_none() -> None:
             )
         },
     )
-    rendered = render_report(run_state, pack)
-    assert "Reference: D01-R04 (no external source cited in the rules pack)" in rendered
+    with pytest.raises(ReportError) as excinfo:
+        render_report(run_state, pack)
+    message = str(excinfo.value)
+    assert "D01-R04" in message
+    assert "no cited source" in message
+    assert "unsourced" not in message.lower()
 
 
 def test_write_report_writes_the_file(tmp_path: Path) -> None:

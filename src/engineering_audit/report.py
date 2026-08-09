@@ -245,14 +245,18 @@ def _reference_line(rule: Rule) -> str:
     This is added by the report renderer itself, never by the auditing
     agent: the citation grounding a finding comes from the rules pack's own
     parsed ``Source:`` fragment (see rules.py), not from whatever the agent
-    recalls about the rule. A rule with no parsed source is a deliberately
-    unsourced rule (the rules pack's own sourcing policy allows this), so
-    that case states plainly that no source was cited rather than
-    fabricating one or omitting the line.
+    recalls about the rule. A finding is a published claim, and this tool
+    does not publish claims without evidence: a rule with no parsed source
+    is refused upstream (see the render_report gate), so by the time this
+    runs the source is always present.
     """
-    if rule.source:
-        return f"Reference: {rule.id}: {rule.source}"
-    return f"Reference: {rule.id} (no external source cited in the rules pack)"
+    if not rule.source:
+        raise ReportError(
+            f"finding references rule {rule.id}, which has no cited source in the "
+            "rules pack. A finding is a published claim; this tool does not publish "
+            "claims without evidence. Fix the rule's Source: footer or drop the finding."
+        )
+    return f"Reference: {rule.id}: {rule.source}"
 
 
 def _findings_section(
@@ -402,6 +406,13 @@ def render_report(
                 raise ReportError(
                     f"finding in domain '{domain_id}' references rule id "
                     f"'{finding.rule_id}', which is not in the rules pack"
+                )
+            if not rule_index[finding.rule_id].source:
+                raise ReportError(
+                    f"finding in domain '{domain_id}' references rule "
+                    f"{finding.rule_id}, which has no cited source in the rules pack. "
+                    "A finding is a published claim; this tool does not publish claims "
+                    "without evidence. Fix the rule's Source: footer or drop the finding."
                 )
 
     all_findings = [

@@ -669,12 +669,13 @@ def test_file_issues_confirm_files_one_issue_per_finding(
     ]
 
 
-def test_file_issues_body_states_no_source_for_a_sourceless_rule(
+def test_file_issues_refuses_a_finding_on_a_sourceless_rule(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # D01-R04's footer in the fixture pack deliberately carries no Source:
-    # fragment. The filed issue body must say so plainly rather than
-    # fabricating a citation or silently dropping the reference sentence.
+    # fragment. A filed issue is a published claim; filing must refuse
+    # loudly before anything is created, and must never publish an
+    # "unsourced" admission instead.
     _fake, calls = _fake_create_issue()
     monkeypatch.setattr(server_module, "create_issue", _fake)
 
@@ -702,21 +703,13 @@ def test_file_issues_body_states_no_source_for_a_sourceless_rule(
     _call(mcp, "record_domain_result", {"result": result})
     _record_d02_all_pass(mcp)
 
-    _call(mcp, "file_issues", {"confirm": True, "repo": "rodlunt/widgets-app"})
-
-    assert calls == [
-        {
-            "repo": "rodlunt/widgets-app",
-            "title": "x",
-            "body": (
-                "x\n\n"
-                "Found by an engineering-practice audit (rule D01-R04, severity low, "
-                "at ledger/beards.py:10). Reference: no external source cited in the "
-                "rules pack."
-            ),
-            "labels": ["engineering-audit"],
-        }
-    ]
+    with pytest.raises(ToolError) as excinfo:
+        _call(mcp, "file_issues", {"confirm": True, "repo": "rodlunt/widgets-app"})
+    message = str(excinfo.value)
+    assert "D01-R04" in message
+    assert "no cited source" in message
+    assert "unsourced" not in message.lower()
+    assert calls == []
 
 
 def test_file_issues_issue_mode_report_errors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
