@@ -765,6 +765,39 @@ def test_issue_embedded_body_ends_with_shared_trailing_line_byte_identical_to_fi
 
 
 # ---------------------------------------------------------------------------
+# Print / save-as-PDF affordance (#58)
+# ---------------------------------------------------------------------------
+
+
+def test_print_button_calls_window_print() -> None:
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    rendered = render_report(run_state, pack)
+    assert '<button type="button" class="print-button" onclick="window.print()">' in rendered
+
+
+def test_print_stylesheet_hides_interactive_filing_ui_and_forces_light_palette() -> None:
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    rendered = render_report(run_state, pack)
+
+    match = re.search(r"@media print \{(.*?)\n  \}\n", rendered, re.DOTALL)
+    assert match is not None, "no @media print block found"
+    print_css = match.group(1)
+
+    # Interactive filing controls are hidden: checkboxes, the PAT form, buttons.
+    assert ".issue-select" in print_css
+    assert ".github-file-form" in print_css
+    assert "button {" in print_css
+    assert "display: none !important;" in print_css
+    # The light palette is forced regardless of the OS colour scheme.
+    assert "--bg: #f7f7f5;" in print_css
+    assert "--fg: #1a1a1a;" in print_css
+    # A finding must not be split across a page break.
+    assert "break-inside: avoid" in print_css
+
+
+# ---------------------------------------------------------------------------
 # Medium severity badge contrast (#52)
 # ---------------------------------------------------------------------------
 

@@ -193,11 +193,59 @@
   .muted { color: var(--muted); font-size: 0.9rem; }
   footer { color: var(--muted); font-size: 0.85rem; border-top: 1px solid var(--border); padding-top: 1rem; }
   footer a { color: var(--accent); }
+  .print-button { margin: 0.35rem 0 0.75rem; }
+  @media print {
+    /* Force the light palette regardless of the OS colour scheme: this
+       block is deliberately placed after the dark-mode block above so it
+       wins the cascade when both media conditions match (printing while
+       the OS is in dark mode). */
+    :root {
+      --bg: #f7f7f5;
+      --fg: #1a1a1a;
+      --muted: #5b5b5b;
+      --card-bg: #ffffff;
+      --border: #d8d8d4;
+      --accent: #2f5d50;
+      --critical: #9b2226;
+      --high: #bb4d00;
+      --medium: #a08000;
+      --low: #2c5f8a;
+      --warn-bg: #fff4d6;
+      --warn-border: #caa63d;
+      --ok-bg: #e9f5ee;
+    }
+    body { margin: 0; }
+    /* The interactive filing UI makes no sense on paper: a tick box, a
+       token input and buttons cannot be acted on once printed. */
+    .print-button,
+    .issue-actions,
+    .issue-select,
+    .github-file-form,
+    .feedback-form,
+    button {
+      display: none !important;
+    }
+    /* Readonly textareas (issue text, feedback) are scrollable boxes on
+       screen; a scrollbar means nothing on paper, so expand them to show
+       their full content instead of clipping at their on-screen height. */
+    .issue-block textarea,
+    #feedback-textarea {
+      height: auto !important;
+      max-height: none !important;
+      overflow: visible !important;
+      border: none;
+      padding: 0;
+      white-space: pre-wrap;
+    }
+    .finding, .issue-block { break-inside: avoid; page-break-inside: avoid; }
+    a { color: #1a1a1a; }
+  }
 </style>
 </head>
 <body>
 <header>
   <h1>Engineering practice audit report</h1>
+  <button type="button" class="print-button" onclick="window.print()">Print / Save as PDF</button>
   <div class="meta-grid"><div class="meta-label">Repository</div><div class="meta-value">rodlunt/demo-widgets-app</div><div class="meta-label">Commit</div><div class="meta-value">abc1234def5678</div><div class="meta-label">Rules pack</div><div class="meta-value">fixture_pack</div><div class="meta-label">Rules commit</div><div class="meta-value">unknown</div><div class="meta-label">Assistant</div><div class="meta-value">claude-code</div><div class="meta-label">Model</div><div class="meta-value">claude-sonnet-5</div><div class="meta-label">Tool version</div><div class="meta-value">0.1.0</div><div class="meta-label">Tool commit</div><div class="meta-value">unknown</div><div class="meta-label">Tool update</div><div class="meta-value">not checked</div><div class="meta-label">Started</div><div class="meta-value">2026-08-09T09:00:00+00:00</div><div class="meta-label">Finished</div><div class="meta-value">2026-08-09T09:12:00+00:00</div></div>
 </header>
 
