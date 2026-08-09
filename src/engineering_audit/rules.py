@@ -30,6 +30,7 @@ __all__ = [
     "RulesPack",
     "RulesPackError",
     "RulesPackParseError",
+    "RulesPackDuplicateIdError",
     "load_pack",
     "citation",
     "get_domain_text",
@@ -62,6 +63,15 @@ class RulesPackParseError(RulesPackError):
     """Raised when a file that declares a **Trigger:** line cannot be parsed as
     a valid domain. A triggered file is a promise that a domain lives here; a
     broken promise must be loud, never a silent drop from the pack."""
+
+
+class RulesPackDuplicateIdError(RulesPackError):
+    """Raised when two different domain files in the same pack define the
+    same rule id. _parse_rules already rejects a rule id reused within one
+    file; this is the same check repeated across the whole pack, because
+    anything that looks a rule up by id (finding attribution, issue filing,
+    report rendering) would otherwise resolve to whichever domain happened to
+    load last, silently."""
 
 
 @dataclass(frozen=True)
@@ -305,6 +315,22 @@ def load_pack(rules_dir: Path) -> RulesPack:
             f"Rules pack directory has {len(skipped)} file(s), none with a "
             f"**Trigger:** line, so zero domains loaded: {rules_dir}"
         )
+
+    # Each domain file is checked for internal duplicate rule ids as it is
+    # parsed (see _parse_rules); this is the same check repeated across the
+    # whole pack, once every file is loaded, so a copy-paste that reuses a
+    # rule id in a different domain file is caught too.
+    seen_rule_id_paths: dict[str, Path] = {}
+    for domain in domains:
+        for rule in domain.rules:
+            first_path = seen_rule_id_paths.get(rule.id)
+            if first_path is not None:
+                raise RulesPackDuplicateIdError(
+                    f"rule id {rule.id} is defined in both {first_path} and {domain.path}; "
+                    "duplicate rule ids across files make verdicts unattributable, each "
+                    "rule needs its own id"
+                )
+            seen_rule_id_paths[rule.id] = domain.path
 
     domains.sort(key=lambda d: d.number)
     return RulesPack(root=rules_dir, domains=domains, skipped=skipped)

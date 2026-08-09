@@ -75,6 +75,35 @@ def test_finding_without_matching_verdict_rejected() -> None:
         )
 
 
+def test_domain_result_accepts_unique_rule_verdicts() -> None:
+    result = DomainResult(
+        domain_id="d01",
+        status="completed",
+        rule_verdicts=[
+            RuleVerdict(rule_id="D01-R01", verdict=Verdict.pass_),
+            RuleVerdict(rule_id="D01-R02", verdict=Verdict.NOT_APPLICABLE),
+        ],
+    )
+    assert len(result.rule_verdicts) == 2
+
+
+def test_domain_result_rejects_duplicate_rule_id_in_rule_verdicts() -> None:
+    # A domain result recording two verdicts for the same rule id (here pass
+    # and not-applicable) is internally contradictory: nothing downstream
+    # that de-duplicates by rule id would ever catch it, so it must be
+    # rejected at record time, naming the offending rule id.
+    with pytest.raises(ValidationError) as excinfo:
+        DomainResult(
+            domain_id="d01",
+            status="completed",
+            rule_verdicts=[
+                RuleVerdict(rule_id="D01-R01", verdict=Verdict.pass_),
+                RuleVerdict(rule_id="D01-R01", verdict=Verdict.NOT_APPLICABLE),
+            ],
+        )
+    assert "D01-R01" in str(excinfo.value)
+
+
 def test_could_not_run_with_findings_rejected() -> None:
     with pytest.raises(ValidationError):
         DomainResult(
@@ -98,6 +127,54 @@ def test_could_not_run_with_findings_rejected() -> None:
 def test_could_not_run_without_reason_rejected() -> None:
     with pytest.raises(ValidationError):
         DomainResult(domain_id="d01", status="could-not-run")
+
+
+def _finding(location: str, rule_id: str = "D01-R01") -> Finding:
+    return Finding(
+        rule_id=rule_id,
+        severity=Severity.LOW,
+        title="x",
+        location=location,
+        body_md="x",
+        issue_title="x",
+        issue_body="x",
+    )
+
+
+def test_finding_accepts_a_bare_path_location() -> None:
+    assert _finding("beds.py").location == "beds.py"
+
+
+def test_finding_accepts_a_path_with_line_number_location() -> None:
+    assert _finding("beds.py:42").location == "beds.py:42"
+
+
+def test_finding_accepts_a_path_with_line_range_location() -> None:
+    assert _finding("beds.py:10-20").location == "beds.py:10-20"
+
+
+def test_finding_rejects_an_empty_location() -> None:
+    with pytest.raises(ValidationError) as excinfo:
+        _finding("", rule_id="D01-R09")
+    assert "D01-R09" in str(excinfo.value)
+
+
+def test_finding_rejects_a_location_with_no_path_before_the_line_suffix() -> None:
+    with pytest.raises(ValidationError) as excinfo:
+        _finding(":12", rule_id="D01-R10")
+    assert "D01-R10" in str(excinfo.value)
+
+
+def test_finding_rejects_a_reversed_line_range() -> None:
+    with pytest.raises(ValidationError) as excinfo:
+        _finding("beds.py:30-24", rule_id="D01-R12")
+    assert "D01-R12" in str(excinfo.value)
+
+
+def test_finding_rejects_a_zero_line_number() -> None:
+    with pytest.raises(ValidationError) as excinfo:
+        _finding("beds.py:0", rule_id="D01-R11")
+    assert "D01-R11" in str(excinfo.value)
 
 
 def test_could_not_evaluate_without_note_rejected() -> None:

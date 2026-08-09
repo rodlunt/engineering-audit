@@ -9,6 +9,7 @@ import pytest
 
 from engineering_audit.rules import (
     citation,
+    RulesPackDuplicateIdError,
     RulesPackError,
     RulesPackParseError,
     get_domain_text,
@@ -250,6 +251,40 @@ def test_duplicate_rule_ids_raise(tmp_path: Path) -> None:
     with pytest.raises(RulesPackParseError) as excinfo:
         load_pack(scratch)
     assert "D01-R01" in str(excinfo.value)
+
+
+def test_cross_file_unique_rule_ids_load_successfully() -> None:
+    # The fixture pack's two domains define disjoint rule id ranges
+    # (D01-R0x, D02-R0x); loading it must not trip the new cross-file check.
+    pack = load_pack(FIXTURE_PACK)
+    assert len(pack.rule_index) == 7
+
+
+def test_cross_file_duplicate_rule_id_raises_naming_both_files(tmp_path: Path) -> None:
+    scratch = tmp_path / "pack"
+    scratch.mkdir()
+    (scratch / "01-first.md").write_text(
+        "# Domain 01: First Domain\n\n"
+        "**Trigger:** you are about to exercise domain one.\n\n"
+        "### 1. First domain's only rule.\n\n"
+        "Body.\n\n"
+        "*Source: fixture only. Rule id: D01-R01. Volatility: durable.*\n",
+        encoding="utf-8",
+    )
+    (scratch / "02-second.md").write_text(
+        "# Domain 02: Second Domain\n\n"
+        "**Trigger:** you are about to exercise domain two.\n\n"
+        "### 1. Second domain's rule, reusing the first domain's id by mistake.\n\n"
+        "Body.\n\n"
+        "*Source: fixture only. Rule id: D01-R01. Volatility: durable.*\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(RulesPackDuplicateIdError) as excinfo:
+        load_pack(scratch)
+    message = str(excinfo.value)
+    assert "D01-R01" in message
+    assert "01-first.md" in message
+    assert "02-second.md" in message
 
 
 def test_citation_returns_a_plain_source_unchanged() -> None:
