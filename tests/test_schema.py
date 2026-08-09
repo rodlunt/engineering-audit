@@ -11,6 +11,7 @@ from engineering_audit.rules import load_pack
 from engineering_audit.schema import (
     RUN_STATE_SCHEMA_VERSION,
     AuditConfig,
+    ConsultedSource,
     Coverage,
     DomainResult,
     Finding,
@@ -23,8 +24,10 @@ from engineering_audit.schema import (
     SelfAssessment,
     Severity,
     TelemetryConsent,
+    UnknownRuleIdError,
     Verdict,
     validate_completeness,
+    validate_consulted_sources,
 )
 
 from pathlib import Path
@@ -241,6 +244,13 @@ def test_telemetry_consent_has_no_run_meta_toggle() -> None:
     assert not hasattr(TelemetryConsent(), "run_meta")
 
 
+def test_telemetry_consent_consulted_sources_defaults_off() -> None:
+    # Opt-in consent means nothing if the box already looks ticked when the
+    # configuration page first loads; a fresh TelemetryConsent must start
+    # with every flag false, including this one.
+    assert TelemetryConsent().consulted_sources is False
+
+
 def test_run_state_rejects_domain_results_key_mismatched_with_domain_id() -> None:
     # domain_results is keyed by domain_id; a DomainResult filed under a
     # different key than its own domain_id is silent data corruption (a
@@ -312,6 +322,105 @@ def test_validate_completeness_rejects_verdicts_for_unknown_rule_ids() -> None:
 
 
 # ---------------------------------------------------------------------------
+# ConsultedSource and validate_consulted_sources (src/engineering_audit/schema.py)
+# ---------------------------------------------------------------------------
+
+
+def _consulted_source(**overrides) -> ConsultedSource:
+    defaults = dict(
+        rule_id="D01-R01",
+        url="https://example.invalid/standard",
+        title="An external standard",
+        why="checked the standard's definition before verdicting this rule",
+        accessed="2026-08-09T09:02:00+00:00",
+    )
+    defaults.update(overrides)
+    return ConsultedSource(**defaults)
+
+
+def test_consulted_source_accepts_trailing_z_timestamp() -> None:
+    # Same normalisation as RunMeta.started/finished: Python 3.10 rejects a
+    # trailing 'Z' in datetime.fromisoformat outright.
+    source = _consulted_source(accessed="2026-08-09T09:02:00Z")
+    assert source.accessed == "2026-08-09T09:02:00Z"
+
+
+def test_consulted_source_rejects_an_invalid_accessed_timestamp() -> None:
+    with pytest.raises(ValidationError, match="not a valid ISO 8601"):
+        _consulted_source(accessed="not-a-timestamp")
+
+
+@pytest.mark.parametrize("blank_field", ["url", "title", "why"])
+def test_consulted_source_rejects_a_blank_field(blank_field: str) -> None:
+    with pytest.raises(ValidationError, match="must not be blank"):
+        _consulted_source(**{blank_field: "   "})
+
+
+def test_domain_result_defaults_to_no_consulted_sources() -> None:
+    # Backward compatible with data written before this field existed: a
+    # DomainResult built or parsed with no consulted_sources key at all gets
+    # an empty list, not a missing-field error.
+    result = DomainResult(domain_id="d01", status="completed")
+    assert result.consulted_sources == []
+
+
+def test_domain_result_parses_json_missing_the_consulted_sources_key() -> None:
+    raw = json.loads(DomainResult(domain_id="d01", status="completed").model_dump_json())
+    assert "consulted_sources" not in raw or raw["consulted_sources"] == []
+    del raw["consulted_sources"]
+    restored = DomainResult.model_validate(raw)
+    assert restored.consulted_sources == []
+
+
+def test_validate_consulted_sources_accepts_a_source_for_one_of_the_domains_own_rules() -> None:
+    pack = load_pack(FIXTURE_PACK)
+    d01 = pack.get_domain("d01")
+    assert d01 is not None
+    result = DomainResult(
+        domain_id="d01",
+        status="completed",
+        rule_verdicts=[RuleVerdict(rule_id=r.id, verdict=Verdict.pass_) for r in d01.rules],
+        consulted_sources=[_consulted_source(rule_id="D01-R01")],
+    )
+    validate_consulted_sources(d01, result)  # must not raise
+
+
+def test_validate_consulted_sources_rejects_a_rule_id_outside_the_domain() -> None:
+    # Mirrors validate_completeness's own "unknown" check: a citation for a
+    # rule id this domain does not define cannot be attributed to anything.
+    pack = load_pack(FIXTURE_PACK)
+    d01 = pack.get_domain("d01")
+    assert d01 is not None
+    result = DomainResult(
+        domain_id="d01",
+        status="could-not-run",
+        reason="no access",
+        consulted_sources=[_consulted_source(rule_id="D02-R01")],
+    )
+    with pytest.raises(UnknownRuleIdError) as excinfo:
+        validate_consulted_sources(d01, result)
+    assert "D02-R01" in str(excinfo.value)
+    assert "does not define" in str(excinfo.value)
+
+
+def test_validate_consulted_sources_runs_independently_of_domain_result_status() -> None:
+    # A could-not-run domain still has no rule_verdicts or findings (see
+    # DomainResult's own consistency check), but a source consulted while
+    # deciding it could not run at all is still checked against this
+    # domain's own rules.
+    pack = load_pack(FIXTURE_PACK)
+    d01 = pack.get_domain("d01")
+    assert d01 is not None
+    result = DomainResult(
+        domain_id="d01",
+        status="could-not-run",
+        reason="no ledger file present",
+        consulted_sources=[_consulted_source(rule_id="D01-R01")],
+    )
+    validate_consulted_sources(d01, result)  # must not raise
+
+
+# ---------------------------------------------------------------------------
 # RunState schema versioning: schema_version, filed_issue_urls,
 # feedback_issue_url (src/engineering_audit/schema.py)
 # ---------------------------------------------------------------------------
@@ -354,6 +463,43 @@ def test_run_state_from_json_accepts_current_version() -> None:
     restored = RunState.from_json(state.to_json())
     assert restored.schema_version == 2
     assert restored == state
+
+
+def test_run_state_from_json_tolerates_a_domain_result_missing_consulted_sources() -> None:
+    # A run-state.json written before consulted_sources existed carries a
+    # DomainResult with no such key at all, not merely an empty list. No
+    # schema_version bump backs this field (same reasoning as update_check):
+    # it must still round-trip cleanly through the current version gate.
+    state = RunState(
+        meta=_meta(),
+        config=_config(),
+        domain_results={"d01": DomainResult(domain_id="d01", status="completed")},
+    )
+    raw = json.loads(state.to_json())
+    del raw["domain_results"]["d01"]["consulted_sources"]
+    restored = RunState.from_json(json.dumps(raw))
+    assert restored.domain_results["d01"].consulted_sources == []
+
+
+def test_run_state_round_trips_consulted_sources_through_json() -> None:
+    pack = load_pack(FIXTURE_PACK)
+    d01 = pack.get_domain("d01")
+    assert d01 is not None
+    state = RunState(
+        meta=_meta(),
+        config=_config(),
+        domain_results={
+            "d01": DomainResult(
+                domain_id="d01",
+                status="completed",
+                rule_verdicts=[RuleVerdict(rule_id=r.id, verdict=Verdict.pass_) for r in d01.rules],
+                consulted_sources=[_consulted_source(rule_id="D01-R01")],
+            )
+        },
+    )
+    restored = RunState.from_json(state.to_json())
+    assert restored == state
+    assert restored.domain_results["d01"].consulted_sources[0].url == "https://example.invalid/standard"
 
 
 def test_run_state_from_json_rejects_a_higher_schema_version_naming_both_numbers() -> None:
@@ -426,6 +572,26 @@ def test_run_progress_rejects_a_domain_results_key_that_is_not_its_domain_id() -
             meta=_meta(),
             domain_results={"d02": DomainResult(domain_id="d01", status="completed")},
         )
+
+
+def test_run_progress_carries_consulted_sources_the_same_way_run_state_does() -> None:
+    # RunProgress shares DomainResult verbatim with RunState (see its own
+    # docstring), so this field needs no separate wiring on the crash-
+    # recovery record: it is already there as soon as DomainResult carries
+    # it. This pins that down rather than assuming it.
+    progress = RunProgress(
+        meta=_meta(),
+        config=_config(),
+        domain_results={
+            "d01": DomainResult(
+                domain_id="d01",
+                status="completed",
+                consulted_sources=[_consulted_source(rule_id="D01-R01")],
+            )
+        },
+    )
+    restored = RunProgress.from_json(progress.to_json())
+    assert restored.domain_results["d01"].consulted_sources[0].rule_id == "D01-R01"
 
 
 def test_run_state_filed_issue_urls_and_feedback_issue_url_round_trip() -> None:

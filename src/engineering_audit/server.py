@@ -73,6 +73,7 @@ from engineering_audit.schema import (
     RunProgress,
     RunState,
     validate_completeness,
+    validate_consulted_sources,
 )
 from engineering_audit.update_check import check_for_update
 
@@ -1176,13 +1177,17 @@ def _register_result_tools(mcp: MCPServer, state: AppState) -> None:
         """Record the audit result for one domain.
 
         The payload itself is pydantic-validated by DomainResult (finding and
-        verdict consistency, could-not-run reason, could-not-evaluate notes).
-        On top of that: the domain must be one of the domains selected for
-        this run, and a completed result must carry a verdict for every rule
-        the domain defines; a completed result missing a verdict raises
-        IncompleteResultError listing exactly which rule ids are missing, so
-        the agent can fix and resubmit rather than a skipped rule silently
-        passing. Re-recording an already-recorded domain requires
+        verdict consistency, could-not-run reason, could-not-evaluate notes,
+        and that every consulted_sources entry has a non-blank url, title
+        and why). On top of that: the domain must be one of the domains
+        selected for this run, a completed result must carry a verdict for
+        every rule the domain defines, and every consulted_sources rule_id
+        must be one of this domain's own rules; a completed result missing a
+        verdict raises IncompleteResultError listing exactly which rule ids
+        are missing, and an unattributable consulted source raises
+        UnknownRuleIdError, so the agent can fix and resubmit rather than a
+        skipped rule silently passing or a citation silently pointing at
+        nothing. Re-recording an already-recorded domain requires
         replace=True, to guard against an accidental overwrite.
         """
         run = _require_run(state)
@@ -1200,6 +1205,16 @@ def _register_result_tools(mcp: MCPServer, state: AppState) -> None:
             if domain is None:
                 raise ValueError(f"domain '{domain_id}' is not in the loaded rules pack")
             validate_completeness(domain, result)
+
+        if result.consulted_sources:
+            # Checked regardless of status: a source consulted while
+            # deciding a domain could not run at all is still attributed to
+            # a rule in this domain, not to whatever the "completed" branch
+            # above already fetched.
+            domain = state.pack.get_domain(domain_id)
+            if domain is None:
+                raise ValueError(f"domain '{domain_id}' is not in the loaded rules pack")
+            validate_consulted_sources(domain, result)
 
         if domain_id in run.domain_results and not replace:
             raise ValueError(
@@ -1334,9 +1349,9 @@ def _register_feedback_tools(mcp: MCPServer, state: AppState) -> None:
         section (tool version, rules pack, assistant, model, repository,
         timestamps), and then each telemetry section the user consented to
         on the configuration page (coverage totals, findings rollup by
-        severity/domain id, self-assessment, environment); an unconsented
-        section is left out entirely. Finding text itself is never
-        included, only counts.
+        severity/domain id, self-assessment, environment, consulted sources
+        by rule id/url/why); an unconsented section is left out entirely.
+        Finding text itself is never included, only counts.
 
         Files a labelled issue on the tool author's feedback repository via
         gh. If gh is unavailable or filing fails for any reason, the

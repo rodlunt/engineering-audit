@@ -29,6 +29,7 @@ __all__ = [
     "Finding",
     "SelfAssessment",
     "Coverage",
+    "ConsultedSource",
     "DomainResult",
     "RunMeta",
     "TelemetryConsent",
@@ -38,7 +39,9 @@ __all__ = [
     "RUN_STATE_SCHEMA_VERSION",
     "RunStateVersionError",
     "IncompleteResultError",
+    "UnknownRuleIdError",
     "validate_completeness",
+    "validate_consulted_sources",
 ]
 
 # Bumped whenever RunState gains or changes a field in a way a reader written
@@ -166,6 +169,53 @@ class Coverage(BaseModel):
         return value
 
 
+class ConsultedSource(BaseModel):
+    """A source consulted outside the rules pack while reaching a verdict:
+    documentation, a standard, a paper, anything fetched or read that is not
+    the pack itself.
+
+    The MCP server has no way to observe the driving agent's own web or file
+    activity, so this list is schema-demanded self-reporting, not something
+    the server can verify happened. That is a real limit, not a hidden one:
+    a source the agent never records here is a source this tool can never
+    know about, the same way a rule the agent never verdicts can never be
+    recorded as a pass.
+    """
+
+    rule_id: str
+    url: str
+    title: str
+    why: str
+    accessed: str
+
+    @field_validator("accessed")
+    @classmethod
+    def _valid_iso_timestamp(cls, value: str) -> str:
+        # Same normalisation as RunMeta.started/finished below (a trailing
+        # 'Z' has no native fromisoformat support on Python 3.10, this
+        # project's minimum), duplicated rather than shared: this field is
+        # required and never None, unlike RunMeta's optional timestamps, so
+        # sharing one validator would need a branch neither side actually
+        # needs.
+        try:
+            normalised = value[:-1] + "+00:00" if value.endswith("Z") else value
+            datetime.fromisoformat(normalised)
+        except ValueError as exc:
+            raise ValueError(f"accessed timestamp {value!r} is not a valid ISO 8601 string") from exc
+        return value
+
+    @model_validator(mode="after")
+    def _fields_not_blank(self) -> "ConsultedSource":
+        # A source consulted claim is only as good as what it points at: a
+        # blank url, title or why is a citation nobody can check.
+        for field_name in ("url", "title", "why"):
+            if not getattr(self, field_name).strip():
+                raise ValueError(
+                    f"consulted source for rule {self.rule_id}: {field_name} must not be blank"
+                )
+        return self
+
+
 class DomainResult(BaseModel):
     """The result of auditing one domain against a repository.
 
@@ -183,6 +233,15 @@ class DomainResult(BaseModel):
     findings: list[Finding] = Field(default_factory=list)
     self_assessment: SelfAssessment | None = None
     coverage: Coverage | None = None
+    consulted_sources: list[ConsultedSource] = Field(
+        default_factory=list,
+        description=(
+            "Sources consulted outside the rules pack while reaching this domain's "
+            "verdicts. Optional and self-reported; see validate_consulted_sources for "
+            "the one check applied against it (every rule_id must be one of this "
+            "domain's own rules)."
+        ),
+    )
     reason: str | None = Field(
         default=None, description="Required when status is could-not-run: why the domain could not be audited."
     )
@@ -316,6 +375,11 @@ class TelemetryConsent(BaseModel):
     rollup: bool = False
     self_assessment: bool = False
     environment: bool = False
+    # Off by default is not just the general rule above, it carries its own
+    # reason here: the URLs a domain sweep fetched can hint at what a
+    # private repository is about, even though the finding text itself never
+    # leaves the machine. The configuration page's label must say this.
+    consulted_sources: bool = False
 
 
 class AuditConfig(BaseModel):
@@ -554,3 +618,29 @@ def validate_completeness(domain: "Domain", result: DomainResult) -> None:
         )
     if problems:
         raise IncompleteResultError(f"domain {domain.id}: " + " ".join(problems))
+
+
+class UnknownRuleIdError(Exception):
+    """Raised when a DomainResult's consulted_sources cites a rule id that is
+    not one of the domain's own rules. A citation cannot be attributed to a
+    rule that does not exist in this domain, the same way a rule_verdict for
+    a nonexistent rule id is rejected by :func:`validate_completeness`."""
+
+
+def validate_consulted_sources(domain: "Domain", result: DomainResult) -> None:
+    """Raise :class:`UnknownRuleIdError` if any of result.consulted_sources
+    cites a rule id that is not one of domain's own rules.
+
+    Checked independently of DomainResult.status, unlike
+    :func:`validate_completeness`: a source consulted while deciding a
+    domain could not run at all is still attributed to a rule in this
+    domain, and its rule id still has to name a real one.
+    """
+    domain_rule_ids = {rule.id for rule in domain.rules}
+    unknown = sorted({source.rule_id for source in result.consulted_sources} - domain_rule_ids)
+    if unknown:
+        raise UnknownRuleIdError(
+            f"domain {domain.id}: consulted_sources reference rule id(s) this domain "
+            f"does not define: {unknown}. A consulted source is attributed to a specific "
+            "rule; check the ids against get_domain."
+        )
