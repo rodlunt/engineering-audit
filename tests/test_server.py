@@ -23,9 +23,11 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from mcp.server._otel import OpenTelemetryMiddleware
 
+import engineering_audit.run_state_io as io_module
 import engineering_audit.server as server_module
 from engineering_audit.issues import CreatedIssue, IssueFilingError, LabelStatus
 from engineering_audit.rules import RulesPackError
+from engineering_audit.run_state_io import PROGRESS_FILENAME, load_run_progress_file
 from engineering_audit.schema import RunMeta, RunState
 from engineering_audit.server import (
     AppState,
@@ -175,6 +177,10 @@ def test_tool_surface_is_the_ten_tools_with_their_documented_parameters() -> Non
     # protocol surface they produce between them is what clients and AUDIT.md
     # depend on, so it is pinned here rather than left to be noticed later by
     # a client that stopped working.
+    #
+    # begin_run's 'resume' was added deliberately with crash-recovery: it is
+    # the only way an agent can accept or decline continuing an interrupted
+    # run, so it has to be on the wire. No tool was added or removed.
     mcp, _state = build_server(FIXTURE_PACK)
     tools = asyncio.run(mcp.list_tools())
 
@@ -211,6 +217,7 @@ def test_tool_surface_is_the_ten_tools_with_their_documented_parameters() -> Non
                 "repo_commit",
                 "repo_dir",
                 "repo_name",
+                "resume",
                 "started",
                 "tool_version",
             ],
@@ -1635,3 +1642,370 @@ def test_submit_feedback_then_render_report_links_the_filed_issue(
     report_text = Path(report_result["report_path"]).read_text(encoding="utf-8")
     assert feedback_result["url"] in report_text
     assert 'href="mailto:' not in report_text
+
+
+# ---------------------------------------------------------------------------
+# Crash-safe persistence and resume
+# ---------------------------------------------------------------------------
+
+
+def _progress_file(out_dir: Path) -> Path:
+    return out_dir / PROGRESS_FILENAME
+
+
+def _saved(out_dir: Path):
+    return load_run_progress_file(_progress_file(out_dir))
+
+
+def _interrupted_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, out_dir: Path):
+    """Drive a run as far as two recorded domains and then abandon the server,
+    exactly as a killed process would: no render_report, nothing flushed at
+    the end, only whatever each step wrote as it went."""
+    mcp, _state = build_server(FIXTURE_PACK)
+    _begin_run(mcp, out_dir)
+    _preset_config_env(monkeypatch, tmp_path)
+    _call(mcp, "start_config", {})
+    _call(mcp, "get_config", {"timeout_s": 1})
+    _record_d01_with_finding(mcp)
+    _record_d02_all_pass(mcp)
+    return mcp
+
+
+def test_progress_is_saved_at_every_step_of_a_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mcp, _state = build_server(FIXTURE_PACK)
+    out_dir = tmp_path / "audit-output"
+
+    _begin_run(mcp, out_dir)
+    # Written before a single domain is audited: an interruption here still
+    # leaves a record that a run was started and never finished.
+    assert _progress_file(out_dir).is_file()
+    assert _saved(out_dir).config is None
+    assert _saved(out_dir).completed is False
+
+    _preset_config_env(monkeypatch, tmp_path)
+    _call(mcp, "start_config", {})
+    _call(mcp, "get_config", {"timeout_s": 1})
+    saved_config = _saved(out_dir).config
+    assert saved_config is not None
+    assert saved_config.selected_domain_ids == ["d01", "d02"]
+
+    _record_d01_with_finding(mcp)
+    assert list(_saved(out_dir).domain_results) == ["d01"]
+    assert _saved(out_dir).domain_results["d01"].findings[0].rule_id == "D01-R02"
+
+    _record_d02_all_pass(mcp)
+    assert list(_saved(out_dir).domain_results) == ["d01", "d02"]
+
+
+def test_render_report_removes_the_recovery_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out_dir = tmp_path / "audit-output"
+    mcp = _interrupted_run(tmp_path, monkeypatch, out_dir)
+
+    _call(mcp, "render_report", {"finished": "2026-08-09T10:00:00Z"})
+
+    assert not _progress_file(out_dir).exists()
+    # And a later begin_run on the same directory starts clean rather than
+    # offering to resume a run that is already finished.
+    fresh, _state = build_server(FIXTURE_PACK)
+    assert _begin_run(fresh, out_dir)["run_started"] is True
+
+
+def test_a_completed_recovery_file_that_survived_removal_is_not_offered_as_resumable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Belt and braces for the unlink failing (a read-only directory, a backup
+    # restored later): the record says completed, so it is never resumable.
+    out_dir = tmp_path / "audit-output"
+    mcp = _interrupted_run(tmp_path, monkeypatch, out_dir)
+    _call(mcp, "render_report", {"finished": "2026-08-09T10:00:00Z"})
+
+    finished_record = json.loads((out_dir / "run-state.json").read_text(encoding="utf-8"))
+    _progress_file(out_dir).write_text(
+        json.dumps({**finished_record, "completed": True}), encoding="utf-8"
+    )
+
+    fresh, _state = build_server(FIXTURE_PACK)
+    assert _begin_run(fresh, out_dir)["run_started"] is True
+
+
+def test_a_fresh_server_finds_the_unfinished_run_with_every_recorded_domain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The crash: server one dies after two domains, and a completely separate
+    # server process is pointed at the same output directory.
+    out_dir = tmp_path / "audit-output"
+    _interrupted_run(tmp_path, monkeypatch, out_dir)
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    offer = _begin_run(mcp, out_dir)
+
+    assert offer["run_started"] is False
+    assert offer["resumable"] is True
+    # No "meta" key: an agent that reads this response as a started run gets a
+    # KeyError rather than a plausible run that does not exist.
+    assert "meta" not in offer
+    prior = offer["prior_run"]
+    assert prior["repo_name"] == "widgets-app"
+    assert prior["recorded_domain_ids"] == ["d01", "d02"]
+    assert prior["missing_domain_ids"] == []
+    assert prior["finding_count"] == 1
+    assert "resume=True" in offer["instruction"]
+
+    # Nothing was started by the offer itself.
+    with pytest.raises(ToolError, match="No audit run in progress"):
+        _call(mcp, "run_status", {})
+
+
+def test_resume_true_continues_the_run_through_to_a_rendered_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out_dir = tmp_path / "audit-output"
+    _interrupted_run(tmp_path, monkeypatch, out_dir)
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    resumed = _begin_run(mcp, out_dir, resume=True)
+
+    assert resumed["resumed"] is True
+    assert resumed["recorded_domain_ids"] == ["d01", "d02"]
+    assert resumed["missing_domain_ids"] == []
+    assert resumed["selected_domain_ids"] == ["d01", "d02"]
+    assert resumed["meta"]["started"] == "2026-08-09T09:00:00Z"
+
+    # The configuration came back with it: no start_config, no second config
+    # page, straight on to finishing the run.
+    status = _call(mcp, "run_status", {})
+    assert status["missing_domain_ids"] == []
+    assert status["finding_count"] == 1
+
+    result = _call(mcp, "render_report", {"finished": "2026-08-09T10:00:00Z"})
+    report_text = Path(result["report_path"]).read_text(encoding="utf-8")
+    assert "Two gnomes share bed-14 without the shared-bed flag" in report_text
+    assert result["findings_summary"]["total_findings"] == 1
+
+
+def test_resume_true_after_an_interruption_before_the_first_domain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Interrupted between begin_run and the first result: there is nothing to
+    # recover but the run's own metadata, and the response has to say so
+    # rather than implying results were recovered.
+    out_dir = tmp_path / "audit-output"
+    first, _state = build_server(FIXTURE_PACK)
+    _begin_run(first, out_dir)
+
+    mcp, _state2 = build_server(FIXTURE_PACK)
+    resumed = _begin_run(mcp, out_dir, resume=True)
+
+    assert resumed["resumed"] is True
+    assert resumed["recorded_domain_ids"] == []
+    assert resumed["config"] is None
+    assert "start_config" in resumed["instruction"]
+
+    # start_config still works: the resumed run did not inherit a config mode
+    # pointing at a config page served by the process that died.
+    _preset_config_env(monkeypatch, tmp_path)
+    assert _call(mcp, "start_config", {})["mode"] == "preset"
+
+
+def test_resume_false_starts_fresh_and_reports_what_it_discarded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out_dir = tmp_path / "audit-output"
+    _interrupted_run(tmp_path, monkeypatch, out_dir)
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    result = _begin_run(mcp, out_dir, resume=False)
+
+    assert result["run_started"] is True
+    assert result["resumed"] is False
+    # A discard the user chose is still a discard they should be told about.
+    assert result["discarded_prior_run"]["recorded_domain_ids"] == ["d01", "d02"]
+    # The saved state is now this new, empty run.
+    assert _saved(out_dir).domain_results == {}
+    assert _saved(out_dir).config is None
+
+
+def test_replace_true_counts_as_declining_the_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # replace=True is already an explicit "throw away what is in progress";
+    # asking a second time would be asking a question the caller answered.
+    out_dir = tmp_path / "audit-output"
+    mcp = _interrupted_run(tmp_path, monkeypatch, out_dir)
+
+    result = _begin_run(mcp, out_dir, replace=True)
+    assert result["run_started"] is True
+    assert result["resumed"] is False
+    assert result["discarded_prior_run"]["recorded_domain_ids"] == ["d01", "d02"]
+
+
+def test_a_prior_run_for_a_different_repository_is_never_resumed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out_dir = tmp_path / "audit-output"
+    _interrupted_run(tmp_path, monkeypatch, out_dir)
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    offer = _begin_run(mcp, out_dir, repo_name="somebody-elses-repo")
+
+    assert offer["run_started"] is False
+    assert offer["resumable"] is False
+    assert "widgets-app" in offer["reason"]
+    assert "somebody-elses-repo" in offer["reason"]
+
+    # And asking for it outright is refused, not quietly honoured.
+    with pytest.raises(ToolError) as excinfo:
+        _begin_run(mcp, out_dir, repo_name="somebody-elses-repo", resume=True)
+    assert "widgets-app" in str(excinfo.value)
+    assert "somebody-elses-repo" in str(excinfo.value)
+
+    # The other repository's work is still there, untouched by either call.
+    assert list(_saved(out_dir).domain_results) == ["d01", "d02"]
+
+
+def test_corrupt_recovery_state_is_reported_loudly_not_treated_as_no_prior_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out_dir = tmp_path / "audit-output"
+    _interrupted_run(tmp_path, monkeypatch, out_dir)
+    _progress_file(out_dir).write_text("{ this file was truncated mid-", encoding="utf-8")
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    offer = _begin_run(mcp, out_dir)
+
+    assert offer["run_started"] is False
+    assert offer["resumable"] is False
+    assert offer["prior_run"]["readable"] is False
+    assert "run-progress file" in offer["reason"]
+    # Nothing was started, so this cannot pass for a fresh run that simply
+    # found nothing to resume.
+    with pytest.raises(ToolError, match="No audit run in progress"):
+        _call(mcp, "run_status", {})
+
+    with pytest.raises(ToolError) as excinfo:
+        _begin_run(mcp, out_dir, resume=True)
+    assert "Cannot resume" in str(excinfo.value)
+
+
+def test_resume_true_with_nothing_saved_errors_rather_than_starting_quietly(
+    tmp_path: Path,
+) -> None:
+    mcp, _state = build_server(FIXTURE_PACK)
+    with pytest.raises(ToolError) as excinfo:
+        _begin_run(mcp, tmp_path / "audit-output", resume=True)
+    assert "no unfinished run saved" in str(excinfo.value)
+
+
+def test_resume_warns_when_the_repository_has_moved_on_a_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Legitimate mid-audit, so it warns rather than refusing, but the results
+    # already recorded were reached against the old commit and the report will
+    # keep saying so.
+    out_dir = tmp_path / "audit-output"
+    _interrupted_run(tmp_path, monkeypatch, out_dir)
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    resumed = _begin_run(mcp, out_dir, resume=True, repo_commit="9999999")
+
+    assert resumed["resumed"] is True
+    assert resumed["meta"]["repo_commit"] == "abc1234"
+    assert any("abc1234" in w and "9999999" in w for w in resumed["warnings"])
+
+
+def test_resume_refuses_when_the_rules_pack_no_longer_has_a_selected_domain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A resumed run has to be completable against the pack loaded now; if it
+    # is not, saying so beats recording half of it against different rules.
+    out_dir = tmp_path / "audit-output"
+    _interrupted_run(tmp_path, monkeypatch, out_dir)
+
+    trimmed_pack = tmp_path / "trimmed-pack"
+    shutil.copytree(FIXTURE_PACK, trimmed_pack)
+    for stale in trimmed_pack.glob("02-*.md"):
+        stale.unlink()
+
+    mcp, _state = build_server(trimmed_pack)
+    with pytest.raises(ToolError) as excinfo:
+        _begin_run(mcp, out_dir, resume=True)
+    assert "d02" in str(excinfo.value)
+    assert "resume=False" in str(excinfo.value)
+
+
+def test_filed_issue_urls_are_saved_as_they_are_filed_so_a_resume_cannot_double_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Duplicate issues on the user's own repository are the one failure here
+    # that cannot be undone from this side, so the urls are saved per issue,
+    # not once at the end of the call.
+    _fake, _calls = _fake_create_issue()
+    monkeypatch.setattr(server_module, "create_issue", _fake)
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    out_dir = tmp_path / "audit-output"
+    _configured_github_run(mcp, tmp_path, monkeypatch)
+    _record_d01_with_finding(mcp)
+    _call(mcp, "file_issues", {"confirm": True, "repo": "acme/widgets"})
+
+    saved = _saved(out_dir)
+    assert list(saved.filed_issues) == ["D01-R02#1"]
+
+    resumed_mcp, _state2 = build_server(FIXTURE_PACK)
+    _begin_run(resumed_mcp, out_dir, resume=True)
+    preview = _call(resumed_mcp, "file_issues", {})
+    assert preview["count"] == 0
+
+
+def test_a_save_failure_warns_once_and_never_stops_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mcp, _state = build_server(FIXTURE_PACK)
+    _configured_run(mcp, tmp_path, monkeypatch)
+
+    def _explode(*_args, **_kwargs):
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(server_module, "save_run_progress", _explode)
+
+    first = _record_d01_with_finding(mcp)
+    assert first["finding_count"] == 1  # the result is still recorded
+    assert len(first["warnings"]) == 1
+    assert "crash-recovery" in first["warnings"][0]
+    assert "no space left on device" in first["warnings"][0]
+
+    # Same fact, second failure: said once, then remembered as said, because a
+    # line repeated on every response is a line that stops being read.
+    second = _record_d02_all_pass(mcp)
+    assert "warnings" not in second
+
+    # And the run still finishes and produces its real output.
+    result = _call(mcp, "render_report", {"finished": "2026-08-09T10:00:00Z"})
+    assert Path(result["report_path"]).is_file()
+
+
+def test_an_interrupted_save_leaves_the_previous_saved_state_readable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Atomicity through the real path, not just the writer's own unit test: a
+    # rename that fails mid-run must leave the last good state, never a
+    # truncated file that a later resume would read as a shorter run.
+    mcp, _state = build_server(FIXTURE_PACK)
+    out_dir = tmp_path / "audit-output"
+    _configured_run(mcp, tmp_path, monkeypatch)
+    _record_d01_with_finding(mcp)
+
+    def _explode(_src, _dst):
+        raise OSError("interrupted")
+
+    monkeypatch.setattr(io_module.os, "replace", _explode)
+    result = _record_d02_all_pass(mcp)
+    assert len(result["warnings"]) == 1
+
+    saved = _saved(out_dir)
+    assert list(saved.domain_results) == ["d01"]
+    assert saved.domain_results["d01"].findings[0].rule_id == "D01-R02"
