@@ -96,6 +96,25 @@ def test_body_always_includes_free_text_and_run_metadata() -> None:
     assert "0.1.0" in body
 
 
+def test_run_metadata_reports_unknown_tool_and_rules_commit_when_not_determined() -> None:
+    body = build_feedback_body("hi", _meta(), TelemetryConsent(
+        coverage=False, rollup=False, self_assessment=False, environment=False
+    ), _domain_results())
+
+    assert "Tool commit: unknown" in body
+    assert "Rules commit: unknown" in body
+
+
+def test_run_metadata_reports_full_tool_and_rules_commit_when_known() -> None:
+    meta = _meta(tool_commit="a" * 40, rules_pack_commit=f"{'b' * 40}-dirty")
+    body = build_feedback_body("hi", meta, TelemetryConsent(
+        coverage=False, rollup=False, self_assessment=False, environment=False
+    ), _domain_results())
+
+    assert f"Tool commit: {'a' * 40}" in body
+    assert f"Rules commit: {'b' * 40}-dirty" in body
+
+
 def test_unconsented_sections_are_omitted_entirely() -> None:
     body = build_feedback_body("hi", _meta(), TelemetryConsent(
         coverage=False, rollup=False, self_assessment=False, environment=False

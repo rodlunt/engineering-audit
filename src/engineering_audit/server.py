@@ -14,11 +14,14 @@ record_domain_result calls; see AUDIT.md for the full procedure.
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import subprocess
 import sys
 from collections import Counter
 from dataclasses import dataclass, field
-from importlib.metadata import PackageNotFoundError, version as _pkg_version
+from importlib.metadata import PackageNotFoundError, distribution as _pkg_distribution
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import Any
 
@@ -65,6 +68,84 @@ def _default_tool_version() -> str:
         return _pkg_version("engineering-audit")
     except PackageNotFoundError:
         return "0.0.0-dev"
+
+
+def _parse_direct_url_commit(direct_url_json: str) -> str | None:
+    """Pull ``vcs_info.commit_id`` out of a PEP 610 ``direct_url.json``
+    document's text, or None if it is not a git install record.
+
+    Factored out of :func:`_default_tool_commit` as a pure function so the
+    parsing logic is testable with plain string fixtures, without needing a
+    real installed distribution or importlib.metadata in the test.
+    """
+    try:
+        data = json.loads(direct_url_json)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    vcs_info = data.get("vcs_info")
+    if not isinstance(vcs_info, dict):
+        return None
+    commit_id = vcs_info.get("commit_id")
+    return commit_id if isinstance(commit_id, str) and commit_id else None
+
+
+def _default_tool_commit() -> str | None:
+    """Best-effort: the git commit the installed tool build was made from,
+    read from the installed distribution's PEP 610 install record
+    (direct_url.json, present when installed via ``pip``/``uv`` from a git
+    URL; absent for a PyPI/wheel install or a source checkout that was
+    never installed).
+
+    This is provenance telemetry only, never load-bearing for the tool to
+    run, so any failure here (package not installed, no direct_url.json,
+    unreadable, malformed) is swallowed and reported as None: the caller
+    renders that as "unknown" in the report rather than fabricating a
+    commit the tool cannot actually vouch for.
+    """
+    try:
+        direct_url_json = _pkg_distribution("engineering-audit").read_text("direct_url.json")
+    except Exception:
+        return None
+    if direct_url_json is None:
+        return None
+    return _parse_direct_url_commit(direct_url_json)
+
+
+def _run_git(args: list[str], path: Path) -> subprocess.CompletedProcess[str] | None:
+    """Run a git subcommand rooted at ``path``, or None if it could not be
+    run at all (git missing, or it timed out)."""
+    try:
+        return subprocess.run(
+            ["git", "-C", str(path), *args],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def _git_commit(path: Path) -> str | None:
+    """Best-effort: the full HEAD SHA of the git repository containing
+    ``path``, with a ``-dirty`` suffix appended when the working tree has
+    uncommitted changes.
+
+    None means could-not-determine (git not installed, ``path`` is not
+    inside a repository, or either git call timed out or exited non-zero),
+    and is rendered as "unknown" downstream, never as a fabricated value.
+    """
+    rev_parse = _run_git(["rev-parse", "HEAD"], path)
+    if rev_parse is None or rev_parse.returncode != 0:
+        return None
+    sha = rev_parse.stdout.strip()
+    if not sha:
+        return None
+    status = _run_git(["status", "--porcelain"], path)
+    if status is None or status.returncode != 0:
+        return None
+    return f"{sha}-dirty" if status.stdout.strip() else sha
 
 
 @dataclass
@@ -250,6 +331,16 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
         render_report) is an error, since it would silently discard whatever
         domain results have already been recorded; pass replace=True to
         explicitly discard the in-progress run and start over.
+
+        The recorded metadata also stamps two provenance SHAs, best-effort:
+        tool_commit (the git commit the installed tool build was made from,
+        via its PEP 610 install record) and rules_pack_commit (the loaded
+        rules pack directory's git HEAD, '-dirty' suffixed if it has
+        uncommitted changes). Either is None when it could not be
+        determined, which the report renders as "unknown" rather than
+        guessing: a report must be traceable to the exact tool build and
+        rules version that produced it, not just a package version number
+        that can lag behind either.
         """
         if state.run is not None and not replace:
             raise ValueError(
@@ -265,7 +356,9 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
 
         meta = RunMeta(
             tool_version=tool_version or _default_tool_version(),
+            tool_commit=_default_tool_commit(),
             rules_pack_name=state.pack.root.name,
+            rules_pack_commit=_git_commit(state.pack.root),
             assistant=assistant,
             model=model,
             repo_name=repo_name,

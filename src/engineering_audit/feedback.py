@@ -67,7 +67,9 @@ def build_feedback_sections(
         rules_pack_label = f"{rules_pack_label} ({meta.rules_pack_version})"
     meta_lines = [
         f"Tool version: {meta.tool_version}",
+        f"Tool commit: {meta.tool_commit or 'unknown'}",
         f"Rules pack: {rules_pack_label}",
+        f"Rules commit: {meta.rules_pack_commit or 'unknown'}",
         f"Assistant: {meta.assistant}",
         f"Model: {meta.model}",
         f"Repository: {meta.repo_name} ({meta.repo_commit})",
