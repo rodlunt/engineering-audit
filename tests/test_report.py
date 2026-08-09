@@ -408,7 +408,7 @@ def test_markdownish_splits_paragraphs_on_crlf() -> None:
 def test_issue_url_with_javascript_scheme_raises() -> None:
     pack = _pack()
     run_state = _base_run_state(pack)
-    run_state.filed_issue_urls = {"D01-R02": "javascript:alert(1)"}
+    run_state.filed_issue_urls = {"D01-R02#1": "javascript:alert(1)"}
     with pytest.raises(ReportError):
         render_report(run_state, pack)
 
@@ -416,7 +416,7 @@ def test_issue_url_with_javascript_scheme_raises() -> None:
 def test_issue_url_with_https_scheme_still_renders_as_link() -> None:
     pack = _pack()
     run_state = _base_run_state(pack)
-    run_state.filed_issue_urls = {"D01-R02": "https://example.invalid/issues/42"}
+    run_state.filed_issue_urls = {"D01-R02#1": "https://example.invalid/issues/42"}
     rendered = render_report(run_state, pack)
     assert 'href="https://example.invalid/issues/42"' in rendered
 
@@ -521,7 +521,7 @@ def test_could_not_run_domain_alongside_a_completed_domain_still_reports_both() 
 def test_issue_urls_render_as_links_when_given() -> None:
     pack = _pack()
     run_state = _base_run_state(pack)
-    run_state.filed_issue_urls = {"D01-R02": "https://example.invalid/issues/1"}
+    run_state.filed_issue_urls = {"D01-R02#1": "https://example.invalid/issues/1"}
     rendered = render_report(run_state, pack)
     assert 'href="https://example.invalid/issues/1"' in rendered
 
@@ -834,13 +834,87 @@ def test_issue_already_filed_via_run_state_renders_unticked_disabled_with_link()
     # link server-side, with no JS needed to discover it.
     pack = _pack()
     run_state = _base_run_state(pack)
-    run_state.filed_issue_urls = {"D01-R02": "https://example.invalid/issues/42"}
+    run_state.filed_issue_urls = {"D01-R02#1": "https://example.invalid/issues/42"}
     rendered = render_report(run_state, pack)
 
     assert '<input type="checkbox" id="issue-check-0" disabled>' in rendered
     assert 'href="https://example.invalid/issues/42">already filed</a>' in rendered
     # An already-filed issue must not also render as ticked and selectable.
     assert '<input type="checkbox" id="issue-check-0" checked' not in rendered
+
+
+def test_two_findings_on_one_rule_each_get_their_own_already_filed_link() -> None:
+    # Two findings from the same rule must not share one already-filed link:
+    # server.py's file_issues keys them per finding ("<rule id>#<n>"), and
+    # RunState.filed_issue_urls has used that same shape since schema_version
+    # 3, so each finding's own url must render against its own checkbox.
+    pack = _pack()
+    d01 = pack.get_domain("d01")
+    assert d01 is not None
+    verdicts = _all_pass_verdicts(d01)
+    verdicts[1] = RuleVerdict(rule_id="D01-R02", verdict=Verdict.FINDING)
+    run_state = RunState(
+        meta=_meta(),
+        config=AuditConfig(selected_domain_ids=["d01"], issue_mode="report"),
+        domain_results={
+            "d01": DomainResult(
+                domain_id="d01",
+                status="completed",
+                rule_verdicts=verdicts,
+                findings=[
+                    Finding(
+                        rule_id="D01-R02",
+                        severity=Severity.HIGH,
+                        title="bed-14 has no shared-bed flag",
+                        location="ledger/beds.py:42",
+                        body_md="bed-14 holds two gnomes.",
+                        issue_title="Set shared-bed flag for bed-14",
+                        issue_body="bed-14 has two occupants and no shared-bed flag.",
+                    ),
+                    Finding(
+                        rule_id="D01-R02",
+                        severity=Severity.MEDIUM,
+                        title="bed-19 has no shared-bed flag",
+                        location="ledger/beds.py:57",
+                        body_md="bed-19 holds two gnomes.",
+                        issue_title="Set shared-bed flag for bed-19",
+                        issue_body="bed-19 has two occupants and no shared-bed flag.",
+                    ),
+                ],
+            )
+        },
+        filed_issue_urls={
+            "D01-R02#1": "https://example.invalid/issues/1",
+            "D01-R02#2": "https://example.invalid/issues/2",
+        },
+    )
+    rendered = render_report(run_state, pack)
+
+    assert '<input type="checkbox" id="issue-check-0" disabled>' in rendered
+    assert '<input type="checkbox" id="issue-check-1" disabled>' in rendered
+    assert 'href="https://example.invalid/issues/1">already filed</a>' in rendered
+    assert 'href="https://example.invalid/issues/2">already filed</a>' in rendered
+
+
+def test_schema_version_2_file_with_bare_rule_id_key_migrates_and_report_links_the_first_finding() -> None:
+    # A run-state.json written before schema_version 3 has filed_issue_urls
+    # keyed by bare rule id, holding exactly one url per rule: whichever was
+    # filed first (see the old projection this replaced, pinned by a test in
+    # test_server.py that has since been updated for the new shape).
+    # RunState.from_json migrates that bare key to "<rule id>#1" losslessly,
+    # and the rendered report must link the first finding using it.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    raw = json.loads(run_state.to_json())
+    raw["schema_version"] = 2
+    raw["filed_issue_urls"] = {"D01-R02": "https://example.invalid/issues/1"}
+    restored = RunState.from_json(json.dumps(raw))
+
+    assert restored.filed_issue_urls == {"D01-R02#1": "https://example.invalid/issues/1"}
+
+    rendered = render_report(restored, pack)
+    assert '<input type="checkbox" id="issue-check-0" disabled>' in rendered
+    assert 'href="https://example.invalid/issues/1">already filed</a>' in rendered
 
 
 def test_issue_button_rows_present_at_top_and_bottom() -> None:

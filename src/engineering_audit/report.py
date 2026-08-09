@@ -467,6 +467,18 @@ def _issues_section(
     issue_urls = issue_urls or {}
     issues_data: list[dict[str, str]] = []
     blocks = []
+    # Keyed per finding ("<rule id>#<n>"), matching server.py's _run_issues:
+    # the same per-rule counter, incremented before use, over each domain's
+    # findings in list order. Iterating findings across domains here (rather
+    # than within one domain, as _run_issues effectively does) cannot skew
+    # this counter out of step with server.py's: a rule id belongs to exactly
+    # one domain (the #25 validator rejects a duplicate rule id across rule
+    # files), so every increment of a given rule's count happens while
+    # walking that one domain's own finding list, in the same order either
+    # way. That coupling to server.py's enumeration is real and cannot be
+    # expressed in the type system, only guarded by this comment and the
+    # tests that pin it.
+    seen: Counter[str] = Counter()
     for index, finding in enumerate(all_findings):
         # render_report has already confirmed every finding's rule_id is in
         # the pack and carries a cited source, so this lookup and the
@@ -480,7 +492,9 @@ def _issues_section(
             {"rule_id": finding.rule_id, "title": finding.issue_title, "body": body_with_trailing}
         )
 
-        filed_url = issue_urls.get(finding.rule_id)
+        seen[finding.rule_id] += 1
+        finding_key = f"{finding.rule_id}#{seen[finding.rule_id]}"
+        filed_url = issue_urls.get(finding_key)
         textarea_id = f"issue-text-{index}"
         status_id = f"issue-status-{index}"
 

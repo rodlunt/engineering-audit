@@ -144,7 +144,7 @@ def build_demo_run_state(pack: RulesPack) -> RunState:
         meta=meta,
         config=config,
         domain_results={"d01": d01_result, "d02": d02_result},
-        filed_issue_urls={"D01-R02": _DEMO_FILED_ISSUE_URL},
+        filed_issue_urls={"D01-R02#1": _DEMO_FILED_ISSUE_URL},
         feedback_issue_url=None,
     )
 

@@ -428,15 +428,15 @@ def test_validate_consulted_sources_runs_independently_of_domain_result_status()
 
 def test_run_state_defaults_to_current_schema_version_when_freshly_built() -> None:
     state = RunState(meta=_meta(), config=_config())
-    assert state.schema_version == RUN_STATE_SCHEMA_VERSION == 2
+    assert state.schema_version == RUN_STATE_SCHEMA_VERSION == 3
     assert state.filed_issue_urls == {}
     assert state.feedback_issue_url is None
 
 
-def test_run_state_serialised_json_carries_schema_version_2() -> None:
+def test_run_state_serialised_json_carries_schema_version_3() -> None:
     state = RunState(meta=_meta(), config=_config())
     dumped = json.loads(state.to_json())
-    assert dumped["schema_version"] == 2
+    assert dumped["schema_version"] == 3
 
 
 def test_run_state_from_json_missing_schema_version_is_treated_as_version_1() -> None:
@@ -457,12 +457,46 @@ def test_run_state_from_json_accepts_current_version() -> None:
     state = RunState(
         meta=_meta(),
         config=_config(),
-        filed_issue_urls={"D01-R01": "https://example.invalid/issues/1"},
+        filed_issue_urls={"D01-R01#1": "https://example.invalid/issues/1"},
         feedback_issue_url="https://example.invalid/issues/2",
     )
     restored = RunState.from_json(state.to_json())
-    assert restored.schema_version == 2
+    assert restored.schema_version == 3
     assert restored == state
+
+
+def test_run_state_from_json_migrates_schema_version_2_bare_rule_id_keys_to_first_finding() -> None:
+    # A run-state.json written at schema_version 2 or below has
+    # filed_issue_urls keyed by bare rule id: the report used to look a
+    # finding up by its rule id, so the file holds exactly one url per rule,
+    # deterministically the first one filed. Loading it must migrate that
+    # bare key to "<rule id>#1" losslessly rather than losing it or refusing
+    # the file.
+    state = RunState(meta=_meta(), config=_config())
+    raw = json.loads(state.to_json())
+    raw["schema_version"] = 2
+    raw["filed_issue_urls"] = {
+        "D01-R01": "https://example.invalid/issues/1",
+        "D01-R02": "https://example.invalid/issues/2",
+    }
+    restored = RunState.from_json(json.dumps(raw))
+    assert restored.schema_version == 2
+    assert restored.filed_issue_urls == {
+        "D01-R01#1": "https://example.invalid/issues/1",
+        "D01-R02#1": "https://example.invalid/issues/2",
+    }
+
+
+def test_run_state_from_json_migration_leaves_an_already_suffixed_key_untouched() -> None:
+    # Belt and braces: the migration checks each key for a '#' rather than
+    # assuming none can have one, so a key that already carries a '#n' suffix
+    # is never double-suffixed.
+    state = RunState(meta=_meta(), config=_config())
+    raw = json.loads(state.to_json())
+    raw["schema_version"] = 1
+    raw["filed_issue_urls"] = {"D01-R01#2": "https://example.invalid/issues/1"}
+    restored = RunState.from_json(json.dumps(raw))
+    assert restored.filed_issue_urls == {"D01-R01#2": "https://example.invalid/issues/1"}
 
 
 def test_run_state_from_json_tolerates_a_domain_result_missing_consulted_sources() -> None:
@@ -512,6 +546,27 @@ def test_run_state_from_json_rejects_a_higher_schema_version_naming_both_numbers
     assert "99" in message
     assert str(RUN_STATE_SCHEMA_VERSION) in message
     assert "upgrade" in message.lower()
+
+
+def test_run_state_version_gate_accepts_3_and_rejects_4_naming_both_numbers() -> None:
+    # 3 is the current version (the filed_issue_urls per-finding key switch);
+    # 4 does not exist yet. Named with literal numbers, not just
+    # RUN_STATE_SCHEMA_VERSION +/- 1, so a future bump that forgets to update
+    # this test is caught rather than silently sliding the goalposts with it.
+    assert RUN_STATE_SCHEMA_VERSION == 3
+    state = RunState(meta=_meta(), config=_config())
+    raw = json.loads(state.to_json())
+
+    raw["schema_version"] = 3
+    accepted = RunState.from_json(json.dumps(raw))
+    assert accepted.schema_version == 3
+
+    raw["schema_version"] = 4
+    with pytest.raises(RunStateVersionError) as excinfo:
+        RunState.from_json(json.dumps(raw))
+    message = str(excinfo.value)
+    assert "4" in message
+    assert "3" in message
 
 
 def test_run_state_still_requires_a_config_after_run_progress_was_added() -> None:
@@ -564,6 +619,27 @@ def test_run_progress_from_json_rejects_a_higher_schema_version() -> None:
         RunProgress.from_json(json.dumps(raw))
     assert "99" in str(excinfo.value)
     assert str(RUN_STATE_SCHEMA_VERSION) in str(excinfo.value)
+
+
+def test_run_progress_version_gate_accepts_3_and_rejects_4_naming_both_numbers() -> None:
+    # RunProgress shares RUN_STATE_SCHEMA_VERSION with RunState deliberately
+    # (see its own docstring), so the version bump to 3 applies here too even
+    # though filed_issues itself needed no key change. Named with literal
+    # numbers for the same reason as RunState's equivalent test: catching a
+    # future bump that forgets to update the pinned values.
+    assert RUN_STATE_SCHEMA_VERSION == 3
+    raw = json.loads(RunProgress(meta=_meta(), config=_config()).to_json())
+
+    raw["schema_version"] = 3
+    accepted = RunProgress.from_json(json.dumps(raw))
+    assert accepted.schema_version == 3
+
+    raw["schema_version"] = 4
+    with pytest.raises(RunStateVersionError) as excinfo:
+        RunProgress.from_json(json.dumps(raw))
+    message = str(excinfo.value)
+    assert "4" in message
+    assert "3" in message
 
 
 def test_run_progress_rejects_a_domain_results_key_that_is_not_its_domain_id() -> None:

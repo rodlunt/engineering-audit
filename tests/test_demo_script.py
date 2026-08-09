@@ -61,7 +61,7 @@ def test_demo_run_state_shows_the_disabled_filed_rendering_and_could_not_evaluat
     run_state = module.build_demo_run_state(pack)
 
     assert run_state.filed_issue_urls == {
-        "D01-R02": "https://github.com/rodlunt/engineering-audit/issues/3"
+        "D01-R02#1": "https://github.com/rodlunt/engineering-audit/issues/3"
     }
     d01 = run_state.domain_results["d01"]
     finding = d01.findings[0]

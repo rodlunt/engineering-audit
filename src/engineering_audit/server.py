@@ -288,24 +288,6 @@ def _pending_issues(run: RunTracker) -> list[PendingIssue]:
     return [issue for issue in _run_issues(run) if issue.key not in run.filed_issues]
 
 
-def _filed_urls_by_rule(run: RunTracker) -> dict[str, str]:
-    """Project the run's filed-issue bookkeeping onto the rule-id-keyed shape
-    RunState.filed_issue_urls uses.
-
-    The report marks a finding as already filed by looking its rule id up in
-    that map, so it cannot hold two urls for one rule: where a rule has two
-    findings, both show the first url filed for it. The tool's own file_issues
-    result keeps every url under its own finding key; this projection is
-    lossy only in the written run state, and only for that case.
-    """
-    by_rule: dict[str, str] = {}
-    for issue in _run_issues(run):
-        url = run.filed_issues.get(issue.key)
-        if url is not None:
-            by_rule.setdefault(issue.finding.rule_id, url)
-    return by_rule
-
-
 def _progress_path(output_dir: Path) -> Path:
     """The crash-recovery file for a run whose output directory is this.
 
@@ -1476,7 +1458,7 @@ def _register_report_tools(mcp: MCPServer, state: AppState) -> None:
             meta=finished_meta,
             config=config,
             domain_results=run.domain_results,
-            filed_issue_urls=_filed_urls_by_rule(run),
+            filed_issue_urls=dict(run.filed_issues),
             feedback_issue_url=run.feedback_issue_url,
         )
 
