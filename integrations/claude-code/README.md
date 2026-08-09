@@ -7,10 +7,10 @@ Wires the `engineering-audit` MCP server and its `audit` skill into Claude Code.
 **From the published git repository** (no local clone needed):
 
 ```
-claude mcp add engineering-audit -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.4.0 engineering-audit-mcp --rules-dir <path-to-rules-clone>
+claude mcp add engineering-audit -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.5.0 engineering-audit-mcp --rules-dir <path-to-rules-clone>
 ```
 
-`@v0.4.0` pins the install to the current tagged release rather than the moving `main` branch;
+`@v0.5.0` pins the install to the current tagged release rather than the moving `main` branch;
 see the root README's [Install](../../README.md#install) section for how to find the latest tag
 and update to it deliberately.
 
