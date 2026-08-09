@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
+import re
 from pathlib import Path
 
 import pytest
 
+from engineering_audit.feedback import build_feedback_body, build_feedback_sections
 from engineering_audit.report import ReportError, render_report, write_report
 from engineering_audit.rules import load_pack
 from engineering_audit.schema import (
@@ -18,10 +21,24 @@ from engineering_audit.schema import (
     RunState,
     SelfAssessment,
     Severity,
+    TelemetryConsent,
     Verdict,
 )
 
 FIXTURE_PACK = Path(__file__).parent / "fixture_pack"
+
+
+def _extract_json_script(rendered: str, element_id: str) -> dict:
+    """Pull the JSON payload out of an inline
+    <script type="application/json" id="..."> block and parse it, mirroring
+    what the report's own JS does at runtime with JSON.parse."""
+    match = re.search(
+        rf'<script type="application/json" id="{re.escape(element_id)}">(.*?)</script>',
+        rendered,
+        re.DOTALL,
+    )
+    assert match is not None, f"no <script type=application/json id={element_id!r}> block found"
+    return json.loads(match.group(1))
 
 
 def _meta(**overrides) -> RunMeta:
@@ -251,9 +268,14 @@ def test_findings_rollup_rows_keyed_by_domain_id_not_title(tmp_path: Path) -> No
 
 
 def test_markdownish_splits_paragraphs_on_crlf() -> None:
+    # Feedback text is now rendered as a plain, escaped, editable textarea
+    # value (not markdownish), so this exercises _markdownish through the
+    # one place it still runs: a finding's body_md.
     pack = _pack()
     run_state = _base_run_state(pack)
-    run_state.config.feedback_text = "First paragraph.\r\n\r\nSecond paragraph."
+    run_state.domain_results["d01"].findings[0].body_md = (
+        "First paragraph.\r\n\r\nSecond paragraph."
+    )
     rendered = render_report(run_state, pack)
     assert "<p>First paragraph.</p><p>Second paragraph.</p>" in rendered
 
@@ -360,22 +382,24 @@ def test_feedback_text_rendered_when_present() -> None:
     assert "The gnome roster export was slow on large repos." in rendered
 
 
-def test_feedback_section_renders_mailto_button_and_body_text_when_no_issue_filed() -> None:
+def test_feedback_section_renders_interactive_form_when_no_issue_filed() -> None:
     pack = _pack()
     run_state = _base_run_state(pack)
     run_state.config.feedback_text = "The gnome roster export was slow on large repos."
     rendered = render_report(run_state, pack)
 
-    assert 'href="mailto:rodneylunt79@gmail.com?subject=' in rendered
-    assert "feedback-mailto" in rendered
-    assert "Send feedback to the" in rendered
-    assert 'id="feedback-body-text"' in rendered
-    # The body text in the textarea carries the run metadata section too,
-    # built by the same helper submit_feedback uses.
+    assert 'id="feedback-textarea"' in rendered
+    assert "The gnome roster export was slow on large repos." in rendered
+    assert 'onclick="emailFeedback()"' in rendered
+    assert 'onclick="copyFeedback(this)"' in rendered
+    assert 'id="feedback-sections-data"' in rendered
+    # The embedded JSON carries the run metadata section too, built by the
+    # same helper submit_feedback uses.
     assert "Run metadata" in rendered
+    assert "rodneylunt79@gmail.com" in rendered
 
 
-def test_feedback_section_links_the_filed_issue_instead_of_mailto_when_given() -> None:
+def test_feedback_section_shows_filed_issue_link_and_still_offers_the_form() -> None:
     pack = _pack()
     run_state = _base_run_state(pack)
     run_state.config.feedback_text = "The gnome roster export was slow on large repos."
@@ -385,7 +409,10 @@ def test_feedback_section_links_the_filed_issue_instead_of_mailto_when_given() -
 
     assert 'href="https://github.com/rodlunt/engineering-audit/issues/9"' in rendered
     assert "filed as" in rendered
-    assert 'href="mailto:' not in rendered
+    assert "Further feedback can still be sent" in rendered
+    # The interactive form is still rendered, not replaced by the link.
+    assert 'id="feedback-textarea"' in rendered
+    assert 'onclick="emailFeedback()"' in rendered
 
 
 def test_feedback_issue_url_with_non_http_scheme_raises() -> None:
@@ -454,3 +481,217 @@ def test_write_report_writes_the_file(tmp_path: Path) -> None:
     assert written == out_path
     assert out_path.exists()
     assert "Engineering practice audit report" in out_path.read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Feedback section: tick boxes, embedded JSON, script-injection escaping
+# ---------------------------------------------------------------------------
+
+
+def test_feedback_consent_checkboxes_prefilled_true_from_config() -> None:
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.config.telemetry_consent = TelemetryConsent(
+        coverage=True, rollup=True, self_assessment=True, environment=True
+    )
+    rendered = render_report(run_state, pack)
+
+    for input_id in (
+        "consent-coverage",
+        "consent-rollup",
+        "consent-self-assessment",
+        "consent-environment",
+    ):
+        match = re.search(rf'<input type="checkbox" id="{input_id}"([^>]*)>', rendered)
+        assert match is not None, f"checkbox {input_id!r} not found"
+        assert "checked" in match.group(1), f"checkbox {input_id!r} expected checked"
+
+
+def test_feedback_consent_checkboxes_prefilled_false_from_config() -> None:
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.config.telemetry_consent = TelemetryConsent(
+        coverage=False, rollup=False, self_assessment=False, environment=False
+    )
+    rendered = render_report(run_state, pack)
+
+    for input_id in (
+        "consent-coverage",
+        "consent-rollup",
+        "consent-self-assessment",
+        "consent-environment",
+    ):
+        match = re.search(rf'<input type="checkbox" id="{input_id}"([^>]*)>', rendered)
+        assert match is not None, f"checkbox {input_id!r} not found"
+        assert "checked" not in match.group(1), f"checkbox {input_id!r} expected unchecked"
+
+
+def test_feedback_run_metadata_row_is_locked_checked_and_disabled() -> None:
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    rendered = render_report(run_state, pack)
+
+    assert (
+        '<label class="consent-row locked"><input type="checkbox" checked disabled> '
+        "Run metadata (always included when sending feedback)</label>" in rendered
+    )
+
+
+def test_feedback_embedded_json_parses_and_matches_build_feedback_sections() -> None:
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    rendered = render_report(run_state, pack)
+
+    data = _extract_json_script(rendered, "feedback-sections-data")
+    expected_sections = build_feedback_sections(run_state.meta, run_state.domain_results)
+
+    assert data["run_metadata"] == expected_sections["run_metadata"]
+    assert data["coverage"] == expected_sections["coverage"]
+    assert data["rollup"] == expected_sections["rollup"]
+    assert data["self_assessment"] == expected_sections["self_assessment"]
+    assert data["environment"] == expected_sections["environment"]
+    assert data["email"] == "rodneylunt79@gmail.com"
+
+    # Cross-check against the MCP path's own builder: with only one section
+    # consented, build_feedback_body's output must be exactly the always-on
+    # run-metadata chunk plus that one section, joined the same way the
+    # report's own JS joins ticked sections.
+    for key, consent_kwargs in (
+        ("coverage", {"coverage": True, "rollup": False, "self_assessment": False, "environment": False}),
+        ("rollup", {"coverage": False, "rollup": True, "self_assessment": False, "environment": False}),
+        (
+            "self_assessment",
+            {"coverage": False, "rollup": False, "self_assessment": True, "environment": False},
+        ),
+        (
+            "environment",
+            {"coverage": False, "rollup": False, "self_assessment": False, "environment": True},
+        ),
+    ):
+        body = build_feedback_body(
+            None, run_state.meta, TelemetryConsent(**consent_kwargs), run_state.domain_results
+        )
+        assert body == data["run_metadata"] + "\n\n" + data[key]
+
+
+def test_feedback_json_escapes_closing_script_tag_in_section_text() -> None:
+    # self_assessment.limits is free text an assistant writes; if it happens
+    # to contain a literal "</script>" (accidentally or via a crafted
+    # payload), the embedded JSON block must still parse as one JSON value
+    # and must not let that text terminate the <script> element early.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.config.telemetry_consent = TelemetryConsent(self_assessment=True)
+    run_state.domain_results["d01"].self_assessment = SelfAssessment(
+        confidence="high", limits='</script><script>alert(1)</script>'
+    )
+    rendered = render_report(run_state, pack)
+
+    # The raw, case-sensitive sequence "</script>" must only ever appear
+    # once in the whole document from this point on: the real closing tag
+    # of the feedback JSON block. If the malicious text had broken out, a
+    # second literal "</script>" would appear earlier, right after the
+    # injected payload.
+    start = rendered.index('<script type="application/json" id="feedback-sections-data">')
+    first_close = rendered.index("</script>", start)
+    second_probe = rendered.find("</script>", first_close + len("</script>"))
+    # There are other <script> blocks on the page (issues-data, the inline
+    # JS), so other "</script>" occurrences are expected further along;
+    # what must NOT happen is one appearing inside what should have been
+    # pure JSON content, i.e. before the JSON is a syntactically complete
+    # document. Confirm that by parsing up to (and only to) the real close.
+    payload = rendered[start:first_close]
+    json_text = payload.split(">", 1)[1]
+    data = json.loads(json_text)
+    assert "</script><script>alert(1)</script>" in data["self_assessment"]
+    assert second_probe > first_close  # sanity: later script tags still exist
+
+
+# ---------------------------------------------------------------------------
+# Issues section: tick boxes, filed-via-MCP state, button rows, shared line
+# ---------------------------------------------------------------------------
+
+
+def test_issue_checkbox_rendered_and_ticked_by_default() -> None:
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    rendered = render_report(run_state, pack, issue_urls=None)
+
+    assert '<input type="checkbox" id="issue-check-0" checked' in rendered
+
+
+def test_issue_already_filed_via_mcp_renders_unticked_disabled_with_link() -> None:
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    rendered = render_report(
+        run_state, pack, issue_urls={"D01-R02": "https://example.invalid/issues/42"}
+    )
+
+    assert '<input type="checkbox" id="issue-check-0" disabled>' in rendered
+    assert 'href="https://example.invalid/issues/42">already filed</a>' in rendered
+    # An already-filed issue must not also render as ticked and selectable.
+    assert '<input type="checkbox" id="issue-check-0" checked' not in rendered
+
+
+def test_issue_button_rows_present_at_top_and_bottom() -> None:
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    rendered = render_report(run_state, pack)
+
+    assert rendered.count("Add selected issues to GitHub (requires GitHub PAT)") == 2
+    assert rendered.count("Copy selected issues (for pasting into an LLM or editor)") == 2
+    # The GitHub-filing form itself appears exactly once, not once per row.
+    assert rendered.count('id="github-file-form"') == 1
+    assert rendered.count('id="gh-repo"') == 1
+    assert rendered.count('id="gh-pat"') == 1
+
+
+def test_issue_embedded_body_ends_with_shared_trailing_line_byte_identical_to_file_issues() -> None:
+    # This is the exact body file_issues sends to gh issue create for this
+    # same finding (see test_server.py's
+    # test_file_issues_confirm_files_one_issue_per_finding), reused here to
+    # prove the report and the MCP filing path can never diverge.
+    expected_body = (
+        "bed-14 has two occupants and no shared-bed flag. See ledger/beds.py:42.\n\n"
+        "Found by an engineering-practice audit (rule D01-R02, severity high, "
+        "at ledger/beds.py:42). Reference: invented for test fixtures only, "
+        "no external source"
+    )
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    rendered = render_report(run_state, pack, issue_urls=None)
+
+    data = _extract_json_script(rendered, "issues-data")
+    assert data["issues"] == [
+        {
+            "rule_id": "D01-R02",
+            "title": "Set shared-bed flag for bed-14",
+            "body": expected_body,
+        }
+    ]
+    # The visible per-issue textarea (title, blank line, body-with-trailing)
+    # must carry the same text.
+    assert f"Set shared-bed flag for bed-14\n\n{expected_body}" in rendered.replace(
+        "&#x27;", "'"
+    ).replace("&amp;", "&")
+
+
+# ---------------------------------------------------------------------------
+# Footer
+# ---------------------------------------------------------------------------
+
+
+def test_footer_contains_author_link_tool_link_version_and_locality_sentence() -> None:
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    rendered = render_report(run_state, pack)
+
+    assert 'href="https://github.com/rodlunt"' in rendered
+    assert 'href="https://github.com/rodlunt/engineering-audit"' in rendered
+    assert "engineering-audit v0.1.0" in rendered
+    assert "fixture-pack" in rendered
+    assert "2026-08-09T09:10:00+00:00" in rendered
+    assert (
+        "This report was generated locally. Nothing in it leaves your machine unless you "
+        "choose to send or file it." in rendered
+    )
