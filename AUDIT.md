@@ -167,6 +167,12 @@ Check `config.issue_mode` from step 3's `get_config` response.
   is wrong) and call `file_issues(confirm=True)` again. Already-filed findings are skipped
   automatically, so a retry never double-files.
 
+  Filed issues carry an `engineering-audit` label, which the tool creates on the target
+  repository if it is not already there. The response's `label` field reports `present`,
+  `created` or `unavailable`. On `unavailable` the issues are still filed, just without the
+  label, and `warnings` carries one line saying why: pass that on to the user, because they are
+  the one who can add the label and re-label the issues.
+
 ## 7. Render the report
 
 Call `render_report` with a `finished` ISO timestamp (the current time, same format as `started`

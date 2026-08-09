@@ -45,7 +45,13 @@ from engineering_audit.feedback import (
     build_mailto_url,
     feedback_subject,
 )
-from engineering_audit.issues import IssueFilingError, create_issue, detect_repo, gh_available
+from engineering_audit.issues import (
+    IssueFilingError,
+    create_issue,
+    detect_repo,
+    ensure_label,
+    gh_available,
+)
 from engineering_audit.report import ReportError, write_report
 from engineering_audit.rules import Rule, RulesPack, RulesPackError, get_domain_text, load_pack
 from engineering_audit.schema import (
@@ -695,6 +701,13 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
         immediately and the error lists exactly which findings were filed
         (with their URLs) and which were not, so a retry knows where to
         resume.
+
+        Each filed issue carries the "engineering-audit" label. The label is
+        checked once per call and created on the target repository if it is
+        missing; the response's label field reports which of present,
+        created or unavailable happened. Unavailable (creation failed) files
+        the issues unlabelled and says so once, in warnings, rather than
+        once per issue.
         """
         run = _require_run()
         config = _require_config(run)
@@ -746,8 +759,13 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
                 )
             target_repo = detected
 
+        # Once per run, not once per issue: whether the label exists is one
+        # fact about the target repository.
+        label_status = ensure_label(target_repo)
+        labels = [label_status.name] if label_status.usable else []
+
         filed_this_call: dict[str, str] = {}
-        warnings: list[str] = []
+        warnings: list[str] = [label_status.warning] if label_status.warning else []
         for issue in pending:
             finding = issue.finding
             # A filed issue is a published claim. It never goes out without
@@ -770,7 +788,7 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
             trailing_line = build_issue_trailing_line(finding, rule)
             body = f"{finding.issue_body}\n\n{trailing_line}"
             try:
-                created = create_issue(target_repo, finding.issue_title, body, ["engineering-audit"])
+                created = create_issue(target_repo, finding.issue_title, body, labels)
             except IssueFilingError as exc:
                 unfiled = [p.key for p in pending if p.key not in run.filed_issues]
                 raise ValueError(
@@ -780,12 +798,18 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
                 ) from exc
             run.filed_issues[issue.key] = created.url
             filed_this_call[issue.key] = created.url
-            warnings.extend(created.warnings)
+            # create_issue's own missing-label retry can still fire (a label
+            # deleted or renamed mid-run), and it reports the same fact for
+            # every issue after that. One line per distinct warning.
+            for warning in created.warnings:
+                if warning not in warnings:
+                    warnings.append(warning)
 
         return {
             "repo": target_repo,
             "filed": filed_this_call,
             "all_filed_issue_urls": dict(run.filed_issues),
+            "label": {"name": label_status.name, "state": label_status.state},
             "warnings": warnings,
         }
 

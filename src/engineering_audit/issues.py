@@ -15,18 +15,26 @@ from __future__ import annotations
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Literal
 
 __all__ = [
     "CommandRunner",
     "CreatedIssue",
+    "ISSUE_LABEL",
     "IssueFilingError",
+    "LabelStatus",
     "gh_available",
     "detect_repo",
     "create_issue",
+    "ensure_label",
 ]
 
 CommandRunner = Callable[..., "subprocess.CompletedProcess[str]"]
+
+ISSUE_LABEL = "engineering-audit"
+# GitHub takes a six-digit hex colour with no leading '#'.
+ISSUE_LABEL_COLOUR = "5319e7"
+ISSUE_LABEL_DESCRIPTION = "Filed by an engineering practice audit"
 
 
 class IssueFilingError(Exception):
@@ -91,6 +99,91 @@ def detect_repo(cwd: Path, runner: CommandRunner = _default_runner) -> str | Non
     return name or None
 
 
+@dataclass
+class LabelStatus:
+    """Whether a label is available for filing on a repository.
+
+    Deliberately tri-state. "unavailable" is a distinct outcome from
+    "present"/"created", never collapsed into either: a caller that cannot
+    tell "the label is on the repo" from "we could not put it there" would
+    file unlabelled issues believing they were labelled, and nobody would
+    find them by the label later.
+    """
+
+    name: str
+    state: Literal["present", "created", "unavailable"]
+    warning: str | None = None
+
+    @property
+    def usable(self) -> bool:
+        return self.state in ("present", "created")
+
+
+def ensure_label(
+    repo: str,
+    name: str = ISSUE_LABEL,
+    runner: CommandRunner = _default_runner,
+) -> LabelStatus:
+    """Make sure `name` exists as a label on `repo`, creating it if it does
+    not, and report which of the three outcomes happened.
+
+    Called once per filing run, not once per issue: the label's absence is
+    one fact about the repository, and repeating it per issue (as the
+    per-issue retry in :func:`create_issue` did) buries the run's real
+    output under identical warnings.
+
+    Creating a label is within the consent the user already gave to file
+    issues on this repository, and is undone with one `gh label delete`. If
+    creation fails (no push access, a rename race, gh trouble), that is
+    reported as "unavailable" with a single warning, and the caller files
+    unlabelled rather than not filing at all: losing the label is cosmetic,
+    losing the finding is not.
+    """
+    listed = runner(
+        ["gh", "label", "list", "--repo", repo, "--search", name, "--json", "name", "-q", ".[].name"]
+    )
+    if listed.returncode == 0:
+        # A failed list is not an absent label: fall through to the create
+        # attempt below, which distinguishes the two on its own.
+        existing = {line.strip().lower() for line in (listed.stdout or "").splitlines()}
+        if name.lower() in existing:
+            return LabelStatus(name=name, state="present")
+
+    created = runner(
+        [
+            "gh",
+            "label",
+            "create",
+            name,
+            "--repo",
+            repo,
+            "--color",
+            ISSUE_LABEL_COLOUR,
+            "--description",
+            ISSUE_LABEL_DESCRIPTION,
+        ]
+    )
+    if created.returncode == 0:
+        return LabelStatus(name=name, state="created")
+
+    stderr = (created.stderr or "").strip()
+    if "already exists" in stderr.lower():
+        # The label list above could not be read, or the repo has the label
+        # under different case; either way it is there.
+        return LabelStatus(name=name, state="present")
+
+    detail = stderr or f"gh label create exited {created.returncode} with no message"
+    return LabelStatus(
+        name=name,
+        state="unavailable",
+        warning=(
+            f"label '{name}' is not on repo {repo} and could not be created ({detail}). "
+            "Issues for this run are being filed without it; add the label yourself and "
+            "re-label them if you want to find them by label later."
+        ),
+    )
+
+
 def _looks_like_unknown_label_error(stderr: str) -> bool:
     lowered = stderr.lower()
     if "label" not in lowered:
@@ -130,6 +223,11 @@ def create_issue(
     at all and reported back as a warning rather than as a failure: losing
     the label is cosmetic, losing the issue (and the finding it records) is
     not, and this function must never do the latter to avoid the former.
+
+    That retry is the last-ditch net for a label that disappears mid-run
+    (deleted or renamed while filing). The ordinary missing-label case is
+    handled once per run by :func:`ensure_label`, so this path should not be
+    the one reporting it for every issue in turn.
     """
 
     def _run(label_list: list[str]) -> "subprocess.CompletedProcess[str]":

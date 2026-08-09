@@ -24,7 +24,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server._otel import OpenTelemetryMiddleware
 
 import engineering_audit.server as server_module
-from engineering_audit.issues import CreatedIssue, IssueFilingError
+from engineering_audit.issues import CreatedIssue, IssueFilingError, LabelStatus
 from engineering_audit.rules import RulesPackError
 from engineering_audit.schema import RunState
 from engineering_audit.server import (
@@ -786,6 +786,33 @@ def _fake_create_issue(fail_on: set[str] | None = None, warn_on: set[str] | None
     return _fake, calls
 
 
+@pytest.fixture(autouse=True)
+def _stub_ensure_label(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    """file_issues ensures the label exists once per call, which would shell
+    out to a real gh. Every test gets the label-already-present answer by
+    default; the label-path tests override it. Records the calls, so a test
+    can assert it happened once per run rather than once per issue."""
+    calls: list[dict] = []
+
+    def _fake(repo: str, name: str = "engineering-audit") -> LabelStatus:
+        calls.append({"repo": repo, "name": name})
+        return LabelStatus(name=name, state="present")
+
+    monkeypatch.setattr(server_module, "ensure_label", _fake)
+    return calls
+
+
+def _stub_label_status(monkeypatch: pytest.MonkeyPatch, status: LabelStatus) -> list[dict]:
+    calls: list[dict] = []
+
+    def _fake(repo: str, name: str = "engineering-audit") -> LabelStatus:
+        calls.append({"repo": repo, "name": name})
+        return status
+
+    monkeypatch.setattr(server_module, "ensure_label", _fake)
+    return calls
+
+
 def _configured_github_run(
     mcp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, repo_dir: Path | None = None
 ) -> None:
@@ -1100,6 +1127,103 @@ def test_file_issues_missing_label_warning_is_surfaced(
 
     result = _call(mcp, "file_issues", {"confirm": True, "repo": "rodlunt/widgets-app"})
     assert result["warnings"] and "not found on repo" in result["warnings"][0]
+
+
+def test_file_issues_checks_the_label_once_per_call_not_once_per_issue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _stub_ensure_label: list[dict]
+) -> None:
+    _fake, calls = _fake_create_issue()
+    monkeypatch.setattr(server_module, "create_issue", _fake)
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    _configured_github_run(mcp, tmp_path, monkeypatch)
+    _record_d01_with_two_findings_on_one_rule(mcp)
+    _record_d02_all_pass(mcp)
+
+    result = _call(mcp, "file_issues", {"confirm": True, "repo": "rodlunt/widgets-app"})
+
+    assert _stub_ensure_label == [{"repo": "rodlunt/widgets-app", "name": "engineering-audit"}]
+    assert result["label"] == {"name": "engineering-audit", "state": "present"}
+    assert result["warnings"] == []
+    assert len(calls) == 2
+    assert all(c["labels"] == ["engineering-audit"] for c in calls)
+
+
+def test_file_issues_files_labelled_when_the_label_had_to_be_created(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    label_calls = _stub_label_status(
+        monkeypatch, LabelStatus(name="engineering-audit", state="created")
+    )
+    _fake, calls = _fake_create_issue()
+    monkeypatch.setattr(server_module, "create_issue", _fake)
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    _configured_github_run(mcp, tmp_path, monkeypatch)
+    _record_d01_with_two_findings_on_one_rule(mcp)
+    _record_d02_all_pass(mcp)
+
+    result = _call(mcp, "file_issues", {"confirm": True, "repo": "rodlunt/widgets-app"})
+
+    assert len(label_calls) == 1
+    assert result["label"] == {"name": "engineering-audit", "state": "created"}
+    assert result["warnings"] == []
+    assert all(c["labels"] == ["engineering-audit"] for c in calls)
+
+
+def test_file_issues_label_creation_failure_warns_once_and_files_unlabelled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The old behaviour was one warning per issue for the same fact (33 of
+    # them on the 2026-08-09 self-audit). One warning per run, and never a
+    # silent pass: the response says the label is unavailable.
+    label_calls = _stub_label_status(
+        monkeypatch,
+        LabelStatus(
+            name="engineering-audit",
+            state="unavailable",
+            warning="label 'engineering-audit' is not on repo rodlunt/widgets-app and could "
+            "not be created (HTTP 403: Resource not accessible by integration).",
+        ),
+    )
+    _fake, calls = _fake_create_issue()
+    monkeypatch.setattr(server_module, "create_issue", _fake)
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    _configured_github_run(mcp, tmp_path, monkeypatch)
+    _record_d01_with_two_findings_on_one_rule(mcp)
+    _record_d02_all_pass(mcp)
+
+    result = _call(mcp, "file_issues", {"confirm": True, "repo": "rodlunt/widgets-app"})
+
+    assert len(label_calls) == 1
+    assert result["label"]["state"] == "unavailable"
+    assert len(result["warnings"]) == 1
+    assert "could not be created" in result["warnings"][0]
+    # Both issues still filed, just without the label.
+    assert len(calls) == 2
+    assert all(c["labels"] == [] for c in calls)
+
+
+def test_file_issues_deduplicates_a_repeated_per_issue_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # create_issue's own missing-label retry (a label deleted mid-run) reports
+    # the same fact for every issue after it; the run's output must carry it
+    # once.
+    _fake, calls = _fake_create_issue(
+        warn_on={"Set shared-bed flag for bed-14", "Set shared-bed flag for bed-19"}
+    )
+    monkeypatch.setattr(server_module, "create_issue", _fake)
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    _configured_github_run(mcp, tmp_path, monkeypatch)
+    _record_d01_with_two_findings_on_one_rule(mcp)
+    _record_d02_all_pass(mcp)
+
+    result = _call(mcp, "file_issues", {"confirm": True, "repo": "rodlunt/widgets-app"})
+    assert len(calls) == 2
+    assert len(result["warnings"]) == 1
 
 
 def test_file_issues_confirm_detects_repo_from_repo_dir(
