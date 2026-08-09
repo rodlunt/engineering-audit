@@ -1,0 +1,36 @@
+name: tag version guard
+
+# A version tag whose tree claims a different package version is real drift:
+# v0.2.0 was cut over a pyproject.toml still saying 0.1.0, so every report
+# from that build stamped tool_version 0.1.0. Tags cannot be gated the way
+# branches can, so this guard runs when the tag lands and goes red (GitHub
+# emails on workflow failure) while the fix is still one commit away.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    steps:
+      # Pinned to a commit digest, matching ci.yml: this repo should survive
+      # its own audit.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Tag matches pyproject version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' pyproject.toml)"
+          if [ -z "$version" ]; then
+            # A guard that cannot read its input must fail, not pass.
+            echo "could not extract version from pyproject.toml; guard broken, not a pass" >&2
+            exit 2
+          fi
+          if [ "$tag" != "$version" ]; then
+            echo "tag v$tag points at a tree whose pyproject.toml says $version; bump the version or retag" >&2
+            exit 1
+          fi
+          echo "tag v$tag matches pyproject version $version"
