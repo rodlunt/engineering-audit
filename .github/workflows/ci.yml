@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+    branches: [main]
 
 # Read-only by default: this workflow only checks out code, installs
 # dependencies and runs lint/type/test steps, so it never needs to write
