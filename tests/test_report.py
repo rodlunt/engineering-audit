@@ -137,6 +137,16 @@ def test_rollup_counts_match_computed_sums() -> None:
     assert "Gnome Husbandry Record Keeping: 1" in rendered
 
 
+def test_rollup_by_domain_includes_a_domain_audited_and_found_clean() -> None:
+    # d02 in _base_run_state has zero findings but did complete; it must
+    # show up in "By domain" at zero, distinguishable from a domain that was
+    # never selected or never run at all.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    rendered = render_report(run_state, pack)
+    assert "d02: Teacup Logistics Handling: 0" in rendered
+
+
 def test_coverage_totals_are_summed_from_domain_results() -> None:
     pack = _pack()
     run_state = _base_run_state(pack)
@@ -356,6 +366,41 @@ def test_could_not_run_domain_renders_reason_without_verdicts() -> None:
     )
     rendered = render_report(run_state, pack)
     assert "repository was empty" in rendered
+
+
+def test_could_not_run_domain_stops_the_completeness_banner_claiming_full_coverage() -> None:
+    # A could-not-run domain has no rule_verdicts by design, so it satisfies
+    # "no rule left could-not-evaluate" by construction even though zero
+    # rules were actually evaluated for it. The banner must never claim full
+    # coverage in that case.
+    pack = _pack()
+    run_state = RunState(
+        meta=_meta(),
+        config=AuditConfig(selected_domain_ids=["d02"], issue_mode="report"),
+        domain_results={
+            "d02": DomainResult(domain_id="d02", status="could-not-run", reason="repository was empty")
+        },
+    )
+    rendered = render_report(run_state, pack)
+    assert "Nothing was left could-not-evaluate." not in rendered
+    assert "did not run at all" in rendered
+    assert "Teacup Logistics Handling" in rendered
+    assert "not the same as a clean result" in rendered
+
+
+def test_could_not_run_domain_alongside_a_completed_domain_still_reports_both() -> None:
+    # A mix of one completed domain (with a real could-not-evaluate rule)
+    # and one that never ran at all: both facts must survive into the
+    # banner, not just whichever one the code checks first.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.domain_results["d02"] = DomainResult(
+        domain_id="d02", status="could-not-run", reason="no rules apply here"
+    )
+    rendered = render_report(run_state, pack)
+    assert "D01-R03" in rendered  # the real could-not-evaluate rule from d01
+    assert "did not run at all" in rendered
+    assert "Teacup Logistics Handling" in rendered  # d02's title, named in the banner
 
 
 def test_issue_urls_render_as_links_when_given() -> None:
@@ -720,6 +765,82 @@ def test_issue_embedded_body_ends_with_shared_trailing_line_byte_identical_to_fi
 
 
 # ---------------------------------------------------------------------------
+# Print / save-as-PDF affordance (#58)
+# ---------------------------------------------------------------------------
+
+
+def test_print_button_calls_window_print() -> None:
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    rendered = render_report(run_state, pack)
+    assert '<button type="button" class="print-button" onclick="window.print()">' in rendered
+
+
+def test_print_stylesheet_hides_interactive_filing_ui_and_forces_light_palette() -> None:
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    rendered = render_report(run_state, pack)
+
+    match = re.search(r"@media print \{(.*?)\n  \}\n", rendered, re.DOTALL)
+    assert match is not None, "no @media print block found"
+    print_css = match.group(1)
+
+    # Interactive filing controls are hidden: checkboxes, the PAT form, buttons.
+    assert ".issue-select" in print_css
+    assert ".github-file-form" in print_css
+    assert "button {" in print_css
+    assert "display: none !important;" in print_css
+    # The light palette is forced regardless of the OS colour scheme.
+    assert "--bg: #f7f7f5;" in print_css
+    assert "--fg: #1a1a1a;" in print_css
+    # A finding must not be split across a page break.
+    assert "break-inside: avoid" in print_css
+
+
+# ---------------------------------------------------------------------------
+# Medium severity badge contrast (#52)
+# ---------------------------------------------------------------------------
+
+
+def test_light_mode_medium_severity_colour_meets_wcag_contrast_minimum() -> None:
+    # .severity-medium renders color: #1a1a1a text on background: var(--medium).
+    # #9a7b00 (the old value) gave a 4.31:1 contrast ratio against that text,
+    # short of WCAG 2.2 SC 1.4.3's 4.5:1 minimum for this badge's 0.75rem
+    # text. #a08000 gives 4.63:1.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    rendered = render_report(run_state, pack)
+    assert "--medium: #a08000;" in rendered
+    assert "#9a7b00" not in rendered
+
+
+# ---------------------------------------------------------------------------
+# Content Security Policy (part of #40)
+# ---------------------------------------------------------------------------
+
+
+def test_report_page_sets_a_content_security_policy_restricting_connect_src() -> None:
+    # The report's inline JS sends a user-entered GitHub PAT to
+    # api.github.com over fetch; a CSP caps the blast radius of any future
+    # escaping bug by restricting where that fetch (and any script) can go.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    rendered = render_report(run_state, pack)
+
+    match = re.search(
+        r'<meta http-equiv="Content-Security-Policy" content="([^"]*)">', rendered
+    )
+    assert match is not None, "no Content-Security-Policy meta tag found"
+    policy = match.group(1)
+    assert "connect-src https://api.github.com" in policy
+    assert "default-src 'none'" in policy
+    # No external script or style host is permitted: only the page's own
+    # inline script/style, never a CDN or third-party origin.
+    assert "script-src 'unsafe-inline'" in policy
+    assert "style-src 'unsafe-inline'" in policy
+
+
+# ---------------------------------------------------------------------------
 # Footer
 # ---------------------------------------------------------------------------
 
@@ -828,3 +949,31 @@ def test_js_dedup_fails_closed_when_the_precheck_request_itself_fails() -> None:
     assert "so nothing was filed" in _INLINE_SCRIPT
     assert "fetchExistingIssueTitles(repo, pat).then(" in _INLINE_SCRIPT
     assert ").catch(function (err) {" in _INLINE_SCRIPT
+
+
+# ---------------------------------------------------------------------------
+# Cancel a bulk filing run in progress (#53)
+# ---------------------------------------------------------------------------
+
+
+def test_stop_button_rendered_hidden_alongside_file_button() -> None:
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    rendered = render_report(run_state, pack)
+
+    assert (
+        '<button type="button" id="gh-stop-button" onclick="stopFilingIssues()" '
+        'style="display:none">Stop</button>' in rendered
+    )
+
+
+def test_js_stop_flag_checked_before_each_fetch_and_resets_on_every_run() -> None:
+    # fileNext checks the stop flag before firing the *next* fetch, so an
+    # in-flight request is always allowed to finish; the flag is reset to
+    # false at the start of every fileSelectedIssues() call, so a stopped
+    # run does not leave a later run pre-cancelled.
+    assert "function stopFilingIssues() {" in _INLINE_SCRIPT
+    assert "_fileStopRequested = true;" in _INLINE_SCRIPT
+    assert "_fileStopRequested = false;" in _INLINE_SCRIPT
+    assert "if (_fileStopRequested) {" in _INLINE_SCRIPT
+    assert "Filing stopped early." in _INLINE_SCRIPT

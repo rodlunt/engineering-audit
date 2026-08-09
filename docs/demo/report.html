@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
 <title>Engineering practice audit report: rodlunt/demo-widgets-app</title>
 <style>
   :root {
@@ -15,7 +16,10 @@
     --accent: #2f5d50;
     --critical: #9b2226;
     --high: #bb4d00;
-    --medium: #9a7b00;
+    /* .severity-medium sets color: #1a1a1a on this background; #a08000 gives
+       a 4.63:1 contrast ratio against that text, clearing WCAG 2.2 SC 1.4.3's
+       4.5:1 minimum. */
+    --medium: #a08000;
     --low: #2c5f8a;
     --warn-bg: #fff4d6;
     --warn-border: #caa63d;
@@ -189,11 +193,59 @@
   .muted { color: var(--muted); font-size: 0.9rem; }
   footer { color: var(--muted); font-size: 0.85rem; border-top: 1px solid var(--border); padding-top: 1rem; }
   footer a { color: var(--accent); }
+  .print-button { margin: 0.35rem 0 0.75rem; }
+  @media print {
+    /* Force the light palette regardless of the OS colour scheme: this
+       block is deliberately placed after the dark-mode block above so it
+       wins the cascade when both media conditions match (printing while
+       the OS is in dark mode). */
+    :root {
+      --bg: #f7f7f5;
+      --fg: #1a1a1a;
+      --muted: #5b5b5b;
+      --card-bg: #ffffff;
+      --border: #d8d8d4;
+      --accent: #2f5d50;
+      --critical: #9b2226;
+      --high: #bb4d00;
+      --medium: #a08000;
+      --low: #2c5f8a;
+      --warn-bg: #fff4d6;
+      --warn-border: #caa63d;
+      --ok-bg: #e9f5ee;
+    }
+    body { margin: 0; }
+    /* The interactive filing UI makes no sense on paper: a tick box, a
+       token input and buttons cannot be acted on once printed. */
+    .print-button,
+    .issue-actions,
+    .issue-select,
+    .github-file-form,
+    .feedback-form,
+    button {
+      display: none !important;
+    }
+    /* Readonly textareas (issue text, feedback) are scrollable boxes on
+       screen; a scrollbar means nothing on paper, so expand them to show
+       their full content instead of clipping at their on-screen height. */
+    .issue-block textarea,
+    #feedback-textarea {
+      height: auto !important;
+      max-height: none !important;
+      overflow: visible !important;
+      border: none;
+      padding: 0;
+      white-space: pre-wrap;
+    }
+    .finding, .issue-block { break-inside: avoid; page-break-inside: avoid; }
+    a { color: #1a1a1a; }
+  }
 </style>
 </head>
 <body>
 <header>
   <h1>Engineering practice audit report</h1>
+  <button type="button" class="print-button" onclick="window.print()">Print / Save as PDF</button>
   <div class="meta-grid"><div class="meta-label">Repository</div><div class="meta-value">rodlunt/demo-widgets-app</div><div class="meta-label">Commit</div><div class="meta-value">abc1234def5678</div><div class="meta-label">Rules pack</div><div class="meta-value">fixture_pack</div><div class="meta-label">Rules commit</div><div class="meta-value">unknown</div><div class="meta-label">Assistant</div><div class="meta-value">claude-code</div><div class="meta-label">Model</div><div class="meta-value">claude-sonnet-5</div><div class="meta-label">Tool version</div><div class="meta-value">0.1.0</div><div class="meta-label">Tool commit</div><div class="meta-value">unknown</div><div class="meta-label">Tool update</div><div class="meta-value">not checked</div><div class="meta-label">Started</div><div class="meta-value">2026-08-09T09:00:00+00:00</div><div class="meta-label">Finished</div><div class="meta-value">2026-08-09T09:12:00+00:00</div></div>
 </header>
 
@@ -202,7 +254,7 @@
   <p class="section-note">This section describes how the audit run itself went: coverage,
   what could not be evaluated and why, and the assistant's own confidence. It says nothing
   about the audited codebase's qualities; see Findings below for that.</p>
-  <div class="perf-block"><h3>Coverage</h3><p>Total files inspected across selected domains: <strong>20</strong>. Total files skipped: <strong>1</strong>.</p><ul><li>Gnome Husbandry Record Keeping: 14 file(s) inspected, 1 skipped (one binary hat-colour swatch skipped)</li><li>Teacup Logistics Handling: 6 file(s) inspected, 0 skipped</li></ul></div><div class="perf-block"><h3>Findings rollup</h3><p>Total findings: <strong>1</strong></p><h3>By severity</h3><ul><li>critical: 0</li><li>high: 1</li><li>medium: 0</li><li>low: 0</li></ul><h3>By domain</h3><ul><li>d01: Gnome Husbandry Record Keeping: 1</li></ul></div><div class="perf-block prominent"><h3>Could not evaluate (1)</h3><ul><li><strong>D01-R03</strong> (Mark a gnome retired before removing it from the active roster view.): the garden bed ledger file could not be located in this demo repository</li></ul></div><div class="perf-block"><h3>Self-assessment by domain</h3><ul><li>Gnome Husbandry Record Keeping: confidence high. Limits: did not check gnome beds outside the main garden plot.</li><li>Teacup Logistics Handling: confidence medium. Limits: did not check archived shipment routes.</li></ul></div><div class="perf-block"><h3>Environment</h3><p>No environment information reported for this run.</p></div>
+  <div class="perf-block"><h3>Coverage</h3><p>Total files inspected across selected domains: <strong>20</strong>. Total files skipped: <strong>1</strong>.</p><ul><li>Gnome Husbandry Record Keeping: 14 file(s) inspected, 1 skipped (one binary hat-colour swatch skipped)</li><li>Teacup Logistics Handling: 6 file(s) inspected, 0 skipped</li></ul></div><div class="perf-block"><h3>Findings rollup</h3><p>Total findings: <strong>1</strong></p><h3>By severity</h3><ul><li>critical: 0</li><li>high: 1</li><li>medium: 0</li><li>low: 0</li></ul><h3>By domain</h3><ul><li>d01: Gnome Husbandry Record Keeping: 1</li><li>d02: Teacup Logistics Handling: 0</li></ul></div><div class="perf-block prominent"><h3>Could not evaluate (1)</h3><ul><li><strong>D01-R03</strong> (Mark a gnome retired before removing it from the active roster view.): the garden bed ledger file could not be located in this demo repository</li></ul></div><div class="perf-block"><h3>Self-assessment by domain</h3><ul><li>Gnome Husbandry Record Keeping: confidence high. Limits: did not check gnome beds outside the main garden plot.</li><li>Teacup Logistics Handling: confidence medium. Limits: did not check archived shipment routes.</li></ul></div><div class="perf-block"><h3>Environment</h3><p>No environment information reported for this run.</p></div>
 </section>
 
 <section id="findings">
@@ -212,7 +264,7 @@
 
 <section id="issues">
   <h2>Issues</h2>
-  <div class="issue-actions"><button type="button" onclick="revealGithubFileForm()">Add selected issues to GitHub (requires GitHub PAT)</button> <button type="button" onclick="copySelectedIssues(this)">Copy selected issues (for pasting into an LLM or editor)</button></div><div id="github-file-form" class="github-file-form" style="display:none"><p class="muted">Files each selected issue directly from your browser to api.github.com over HTTPS, using the REST API. The token is used only in memory on this page: it is never stored (no localStorage, sessionStorage or cookies). A fine-grained personal access token with Issues read and write access on the one target repository is enough.</p><label>Repository (owner/name)<br><input type="text" id="gh-repo" value="rodlunt/demo-widgets-app" placeholder="owner/name"></label><br><label>Personal access token<br><input type="password" id="gh-pat" autocomplete="off"></label><br><button type="button" id="gh-file-button" onclick="fileSelectedIssues()">File 0 selected issues</button><p id="github-file-summary" class="muted"></p></div><div class="issue-block"><label class="issue-select"><input type="checkbox" id="issue-check-0" disabled> <a href="https://github.com/rodlunt/engineering-audit/issues/3">already filed</a></label><p><strong>Set shared-bed flag for bed-14</strong></p><textarea id="issue-text-0" readonly rows="6">Set shared-bed flag for bed-14
+  <div class="issue-actions"><button type="button" onclick="revealGithubFileForm()">Add selected issues to GitHub (requires GitHub PAT)</button> <button type="button" onclick="copySelectedIssues(this)">Copy selected issues (for pasting into an LLM or editor)</button></div><div id="github-file-form" class="github-file-form" style="display:none"><p class="muted">Files each selected issue directly from your browser to api.github.com over HTTPS, using the REST API. The token is used only in memory on this page: it is never stored (no localStorage, sessionStorage or cookies). A fine-grained personal access token with Issues read and write access on the one target repository is enough.</p><label>Repository (owner/name)<br><input type="text" id="gh-repo" value="rodlunt/demo-widgets-app" placeholder="owner/name"></label><br><label>Personal access token<br><input type="password" id="gh-pat" autocomplete="off"></label><br><button type="button" id="gh-file-button" onclick="fileSelectedIssues()">File 0 selected issues</button> <button type="button" id="gh-stop-button" onclick="stopFilingIssues()" style="display:none">Stop</button><p id="github-file-summary" class="muted"></p></div><div class="issue-block"><label class="issue-select"><input type="checkbox" id="issue-check-0" disabled> <a href="https://github.com/rodlunt/engineering-audit/issues/3">already filed</a></label><p><strong>Set shared-bed flag for bed-14</strong></p><textarea id="issue-text-0" readonly rows="6">Set shared-bed flag for bed-14
 
 bed-14 has two occupants (gnome-07, gnome-19) and neither carries the shared-bed flag. See ledger/beds.py:42.
 
@@ -221,7 +273,7 @@ Found by an engineering-practice audit (rule D01-R02, severity high, at ledger/b
 
 <section id="feedback">
   <h2>Feedback</h2>
-  <div class="feedback-form"><label for="feedback-textarea">Freeform feedback</label><textarea id="feedback-textarea" rows="6"></textarea><div class="consent-rows"><label class="consent-row"><input type="checkbox" id="consent-coverage"> Coverage statistics (files inspected, files skipped)</label><label class="consent-row"><input type="checkbox" id="consent-rollup"> Findings rollup (counts by severity and domain, not the finding text)</label><label class="consent-row"><input type="checkbox" id="consent-self-assessment"> Self assessment (confidence and limits per domain)</label><label class="consent-row"><input type="checkbox" id="consent-environment"> Environment information (assistant, model, tool version)</label><label class="consent-row locked"><input type="checkbox" checked disabled> Run metadata (always included when sending feedback)</label></div><div class="feedback-actions"><button type="button" onclick="emailFeedback()">Email feedback</button> <button type="button" onclick="copyFeedback(this)">Copy feedback</button></div></div><script type="application/json" id="feedback-sections-data">{"email": "rodneylunt79+audit-feedback@gmail.com", "subject": "Feedback: audit run 2026-08-09 (claude-code)", "run_metadata": "Run metadata\n- Tool version: 0.1.0\n- Tool commit: unknown\n- Rules pack: fixture_pack\n- Rules commit: unknown\n- Assistant: claude-code\n- Model: claude-sonnet-5\n- Repository: rodlunt/demo-widgets-app (abc1234def5678)\n- Started: 2026-08-09T09:00:00+00:00\n- Finished: 2026-08-09T09:12:00+00:00", "coverage": "Coverage\n- Files inspected: 20\n- Files skipped: 1", "rollup": "Findings rollup\nTotal: 1\nBy severity:\n- critical: 0\n- high: 1\n- medium: 0\n- low: 0\nBy domain:\n- d01: 1", "self_assessment": "Self-assessment by domain\n- d01: confidence high. Limits: did not check gnome beds outside the main garden plot.\n- d02: confidence medium. Limits: did not check archived shipment routes.", "environment": "Environment\n- No environment information reported for this run."}</script>
+  <div class="feedback-form"><label for="feedback-textarea">Freeform feedback</label><textarea id="feedback-textarea" rows="6"></textarea><div class="consent-rows"><label class="consent-row"><input type="checkbox" id="consent-coverage"> Coverage statistics (files inspected, files skipped)</label><label class="consent-row"><input type="checkbox" id="consent-rollup"> Findings rollup (counts by severity and domain, not the finding text)</label><label class="consent-row"><input type="checkbox" id="consent-self-assessment"> Self assessment (confidence and limits per domain)</label><label class="consent-row"><input type="checkbox" id="consent-environment"> Environment information (assistant, model, tool version)</label><label class="consent-row locked"><input type="checkbox" checked disabled> Run metadata (always included when sending feedback)</label></div><div class="feedback-actions"><button type="button" onclick="emailFeedback()">Email feedback</button> <button type="button" onclick="copyFeedback(this)">Copy feedback</button></div></div><script type="application/json" id="feedback-sections-data">{"email": "rodneylunt79+audit-feedback@gmail.com", "subject": "Feedback: audit run 2026-08-09 (claude-code)", "run_metadata": "Run metadata\n- Tool version: 0.1.0\n- Tool commit: unknown\n- Rules pack: fixture_pack\n- Rules commit: unknown\n- Assistant: claude-code\n- Model: claude-sonnet-5\n- Repository: rodlunt/demo-widgets-app (abc1234def5678)\n- Started: 2026-08-09T09:00:00+00:00\n- Finished: 2026-08-09T09:12:00+00:00", "coverage": "Coverage\n- Files inspected: 20\n- Files skipped: 1", "rollup": "Findings rollup\nTotal: 1\nBy severity:\n- critical: 0\n- high: 1\n- medium: 0\n- low: 0\nBy domain:\n- d01: 1\n- d02: 0", "self_assessment": "Self-assessment by domain\n- d01: confidence high. Limits: did not check gnome beds outside the main garden plot.\n- d02: confidence medium. Limits: did not check archived shipment routes.", "environment": "Environment\n- No environment information reported for this run."}</script>
 </section>
 
 <footer>
@@ -421,6 +473,36 @@ function _markAlreadyFiled(index, existingUrl) {
   }
 }
 
+// Set once by stopFilingIssues() and read by fileNext() below. Module-level
+// (not local to fileSelectedIssues) so the button's onclick handler, fired
+// from a fresh call stack, can reach the flag a running fileSelectedIssues()
+// call is checking.
+var _fileStopRequested = false;
+
+function stopFilingIssues() {
+  // The in-flight fetch is left to finish; only the *next* one is skipped
+  // (see the check at the top of fileNext below). There is no way to abort
+  // a fetch already sent to GitHub without risking a filed issue whose
+  // network response never arrives back at this page.
+  _fileStopRequested = true;
+  var stopButton = document.getElementById("gh-stop-button");
+  if (stopButton) {
+    stopButton.disabled = true;
+    stopButton.textContent = "Stopping...";
+  }
+}
+
+function _setFilingInProgress(inProgress) {
+  var fileButton = document.getElementById("gh-file-button");
+  var stopButton = document.getElementById("gh-stop-button");
+  if (fileButton) { fileButton.disabled = inProgress; }
+  if (stopButton) {
+    stopButton.style.display = inProgress ? "inline-block" : "none";
+    stopButton.disabled = false;
+    stopButton.textContent = "Stop";
+  }
+}
+
 function fileSelectedIssues() {
   var repoInput = document.getElementById("gh-repo");
   var patInput = document.getElementById("gh-pat");
@@ -440,16 +522,22 @@ function fileSelectedIssues() {
 
   var data = _readJsonData("issues-data");
   var indexes = _selectedIssueIndexes();
-  var fileButton = document.getElementById("gh-file-button");
-  fileButton.disabled = true;
+  _fileStopRequested = false;
+  _setFilingInProgress(true);
   summary.textContent = "Checking " + repo + " for issues already filed...";
 
   var filedCount = 0;
 
   function fileNext(pending) {
+    if (_fileStopRequested) {
+      summary.textContent = "Filing stopped early. Filed " + filedCount + " of "
+        + indexes.length + " selected issue(s).";
+      _setFilingInProgress(false);
+      return;
+    }
     if (pending.length === 0) {
       summary.textContent = "Filed " + filedCount + " of " + indexes.length + " selected issue(s).";
-      fileButton.disabled = false;
+      _setFilingInProgress(false);
       return;
     }
     var i = pending[0];
@@ -472,7 +560,7 @@ function fileSelectedIssues() {
           if (statusEl) { statusEl.textContent = "Error: " + errorMessage; }
           summary.textContent = "Filed " + filedCount + " of " + indexes.length
             + " selected issue(s). Stopped after an error on \"" + issue.title + "\": " + errorMessage;
-          fileButton.disabled = false;
+          _setFilingInProgress(false);
           return;
         }
         var created = JSON.parse(bodyText);
@@ -496,7 +584,7 @@ function fileSelectedIssues() {
       if (statusEl) { statusEl.textContent = "Error: a network failure filing this issue"; }
       summary.textContent = "Filed " + filedCount + " of " + indexes.length
         + " selected issue(s). Stopped after a network error.";
-      fileButton.disabled = false;
+      _setFilingInProgress(false);
     });
   }
 
@@ -520,8 +608,18 @@ function fileSelectedIssues() {
     var message = (err && err.message) ? err.message : "the pre-check request failed";
     summary.textContent = "Could not check " + repo
       + " for already-filed issues, so nothing was filed: " + message + ".";
-    fileButton.disabled = false;
+    _setFilingInProgress(false);
   });
+}
+
+// Exposes a handful of pure functions to Node's CommonJS require() for
+// tests/js/report.test.js, without pulling in a module system or build
+// step for the browser. In a browser <script> block, "module" is simply
+// undefined, so this whole block is a no-op there; it only runs under
+// Node, where it lets the test runner call these functions directly
+// instead of only checking their source text is present.
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = { _githubErrorMessage: _githubErrorMessage };
 }
 </script>
 </body>
