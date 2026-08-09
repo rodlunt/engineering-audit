@@ -156,6 +156,10 @@ A standalone audit is a conversation plus one browser page. From your seat:
 `audit-output/` belongs to the audited repository, not to this tool. Commit it, ignore it
 or delete it as that repository's own conventions dictate.
 
+A full sweep is token-hungry: a recorded 16-domain run against this repository consumed
+roughly 2M subagent tokens over 47 minutes. Per-domain numbers, so you can budget before
+ticking every box, are in [docs/example-audit-cost.md](docs/example-audit-cost.md).
+
 ## The report
 
 Self-contained HTML, generated locally; nothing leaves your machine unless you choose to
