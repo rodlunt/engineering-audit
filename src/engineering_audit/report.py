@@ -177,6 +177,68 @@ function _githubErrorMessage(status, bodyText) {
   return status + (message ? " " + message : "");
 }
 
+function _parseLinkHeader(headerValue) {
+  var links = {};
+  if (!headerValue) { return links; }
+  headerValue.split(",").forEach(function (part) {
+    var match = part.match(/<([^>]+)>\s*;\s*rel="([^"]+)"/);
+    if (match) { links[match[2]] = match[1]; }
+  });
+  return links;
+}
+
+function _fetchExistingIssuesPage(url, headers, page, maxPages, accumulated) {
+  return fetch(url, { headers: headers }).then(function (response) {
+    return response.text().then(function (bodyText) {
+      if (!response.ok) {
+        throw new Error(_githubErrorMessage(response.status, bodyText));
+      }
+      var items = JSON.parse(bodyText);
+      var combined = accumulated.concat(items);
+      var links = _parseLinkHeader(response.headers.get("Link"));
+      if (links.next && page < maxPages) {
+        return _fetchExistingIssuesPage(links.next, headers, page + 1, maxPages, combined);
+      }
+      return combined;
+    });
+  });
+}
+
+function fetchExistingIssueTitles(repo, pat) {
+  // Cross-session double-filing guard: before filing anything, check what
+  // this repository already has under the engineering-audit label, so an
+  // issue filed in an earlier browser session (whose filed_issue_urls never
+  // made it back into this run's run-state.json) is not filed a second
+  // time. Paginates via the Link header, capped at 3 pages, then proceeds
+  // with whatever was fetched.
+  var headers = {
+    "Authorization": "Bearer " + pat,
+    "Accept": "application/vnd.github+json"
+  };
+  var url = "https://api.github.com/repos/" + repo
+    + "/issues?state=all&labels=engineering-audit&per_page=100";
+  return _fetchExistingIssuesPage(url, headers, 1, 3, []).then(function (items) {
+    var titles = {};
+    items.forEach(function (issue) {
+      titles[issue.title] = issue.html_url;
+    });
+    return titles;
+  });
+}
+
+function _markAlreadyFiled(index, existingUrl) {
+  var cb = document.getElementById("issue-check-" + index);
+  if (cb) { cb.disabled = true; }
+  var statusEl = document.getElementById("issue-status-" + index);
+  if (statusEl) {
+    statusEl.textContent = "";
+    var link = document.createElement("a");
+    link.href = existingUrl;
+    link.textContent = "already filed";
+    statusEl.appendChild(link);
+  }
+}
+
 function fileSelectedIssues() {
   var repoInput = document.getElementById("gh-repo");
   var patInput = document.getElementById("gh-pat");
@@ -198,17 +260,18 @@ function fileSelectedIssues() {
   var indexes = _selectedIssueIndexes();
   var fileButton = document.getElementById("gh-file-button");
   fileButton.disabled = true;
-  summary.textContent = "";
+  summary.textContent = "Checking " + repo + " for issues already filed...";
 
   var filedCount = 0;
 
-  function fileNext(position) {
-    if (position >= indexes.length) {
+  function fileNext(pending) {
+    if (pending.length === 0) {
       summary.textContent = "Filed " + filedCount + " of " + indexes.length + " selected issue(s).";
       fileButton.disabled = false;
       return;
     }
-    var i = indexes[position];
+    var i = pending[0];
+    var rest = pending.slice(1);
     var issue = data.issues[i];
     var statusEl = document.getElementById("issue-status-" + i);
     if (statusEl) { statusEl.textContent = "Filing..."; }
@@ -245,7 +308,7 @@ function fileSelectedIssues() {
             statusEl.textContent = "filed";
           }
         }
-        fileNext(position + 1);
+        fileNext(rest);
       });
     }).catch(function () {
       if (statusEl) { statusEl.textContent = "Error: a network failure filing this issue"; }
@@ -255,7 +318,28 @@ function fileSelectedIssues() {
     });
   }
 
-  fileNext(0);
+  fetchExistingIssueTitles(repo, pat).then(function (existingTitles) {
+    var toFile = [];
+    indexes.forEach(function (i) {
+      var issue = data.issues[i];
+      var existingUrl = existingTitles[issue.title];
+      if (existingUrl) {
+        _markAlreadyFiled(i, existingUrl);
+      } else {
+        toFile.push(i);
+      }
+    });
+    summary.textContent = "";
+    fileNext(toFile);
+  }).catch(function (err) {
+    // Fail closed: a dedup check that could not run must never be treated
+    // as "nothing exists yet" and silently fall through to filing
+    // duplicates. Nothing is filed until the pre-check itself succeeds.
+    var message = (err && err.message) ? err.message : "the pre-check request failed";
+    summary.textContent = "Could not check " + repo
+      + " for already-filed issues, so nothing was filed: " + message + ".";
+    fileButton.disabled = false;
+  });
 }
 """.strip()
 

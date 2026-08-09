@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from engineering_audit.feedback import build_feedback_body, build_feedback_sections
-from engineering_audit.report import ReportError, render_report, write_report
+from engineering_audit.report import _INLINE_SCRIPT, ReportError, render_report, write_report
 from engineering_audit.rules import load_pack
 from engineering_audit.schema import (
     AuditConfig,
@@ -699,3 +699,45 @@ def test_footer_contains_author_link_tool_link_version_and_locality_sentence() -
         "This report was generated locally. Nothing in it leaves your machine unless you "
         "choose to send or file it." in rendered
     )
+
+
+# ---------------------------------------------------------------------------
+# GitHub-filing JS: cross-session double-filing guard (fetchExistingIssueTitles,
+# fileSelectedIssues in _INLINE_SCRIPT)
+# ---------------------------------------------------------------------------
+
+
+def test_js_dedup_precheck_hits_the_labelled_all_states_search_endpoint() -> None:
+    # The pre-check must search state=all (an already-filed issue may have
+    # been closed since) restricted to this tool's own label, not the
+    # unfiltered issue list.
+    assert (
+        '"https://api.github.com/repos/" + repo\n    + "/issues?state=all&labels=engineering-audit&per_page=100"'
+        in _INLINE_SCRIPT
+    )
+
+
+def test_js_dedup_precheck_uses_the_same_auth_headers_as_filing() -> None:
+    assert '"Authorization": "Bearer " + pat' in _INLINE_SCRIPT
+    assert '"Accept": "application/vnd.github+json"' in _INLINE_SCRIPT
+
+
+def test_js_dedup_paginates_via_link_header_capped_at_three_pages() -> None:
+    assert 'response.headers.get("Link")' in _INLINE_SCRIPT
+    assert "_fetchExistingIssuesPage(url, headers, 1, 3, [])" in _INLINE_SCRIPT
+    assert "page < maxPages" in _INLINE_SCRIPT
+
+
+def test_js_dedup_already_filed_status_text_and_disabled_checkbox() -> None:
+    assert 'link.textContent = "already filed"' in _INLINE_SCRIPT
+    assert "cb.disabled = true;" in _INLINE_SCRIPT
+    assert "function _markAlreadyFiled(" in _INLINE_SCRIPT
+
+
+def test_js_dedup_fails_closed_when_the_precheck_request_itself_fails() -> None:
+    # The fail-closed rule: a dedup check that could not run must never be
+    # mistaken for "nothing exists yet" and silently fall through to filing.
+    assert "Fail closed" in _INLINE_SCRIPT
+    assert "so nothing was filed" in _INLINE_SCRIPT
+    assert "fetchExistingIssueTitles(repo, pat).then(" in _INLINE_SCRIPT
+    assert ").catch(function (err) {" in _INLINE_SCRIPT
