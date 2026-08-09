@@ -1,0 +1,23 @@
+{
+  "name": "engineering-audit",
+  "version": "0.1.0",
+  "description": "Decision-time engineering rules pack and standalone audit, served via the engineering-audit MCP server.",
+  "mcpServers": {
+    "engineering-audit": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/rodlunt/engineering-audit",
+        "engineering-audit-mcp"
+      ]
+    }
+  },
+  "contextFileName": "GEMINI.md",
+  "settings": [
+    {
+      "name": "Rules pack directory",
+      "description": "Local path to a rules pack checkout (a directory of NN-slug.md domain files) for the engineering-audit MCP server to load.",
+      "envVar": "ENGINEERING_AUDIT_RULES_DIR"
+    }
+  ]
+}
