@@ -150,6 +150,10 @@ send or file it. It contains:
 - **Feedback to the author**: freeform text plus tick-box consent over which run
   statistics accompany it. Finding text never leaves your machine through this channel.
 
+A live example: [docs/demo/report.html](docs/demo/report.html) (download and open locally;
+GitHub does not render raw HTML in the browser). Generated from the invented demo rules pack
+in `tests/fixture_pack`, not a real audit against a real repository.
+
 ## Rules access
 
 This repository contains no rule content; the audit cannot run without a rules pack. The
