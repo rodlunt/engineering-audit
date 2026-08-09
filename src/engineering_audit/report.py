@@ -13,6 +13,8 @@ private and a shared report must not leak it.
 from __future__ import annotations
 
 import html
+import json
+import re
 import string
 from collections import Counter
 from pathlib import Path
@@ -20,8 +22,8 @@ from urllib.parse import urlparse
 
 from engineering_audit.feedback import (
     FEEDBACK_EMAIL,
-    build_feedback_body,
-    build_mailto_url,
+    build_feedback_sections,
+    build_issue_trailing_line,
     feedback_subject,
 )
 from engineering_audit.rules import citation, Rule, RulesPack
@@ -38,23 +40,222 @@ __all__ = ["ReportError", "render_report", "write_report"]
 
 _TEMPLATE_PATH = Path(__file__).parent / "templates" / "report.html"
 
-_INLINE_SCRIPT = """
+# A repo field is only ever prefilled from run metadata when it already looks
+# like a plausible 'owner/name' GitHub slug; anything else is left blank
+# rather than risk pre-populating the GitHub-filing form with a string that
+# was never meant to be a repository identifier.
+_REPO_SLUG_RE = re.compile(r"^[\w.-]+/[\w.-]+$")
+
+_INLINE_SCRIPT = r"""
+function _afterCopy(button) {
+  if (!button) { return; }
+  var original = button.textContent;
+  button.textContent = "Copied";
+  setTimeout(function () { button.textContent = original; }, 1500);
+}
+
+function _fallbackCopyText(text) {
+  var ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  ta.style.position = "fixed";
+  ta.style.top = "-1000px";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  try {
+    document.execCommand("copy");
+  } catch (err) {
+    /* best effort only: nothing more can be done if this fails too */
+  }
+  document.body.removeChild(ta);
+}
+
+function copyText(text, button) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(
+      function () { _afterCopy(button); },
+      function () { _fallbackCopyText(text); _afterCopy(button); }
+    );
+  } else {
+    _fallbackCopyText(text);
+    _afterCopy(button);
+  }
+}
+
 function copyIssueText(textareaId, button) {
   var el = document.getElementById(textareaId);
   if (!el) { return; }
   el.select();
-  var text = el.value;
-  var done = function () {
-    var original = button.textContent;
-    button.textContent = "Copied";
-    setTimeout(function () { button.textContent = original; }, 1500);
-  };
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(text).then(done);
-  } else {
-    document.execCommand("copy");
-    done();
+  copyText(el.value, button);
+}
+
+function _readJsonData(elementId) {
+  var el = document.getElementById(elementId);
+  if (!el) { return null; }
+  return JSON.parse(el.textContent);
+}
+
+/* Feedback */
+
+function buildFeedbackPayload() {
+  var data = _readJsonData("feedback-sections-data");
+  var parts = [];
+  var textarea = document.getElementById("feedback-textarea");
+  var freeText = textarea ? textarea.value.trim() : "";
+  if (freeText) { parts.push(freeText); }
+  parts.push(data.run_metadata);
+  if (document.getElementById("consent-coverage").checked) { parts.push(data.coverage); }
+  if (document.getElementById("consent-rollup").checked) { parts.push(data.rollup); }
+  if (document.getElementById("consent-self-assessment").checked) { parts.push(data.self_assessment); }
+  if (document.getElementById("consent-environment").checked) { parts.push(data.environment); }
+  return parts.join("\n\n");
+}
+
+function emailFeedback() {
+  var data = _readJsonData("feedback-sections-data");
+  var payload = buildFeedbackPayload();
+  var url = "mailto:" + data.email
+    + "?subject=" + encodeURIComponent(data.subject)
+    + "&body=" + encodeURIComponent(payload);
+  window.location.href = url;
+}
+
+function copyFeedback(button) {
+  copyText(buildFeedbackPayload(), button);
+}
+
+/* Issues */
+
+function _selectedIssueIndexes() {
+  var data = _readJsonData("issues-data");
+  if (!data) { return []; }
+  var indexes = [];
+  data.issues.forEach(function (_issue, i) {
+    var cb = document.getElementById("issue-check-" + i);
+    if (cb && cb.checked && !cb.disabled) { indexes.push(i); }
+  });
+  return indexes;
+}
+
+function updateGithubFileButtonLabel() {
+  var button = document.getElementById("gh-file-button");
+  if (!button) { return; }
+  var n = _selectedIssueIndexes().length;
+  button.textContent = "File " + n + " selected issue" + (n === 1 ? "" : "s");
+}
+
+function revealGithubFileForm() {
+  var form = document.getElementById("github-file-form");
+  if (!form) { return; }
+  form.style.display = "block";
+  updateGithubFileButtonLabel();
+}
+
+function copySelectedIssues(button) {
+  var data = _readJsonData("issues-data");
+  var indexes = _selectedIssueIndexes();
+  var chunks = indexes.map(function (i) {
+    var issue = data.issues[i];
+    return "## " + issue.title + "\n\n" + issue.body + "\n\n---\n\n";
+  });
+  copyText(chunks.join(""), button);
+}
+
+function _githubErrorMessage(status, bodyText) {
+  if (status === 401) { return "401 invalid token"; }
+  if (status === 404) { return "404 repo not found or token lacks access"; }
+  if (status === 410) { return "410 issues disabled"; }
+  var message = "";
+  try {
+    var parsed = JSON.parse(bodyText);
+    if (parsed && parsed.message) { message = parsed.message; }
+  } catch (err) {
+    /* response body was not JSON; fall through with an empty message */
   }
+  return status + (message ? " " + message : "");
+}
+
+function fileSelectedIssues() {
+  var repoInput = document.getElementById("gh-repo");
+  var patInput = document.getElementById("gh-pat");
+  var summary = document.getElementById("github-file-summary");
+  var repo = repoInput.value.trim();
+  var pat = patInput.value;
+  var repoPattern = /^[\w.-]+\/[\w.-]+$/;
+
+  if (!repoPattern.test(repo)) {
+    summary.textContent = "Enter the repository as owner/name.";
+    return;
+  }
+  if (!pat) {
+    summary.textContent = "Enter a personal access token.";
+    return;
+  }
+
+  var data = _readJsonData("issues-data");
+  var indexes = _selectedIssueIndexes();
+  var fileButton = document.getElementById("gh-file-button");
+  fileButton.disabled = true;
+  summary.textContent = "";
+
+  var filedCount = 0;
+
+  function fileNext(position) {
+    if (position >= indexes.length) {
+      summary.textContent = "Filed " + filedCount + " of " + indexes.length + " selected issue(s).";
+      fileButton.disabled = false;
+      return;
+    }
+    var i = indexes[position];
+    var issue = data.issues[i];
+    var statusEl = document.getElementById("issue-status-" + i);
+    if (statusEl) { statusEl.textContent = "Filing..."; }
+
+    fetch("https://api.github.com/repos/" + repo + "/issues", {
+      method: "POST",
+      headers: {
+        "Authorization": "Bearer " + pat,
+        "Accept": "application/vnd.github+json"
+      },
+      body: JSON.stringify({ title: issue.title, body: issue.body, labels: ["engineering-audit"] })
+    }).then(function (response) {
+      response.text().then(function (bodyText) {
+        if (!response.ok) {
+          var errorMessage = _githubErrorMessage(response.status, bodyText);
+          if (statusEl) { statusEl.textContent = "Error: " + errorMessage; }
+          summary.textContent = "Filed " + filedCount + " of " + indexes.length
+            + " selected issue(s). Stopped after an error on \"" + issue.title + "\": " + errorMessage;
+          fileButton.disabled = false;
+          return;
+        }
+        var created = JSON.parse(bodyText);
+        filedCount += 1;
+        var cb = document.getElementById("issue-check-" + i);
+        if (cb) { cb.disabled = true; }
+        if (statusEl) {
+          statusEl.textContent = "";
+          if (created.html_url && created.html_url.indexOf("https://") === 0) {
+            var link = document.createElement("a");
+            link.href = created.html_url;
+            link.textContent = "filed";
+            statusEl.appendChild(link);
+          } else {
+            statusEl.textContent = "filed";
+          }
+        }
+        fileNext(position + 1);
+      });
+    }).catch(function () {
+      if (statusEl) { statusEl.textContent = "Error: a network failure filing this issue"; }
+      summary.textContent = "Filed " + filedCount + " of " + indexes.length
+        + " selected issue(s). Stopped after a network error.";
+      fileButton.disabled = false;
+    });
+  }
+
+  fileNext(0);
 }
 """.strip()
 
@@ -74,14 +275,31 @@ def _esc(value: object) -> str:
     return html.escape(str(value))
 
 
+def _json_script(data: object) -> str:
+    """Serialise data for embedding inside an inline
+    ``<script type="application/json">`` block.
+
+    A JSON string value can legitimately contain the literal text
+    "</script>" (an issue body built from agent-authored text, a
+    self-assessment's limits note, an environment value, and so on). The
+    HTML parser does not know or care that it is inside a JSON string when
+    scanning a <script> element's raw text for that closing tag, so any
+    unescaped occurrence would terminate the block early and dump the rest
+    of the payload as literal HTML. "/" is a legal JSON string escape, so
+    replacing every "</" with the equivalent "<\\/" after serialising is a
+    safe, blanket fix: those two characters can only appear together inside
+    a quoted string in ``json.dumps`` output, never as JSON structural
+    syntax.
+    """
+    return json.dumps(data).replace("</", "<\\/")
+
+
 def _require_href_scheme(url: str, allowed: tuple[str, ...], context: str) -> None:
     """Raise ReportError unless url's scheme is one of allowed.
 
-    Used both for issue links (http/https only: these carry a URL a filing
-    integration produced from real gh output, and a non-http(s) scheme there
-    is a bug upstream, not a cosmetic issue) and for the feedback mailto
-    button (mailto only, and only ever called on a URL this module built
-    itself from known-safe strings, never on data).
+    Used for issue links and the filed-feedback-issue link: both carry a
+    URL a filing integration produced from real ``gh`` output, and a
+    non-http(s) scheme there is a bug upstream, not a cosmetic issue.
     """
     scheme = urlparse(url).scheme.lower()
     if scheme not in allowed:
@@ -296,74 +514,204 @@ def _findings_section(
     return "".join(blocks) or "<p>No domains selected.</p>"
 
 
+def _issue_button_row() -> str:
+    return (
+        '<div class="issue-actions">'
+        '<button type="button" onclick="revealGithubFileForm()">'
+        "Add selected issues to GitHub (requires GitHub PAT)</button> "
+        '<button type="button" onclick="copySelectedIssues(this)">'
+        "Copy selected issues (for pasting into an LLM or editor)</button>"
+        "</div>"
+    )
+
+
+def _github_file_form(repo_prefill: str) -> str:
+    return (
+        '<div id="github-file-form" class="github-file-form" style="display:none">'
+        '<p class="muted">Files each selected issue directly from your browser to '
+        "api.github.com over HTTPS, using the REST API. The token is used only in memory on "
+        "this page: it is never stored (no localStorage, sessionStorage or cookies). A "
+        "fine-grained personal access token with Issues read and write access on the one "
+        "target repository is enough.</p>"
+        '<label>Repository (owner/name)<br>'
+        f'<input type="text" id="gh-repo" value="{_esc(repo_prefill)}" placeholder="owner/name">'
+        "</label><br>"
+        '<label>Personal access token<br>'
+        '<input type="password" id="gh-pat" autocomplete="off">'
+        "</label><br>"
+        '<button type="button" id="gh-file-button" onclick="fileSelectedIssues()">'
+        "File 0 selected issues</button>"
+        '<p id="github-file-summary" class="muted"></p>'
+        "</div>"
+    )
+
+
 def _issues_section(
-    selected: dict[str, DomainResult], issue_urls: dict[str, str] | None
+    selected: dict[str, DomainResult],
+    rule_index: dict[str, Rule],
+    issue_urls: dict[str, str] | None,
+    repo_prefill: str,
 ) -> str:
     all_findings = [f for result in selected.values() for f in result.findings]
     if not all_findings:
         return "<p>No findings, so nothing to file as an issue.</p>"
 
-    if issue_urls is not None:
-        rows = []
-        for finding in all_findings:
-            url = issue_urls.get(finding.rule_id)
-            if url:
-                _require_href_scheme(
-                    url, ("http", "https"), f"issue url for rule id '{finding.rule_id}'"
-                )
-                rows.append(f'<li><a href="{_esc(url)}">{_esc(finding.issue_title)}</a></li>')
-            else:
-                rows.append(f"<li>{_esc(finding.issue_title)} (no issue filed for this finding)</li>")
-        return f"<ul>{''.join(rows)}</ul>"
-
+    issue_urls = issue_urls or {}
+    issues_data: list[dict[str, str]] = []
     blocks = []
     for index, finding in enumerate(all_findings):
-        combined_text = f"{finding.issue_title}\n\n{finding.issue_body}"
-        textarea_id = f"issue-text-{index}"
-        blocks.append(
-            f'<div class="issue-block"><p><strong>{_esc(finding.issue_title)}</strong></p>'
-            f'<textarea id="{textarea_id}" readonly rows="6">{_esc(combined_text)}</textarea>'
-            f"<button type=\"button\" onclick=\"copyIssueText('{textarea_id}', this)\">"
-            "Copy issue text</button></div>"
+        # render_report has already confirmed every finding's rule_id is in
+        # the pack and carries a cited source, so this lookup and the
+        # trailing-line build below cannot fail.
+        rule = rule_index[finding.rule_id]
+        trailing_line = build_issue_trailing_line(finding, rule)
+        body_with_trailing = f"{finding.issue_body}\n\n{trailing_line}"
+        full_text = f"{finding.issue_title}\n\n{body_with_trailing}"
+
+        issues_data.append(
+            {"rule_id": finding.rule_id, "title": finding.issue_title, "body": body_with_trailing}
         )
-    return "".join(blocks)
+
+        filed_url = issue_urls.get(finding.rule_id)
+        textarea_id = f"issue-text-{index}"
+        status_id = f"issue-status-{index}"
+
+        if filed_url:
+            _require_href_scheme(
+                filed_url, ("http", "https"), f"issue url for rule id '{finding.rule_id}'"
+            )
+            checkbox_html = (
+                f'<input type="checkbox" id="issue-check-{index}" disabled> '
+                f'<a href="{_esc(filed_url)}">already filed</a>'
+            )
+        else:
+            checkbox_html = (
+                f'<input type="checkbox" id="issue-check-{index}" checked '
+                'onchange="updateGithubFileButtonLabel()">'
+            )
+
+        blocks.append(
+            '<div class="issue-block">'
+            f'<label class="issue-select">{checkbox_html}</label>'
+            f'<p><strong>{_esc(finding.issue_title)}</strong></p>'
+            f'<textarea id="{textarea_id}" readonly rows="6">{_esc(full_text)}</textarea>'
+            f"<button type=\"button\" onclick=\"copyIssueText('{textarea_id}', this)\">"
+            "Copy issue text</button> "
+            f'<span class="issue-status" id="{status_id}"></span>'
+            "</div>"
+        )
+
+    button_row = _issue_button_row()
+    data_script = (
+        '<script type="application/json" id="issues-data">'
+        f"{_json_script({'issues': issues_data})}"
+        "</script>"
+    )
+
+    return (
+        f"{button_row}"
+        f"{_github_file_form(repo_prefill)}"
+        f"{''.join(blocks)}"
+        f"{button_row}"
+        f"{data_script}"
+    )
+
+
+def _consent_row(input_id: str, label: str, checked: bool) -> str:
+    checked_attr = " checked" if checked else ""
+    return (
+        f'<label class="consent-row"><input type="checkbox" id="{input_id}"{checked_attr}> '
+        f"{_esc(label)}</label>"
+    )
 
 
 def _feedback_section(run_state: RunState, feedback_issue_url: str | None) -> str:
-    text = run_state.config.feedback_text
-    if text:
-        text_html = f'<div class="feedback-text">{_markdownish(text)}</div>'
-    else:
-        text_html = "<p>No feedback text supplied for this run.</p>"
+    config = run_state.config
+    consent = config.telemetry_consent
+    text = config.feedback_text or ""
 
+    filed_html = ""
     if feedback_issue_url:
         _require_href_scheme(feedback_issue_url, ("http", "https"), "feedback issue url")
-        return (
-            f"{text_html}"
-            f'<p>This feedback was filed as <a href="{_esc(feedback_issue_url)}">an issue</a> '
-            "on the tool author's repository.</p>"
+        filed_html = (
+            f'<p>Feedback for this run was already filed as <a href="{_esc(feedback_issue_url)}">'
+            "an issue</a> on the tool author's repository. Further feedback can still be sent "
+            "below.</p>"
         )
 
-    body = build_feedback_body(
-        run_state.config.feedback_text,
-        run_state.meta,
-        run_state.config.telemetry_consent,
-        run_state.domain_results,
+    sections = build_feedback_sections(run_state.meta, run_state.domain_results)
+    feedback_data = {
+        "email": FEEDBACK_EMAIL,
+        "subject": feedback_subject(run_state.meta),
+        "run_metadata": sections["run_metadata"],
+        "coverage": sections["coverage"],
+        "rollup": sections["rollup"],
+        "self_assessment": sections["self_assessment"],
+        "environment": sections["environment"],
+    }
+
+    # Same wording as the configuration page's consent section, so a user
+    # who saw one recognises the other.
+    consent_rows = (
+        _consent_row(
+            "consent-coverage",
+            "Coverage statistics (files inspected, files skipped)",
+            consent.coverage,
+        )
+        + _consent_row(
+            "consent-rollup",
+            "Findings rollup (counts by severity and domain, not the finding text)",
+            consent.rollup,
+        )
+        + _consent_row(
+            "consent-self-assessment",
+            "Self assessment (confidence and limits per domain)",
+            consent.self_assessment,
+        )
+        + _consent_row(
+            "consent-environment",
+            "Environment information (assistant, model, tool version)",
+            consent.environment,
+        )
+        + '<label class="consent-row locked"><input type="checkbox" checked disabled> '
+        "Run metadata (always included when sending feedback)</label>"
     )
-    subject = feedback_subject(run_state.meta)
-    mailto_url = build_mailto_url(FEEDBACK_EMAIL, subject, body)
-    _require_href_scheme(mailto_url, ("mailto",), "feedback mailto url")
 
     return (
-        f"{text_html}"
-        f'<p><a class="feedback-mailto" href="{_esc(mailto_url)}">Send feedback to the '
-        "developer</a></p>"
-        '<p class="muted">If that does not open a mail client, copy the text below into an '
-        "email instead:</p>"
-        '<textarea id="feedback-body-text" readonly rows="10">'
-        f"{_esc(body)}</textarea>"
-        "<button type=\"button\" onclick=\"copyIssueText('feedback-body-text', this)\">"
-        "Copy feedback text</button>"
+        f"{filed_html}"
+        '<div class="feedback-form">'
+        '<label for="feedback-textarea">Freeform feedback</label>'
+        f'<textarea id="feedback-textarea" rows="6">{_esc(text)}</textarea>'
+        '<div class="consent-rows">'
+        f"{consent_rows}"
+        "</div>"
+        '<div class="feedback-actions">'
+        '<button type="button" onclick="emailFeedback()">Email feedback</button> '
+        '<button type="button" onclick="copyFeedback(this)">Copy feedback</button>'
+        "</div>"
+        "</div>"
+        '<script type="application/json" id="feedback-sections-data">'
+        f"{_json_script(feedback_data)}"
+        "</script>"
+    )
+
+
+def _render_footer(run_state: RunState) -> str:
+    meta = run_state.meta
+    rules_pack_label = meta.rules_pack_name
+    if meta.rules_pack_version:
+        rules_pack_label = f"{rules_pack_label} ({meta.rules_pack_version})"
+    finished = meta.finished or "in progress"
+    return (
+        "<p>"
+        f"Generated by engineering-audit {_esc(meta.tool_version)} against rules pack "
+        f"{_esc(rules_pack_label)}, finished {_esc(finished)}."
+        "</p>"
+        '<p><a href="https://github.com/rodlunt">rodlunt on GitHub</a> | '
+        '<a href="https://github.com/rodlunt/engineering-audit">engineering-audit on GitHub</a>'
+        "</p>"
+        "<p>This report was generated locally. Nothing in it leaves your machine unless you "
+        "choose to send or file it.</p>"
     )
 
 
@@ -431,15 +779,18 @@ def render_report(
         f'<div class="perf-block"><h3>Environment</h3>{_environment_info(run_state)}</div>'
     )
 
+    repo_name = run_state.meta.repo_name
+    repo_prefill = repo_name if _REPO_SLUG_RE.match(repo_name) else ""
+
     template = string.Template(_TEMPLATE_PATH.read_text(encoding="utf-8"))
     return template.substitute(
         page_title=f"Engineering practice audit report: {_esc(run_state.meta.repo_name)}",
         meta_block=_render_meta_block(run_state),
         performance_summary=performance_summary,
         findings_section=_findings_section(selected, domain_titles, rule_index),
-        issues_section=_issues_section(selected, issue_urls),
+        issues_section=_issues_section(selected, rule_index, issue_urls, repo_prefill),
         feedback_section=_feedback_section(run_state, feedback_issue_url),
-        tool_version=_esc(run_state.meta.tool_version),
+        footer_block=_render_footer(run_state),
         inline_script=_INLINE_SCRIPT,
     )
 
