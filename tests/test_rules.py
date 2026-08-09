@@ -126,3 +126,71 @@ def test_get_domain_text_returns_full_document() -> None:
     text = get_domain_text(d01)
     assert text.startswith("# Domain 01: Gnome Husbandry Record Keeping")
     assert "D01-R04" in text
+
+
+def _write_pack(tmp_path: Path, body: str) -> Path:
+    scratch = tmp_path / "pack"
+    scratch.mkdir()
+    (scratch / "01-letter-series.md").write_text(body, encoding="utf-8")
+    return scratch
+
+
+def test_letter_prefixed_rule_headings_parse_as_their_own_rules(tmp_path: Path) -> None:
+    # The real pack mixes numbered headings ('### 8.') with letter-series
+    # headings ('### T1.'). Both must parse as distinct rules; the T-series
+    # being absorbed into the previous rule is the bug that hid nine rules of
+    # a sixteen-rule domain during the first proving run.
+    scratch = _write_pack(
+        tmp_path,
+        "# Domain 01: Letter Series Domain\n\n"
+        "**Trigger:** you are about to exercise letter-series rule headings.\n\n"
+        "### 1. A plain numbered rule.\n\n"
+        "Body.\n\n"
+        "*Source: fixture only. Rule id: D01-R01. Volatility: durable.*\n\n"
+        "### T1. A letter-series rule.\n\n"
+        "Body.\n\n"
+        "*Source: fixture only. Rule id: D01-T01. Volatility: durable.*\n\n"
+        "### T2. Another letter-series rule.\n\n"
+        "Body.\n\n"
+        "*Source: fixture only. Rule id: D01-T02. Volatility: fast.*\n",
+    )
+    pack = load_pack(scratch)
+    d01 = pack.get_domain("d01")
+    assert d01 is not None
+    assert [r.id for r in d01.rules] == ["D01-R01", "D01-T01", "D01-T02"]
+    assert [r.number for r in d01.rules] == [1, 1, 2]
+
+
+def test_unrecognised_h3_heading_raises_rather_than_absorbing(tmp_path: Path) -> None:
+    # A '###' heading the rule pattern does not match must be a loud parse
+    # error, never silently folded into the previous rule's block.
+    scratch = _write_pack(
+        tmp_path,
+        "# Domain 01: Absorbing Domain\n\n"
+        "**Trigger:** you are about to exercise an unrecognised heading.\n\n"
+        "### 1. A plain numbered rule.\n\n"
+        "Body.\n\n"
+        "*Source: fixture only. Rule id: D01-R01. Volatility: durable.*\n\n"
+        "### Appendix of miscellany\n\n"
+        "Not a rule heading; must not be absorbed silently.\n",
+    )
+    with pytest.raises(RulesPackParseError) as excinfo:
+        load_pack(scratch)
+    assert "Appendix of miscellany" in str(excinfo.value)
+
+
+def test_duplicate_rule_ids_raise(tmp_path: Path) -> None:
+    scratch = _write_pack(
+        tmp_path,
+        "# Domain 01: Duplicate Id Domain\n\n"
+        "**Trigger:** you are about to exercise duplicate rule ids.\n\n"
+        "### 1. First rule.\n\n"
+        "Body.\n\n"
+        "*Source: fixture only. Rule id: D01-R01. Volatility: durable.*\n\n"
+        "### 2. Second rule reusing the same id.\n\n"
+        "Body.\n\n"
+        "*Source: fixture only. Rule id: D01-R01. Volatility: durable.*\n",
+    )
+    with pytest.raises(RulesPackParseError) as excinfo:
+        load_pack(scratch)
+    assert "D01-R01" in str(excinfo.value)

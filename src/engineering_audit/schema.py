@@ -282,8 +282,18 @@ def validate_completeness(domain: "Domain", result: DomainResult) -> None:
     domain_rule_ids = {rule.id for rule in domain.rules}
     verdicted_rule_ids = {rv.rule_id for rv in result.rule_verdicts}
     missing = sorted(domain_rule_ids - verdicted_rule_ids)
+    unknown = sorted(verdicted_rule_ids - domain_rule_ids)
+    problems: list[str] = []
     if missing:
-        raise IncompleteResultError(
-            f"domain {domain.id}: {len(missing)} rule(s) have no verdict and are not "
-            f"could-not-run: {missing}. A skipped rule is not a pass; verdict every rule."
+        problems.append(
+            f"{len(missing)} rule(s) have no verdict and are not could-not-run: "
+            f"{missing}. A skipped rule is not a pass; verdict every rule."
         )
+    if unknown:
+        problems.append(
+            f"{len(unknown)} verdict(s) reference rule id(s) the domain does not "
+            f"define: {unknown}. A verdict for a nonexistent rule cannot be "
+            "attributed; check the ids against get_domain."
+        )
+    if problems:
+        raise IncompleteResultError(f"domain {domain.id}: " + " ".join(problems))
