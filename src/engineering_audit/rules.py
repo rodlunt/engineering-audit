@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from functools import cached_property
 from pathlib import Path
 
 __all__ = [
@@ -111,6 +112,26 @@ class RulesPack:
             if domain.id == domain_id:
                 return domain
         return None
+
+    @cached_property
+    def rule_index(self) -> dict[str, Rule]:
+        """Every rule in this pack, keyed by rule id, built once and cached.
+
+        Several callers (report rendering, issue filing, eval scoring) look
+        up many rule ids against the same loaded pack; this is the one
+        place that walk happens, so each of them stops hand-rolling its own
+        copy of the same dict comprehension.
+        """
+        return {rule.id: rule for domain in self.domains for rule in domain.rules}
+
+    @cached_property
+    def _domain_id_by_rule_id(self) -> dict[str, str]:
+        return {rule.id: domain.id for domain in self.domains for rule in domain.rules}
+
+    def domain_id_for_rule(self, rule_id: str) -> str | None:
+        """Return the id of the domain that defines rule_id, or None if no
+        domain in this pack defines it."""
+        return self._domain_id_by_rule_id.get(rule_id)
 
 
 def _slug_from_filename(path: Path) -> str:
