@@ -7,8 +7,9 @@ notes on wiring this up (see `integrations/<assistant>/`), read those first, the
 document for the actual audit logic.
 
 The tools referenced below (`list_domains`, `get_domain`, `begin_run`, `start_config`,
-`get_config`, `record_domain_result`, `run_status`, `render_report`) are exposed by the
-`engineering-audit` MCP server. This document assumes it is already connected.
+`get_config`, `record_domain_result`, `run_status`, `file_issues`, `submit_feedback`,
+`render_report`) are exposed by the `engineering-audit` MCP server. This document assumes it is
+already connected.
 
 ## 1. Gather run metadata
 
@@ -27,9 +28,12 @@ Before calling any tool, collect:
 
 ## 2. Begin the run
 
-Call `begin_run` with the metadata above and `output_dir` set to `<target>/audit-output/` (a
-directory inside the repository being audited, not inside this tool's own repository). The tool
-creates the directory if it does not exist.
+Call `begin_run` with the metadata above, `output_dir` set to `<target>/audit-output/` (a
+directory inside the repository being audited, not inside this tool's own repository), and
+`repo_dir` set to the repository being audited's own directory on disk. The tool creates
+`output_dir` if it does not exist. `repo_dir` is used later, by `file_issues`, to detect which
+GitHub repository to file issues on; pass it now even if you do not yet know whether the user
+will choose GitHub issue filing.
 
 If `begin_run` errors because a run is already in progress, that means a previous audit in this
 same server process never finished. Either resume by calling the remaining tools in order below
@@ -121,19 +125,48 @@ not, go back to step 4 for the missing domains: `render_report` will refuse to p
 for a run with a selected domain that has no result, and it should, because a report with a
 silent gap is worse than no report.
 
-## 6. Render the report
+## 6. File issues, if the user chose GitHub delivery
+
+Check `config.issue_mode` from step 3's `get_config` response.
+
+- **`"report"`**: skip this step entirely. The report's "issues" section carries copy-to-clipboard
+  text built from each finding's `issue_title` and `issue_body`, which is why those two fields
+  must stand alone (see step 4 above).
+- **`"github"`**: call `file_issues` with no arguments (`confirm` defaults to `False`). This never
+  files anything and never touches `gh`; it returns a preview: the target repository (if already
+  known), how many issues would be filed, and their titles. **Show this preview to the user and
+  ask for their explicit approval.** Filing issues on someone's repository is outward-facing; do
+  not treat silence or moving on to the next step as approval.
+
+  Only once the user has explicitly agreed, call `file_issues(confirm=True)`. It detects the
+  target repository from `repo_dir` (given to `begin_run` in step 2) unless you pass `repo`
+  explicitly, and files one issue per finding via the user's own `gh` CLI. If it raises partway
+  through, the error names exactly which rule ids were filed (with their URLs) and which were
+  not; fix the underlying problem (commonly: `gh` not authenticated, or the detected repository
+  is wrong) and call `file_issues(confirm=True)` again. Already-filed findings are skipped
+  automatically, so a retry never double-files.
+
+## 7. Render the report
 
 Call `render_report` with a `finished` ISO timestamp (the current time, same format as `started`
 in step 1). It writes `report.html` and `run-state.json` into the run's `output_dir` and returns
-their paths along with a findings summary.
+their paths along with a findings summary. Any issues filed in step 6 are linked automatically;
+there is nothing further to pass.
 
 Tell the user directly where `report.html` is, and give them a one-line summary of what was
 found (e.g. "3 findings: 1 high, 2 medium, across 2 domains"). Do not just say "the audit is
 done"; the report's location and headline numbers are the actual deliverable.
 
-## Issue filing
+## 8. Offer to send feedback
 
-`render_report` is called with no issue URLs in this milestone: filing findings as GitHub issues
-(or another tracker) is not wired up yet. The report's "issues" section instead offers
-copy-to-clipboard text built from each finding's `issue_title` and `issue_body`, which is why
-those two fields must stand alone (see step 4 above).
+If the user supplied feedback text on the configuration page (`config.feedback_text`), call
+`submit_feedback`. It sends that text, plus a run-metadata section and whichever telemetry
+sections the user consented to (coverage, findings rollup, self-assessment, environment; never
+finding text), to the tool author's repository via `gh`. If it returns `mode: "mailto"` (gh was
+unavailable or filing failed), tell the user their feedback was not lost: offer to open the
+`mailto_url`, and if that fails or is unavailable, offer the `body` text for them to paste into an
+email themselves. The rendered report also carries this same mailto fallback in its Feedback
+section, so nothing is lost even if this step is skipped.
+
+Do not call `submit_feedback` if the user gave no feedback text and did not ask you to send
+anything: an unprompted, empty submission is not consent.
