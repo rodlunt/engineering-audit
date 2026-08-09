@@ -102,6 +102,16 @@ For each domain id in `selected_domain_ids`, in order:
      issue on its own, understand the problem, and know how to fix it. Do not write "see rule
      D01-R02 for details"; restate the reasoning inline. Write issue text in plain punctuation
      (commas, colons, parentheses); do not use em or en dashes.
+   - **Be terse.** Both `body_md` and `issue_body` follow a strict three-part shape and nothing
+     else:
+     1. **The issue**: what is wrong, with the location. One or two sentences.
+     2. **Why it matters**: the concrete consequence. One or two sentences.
+     3. **Suggested fix**: what to change. One or two sentences, or a short list.
+     No preamble, no restating the rule's full rationale, no hedging filler, no summary of what
+     you inspected (coverage belongs in the run's coverage numbers, not in every finding). If a
+     finding genuinely needs supporting evidence (a quoted config block, a reproduction), append
+     it after the three parts, kept minimal. A finding a developer can absorb in fifteen seconds
+     gets fixed; a page of prose gets skimmed.
 4. Once every rule in the domain has a verdict, decide the domain's overall `status`:
    - `completed`, if you were able to sweep the repository at all (even if some individual rules
      ended up could-not-evaluate).

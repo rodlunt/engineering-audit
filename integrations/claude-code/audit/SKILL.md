@@ -32,7 +32,8 @@ if the two ever disagree, `AUDIT.md` wins.
    giving every rule an honest verdict (`pass`, `finding`, `not-applicable`, or
    `could-not-evaluate` with a reason: never a guessed `pass`), then call
    `record_domain_result`. If it rejects the payload as incomplete, the error lists the missing
-   rule ids; fix and resubmit.
+   rule ids; fix and resubmit. Write every finding and issue body terse, in three parts and
+   nothing else: the issue, why it matters, suggested fix (one or two sentences each).
 5. Call `run_status` and confirm nothing is missing.
 6. Call `render_report` with a finished timestamp. Tell the user where `report.html` landed and
    give a one-line findings summary.
