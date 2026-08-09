@@ -18,6 +18,12 @@ from collections import Counter
 from pathlib import Path
 from urllib.parse import urlparse
 
+from engineering_audit.feedback import (
+    FEEDBACK_EMAIL,
+    build_feedback_body,
+    build_mailto_url,
+    feedback_subject,
+)
 from engineering_audit.rules import Rule, RulesPack
 from engineering_audit.schema import (
     DomainResult,
@@ -66,6 +72,23 @@ class ReportError(Exception):
 
 def _esc(value: object) -> str:
     return html.escape(str(value))
+
+
+def _require_href_scheme(url: str, allowed: tuple[str, ...], context: str) -> None:
+    """Raise ReportError unless url's scheme is one of allowed.
+
+    Used both for issue links (http/https only: these carry a URL a filing
+    integration produced from real gh output, and a non-http(s) scheme there
+    is a bug upstream, not a cosmetic issue) and for the feedback mailto
+    button (mailto only, and only ever called on a URL this module built
+    itself from known-safe strings, never on data).
+    """
+    scheme = urlparse(url).scheme.lower()
+    if scheme not in allowed:
+        raise ReportError(
+            f"{context} has scheme '{scheme or '(none)'}', only "
+            f"{'/'.join(allowed)} {'is' if len(allowed) == 1 else 'are'} allowed: {url!r}"
+        )
 
 
 def _markdownish(text: str) -> str:
@@ -256,15 +279,9 @@ def _issues_section(
         for finding in all_findings:
             url = issue_urls.get(finding.rule_id)
             if url:
-                # A non-http(s) scheme here (e.g. javascript:) is a bug in the
-                # filing integration upstream, not a cosmetic issue, so it
-                # must raise rather than render a clickable, unsafe link.
-                scheme = urlparse(url).scheme.lower()
-                if scheme not in ("http", "https"):
-                    raise ReportError(
-                        f"issue url for rule id '{finding.rule_id}' has scheme "
-                        f"'{scheme or '(none)'}', only http/https are allowed: {url!r}"
-                    )
+                _require_href_scheme(
+                    url, ("http", "https"), f"issue url for rule id '{finding.rule_id}'"
+                )
                 rows.append(f'<li><a href="{_esc(url)}">{_esc(finding.issue_title)}</a></li>')
             else:
                 rows.append(f"<li>{_esc(finding.issue_title)} (no issue filed for this finding)</li>")
@@ -283,19 +300,49 @@ def _issues_section(
     return "".join(blocks)
 
 
-def _feedback_section(run_state: RunState) -> str:
-    note = (
-        '<p class="muted">A mailto link for sending this feedback to the tool author will be '
-        "added in a later milestone.</p>"
-    )
+def _feedback_section(run_state: RunState, feedback_issue_url: str | None) -> str:
     text = run_state.config.feedback_text
     if text:
-        return f'<div class="feedback-text">{_markdownish(text)}</div>{note}'
-    return f"<p>No feedback text supplied for this run.</p>{note}"
+        text_html = f'<div class="feedback-text">{_markdownish(text)}</div>'
+    else:
+        text_html = "<p>No feedback text supplied for this run.</p>"
+
+    if feedback_issue_url:
+        _require_href_scheme(feedback_issue_url, ("http", "https"), "feedback issue url")
+        return (
+            f"{text_html}"
+            f'<p>This feedback was filed as <a href="{_esc(feedback_issue_url)}">an issue</a> '
+            "on the tool author's repository.</p>"
+        )
+
+    body = build_feedback_body(
+        run_state.config.feedback_text,
+        run_state.meta,
+        run_state.config.telemetry_consent,
+        run_state.domain_results,
+    )
+    subject = feedback_subject(run_state.meta)
+    mailto_url = build_mailto_url(FEEDBACK_EMAIL, subject, body)
+    _require_href_scheme(mailto_url, ("mailto",), "feedback mailto url")
+
+    return (
+        f"{text_html}"
+        f'<p><a class="feedback-mailto" href="{_esc(mailto_url)}">Send feedback to the '
+        "developer</a></p>"
+        '<p class="muted">If that does not open a mail client, copy the text below into an '
+        "email instead:</p>"
+        '<textarea id="feedback-body-text" readonly rows="10">'
+        f"{_esc(body)}</textarea>"
+        "<button type=\"button\" onclick=\"copyIssueText('feedback-body-text', this)\">"
+        "Copy feedback text</button>"
+    )
 
 
 def render_report(
-    run_state: RunState, pack: RulesPack, issue_urls: dict[str, str] | None = None
+    run_state: RunState,
+    pack: RulesPack,
+    issue_urls: dict[str, str] | None = None,
+    feedback_issue_url: str | None = None,
 ) -> str:
     """Render a complete, self-contained HTML report.
 
@@ -355,7 +402,7 @@ def render_report(
         performance_summary=performance_summary,
         findings_section=_findings_section(selected, domain_titles),
         issues_section=_issues_section(selected, issue_urls),
-        feedback_section=_feedback_section(run_state),
+        feedback_section=_feedback_section(run_state, feedback_issue_url),
         tool_version=_esc(run_state.meta.tool_version),
         inline_script=_INLINE_SCRIPT,
     )
@@ -366,9 +413,10 @@ def write_report(
     pack: RulesPack,
     out_path: str | Path,
     issue_urls: dict[str, str] | None = None,
+    feedback_issue_url: str | None = None,
 ) -> Path:
     """Render the report and write it to out_path, returning the Path written."""
-    rendered = render_report(run_state, pack, issue_urls)
+    rendered = render_report(run_state, pack, issue_urls, feedback_issue_url)
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(rendered, encoding="utf-8")

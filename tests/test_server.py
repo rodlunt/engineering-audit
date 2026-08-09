@@ -19,6 +19,8 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from mcp.server._otel import OpenTelemetryMiddleware
 
+import engineering_audit.server as server_module
+from engineering_audit.issues import CreatedIssue, IssueFilingError
 from engineering_audit.rules import RulesPackError
 from engineering_audit.schema import RunState
 from engineering_audit.server import AppState, _resolve_rules_dir, build_server
@@ -574,3 +576,403 @@ def test_full_audit_flow_walks_every_tool_in_order(
     assert Path(finished_result["report_path"]).is_file()
     assert Path(finished_result["run_state_path"]).is_file()
     assert finished_result["findings_summary"]["total_findings"] == 1
+
+
+# ---------------------------------------------------------------------------
+# file_issues
+# ---------------------------------------------------------------------------
+
+
+def _fake_create_issue(fail_on: set[str] | None = None, warn_on: set[str] | None = None):
+    """Build a fake create_issue plus the list of calls it recorded.
+
+    Mirrors engineering_audit.issues.create_issue's signature exactly (as
+    called from server.py, with no runner argument), issuing incrementing
+    fake URLs and raising IssueFilingError for any title in fail_on.
+    """
+    calls: list[dict] = []
+    counter = {"n": 0}
+
+    def _fake(repo: str, title: str, body: str, labels: list[str]) -> CreatedIssue:
+        calls.append({"repo": repo, "title": title, "body": body, "labels": labels})
+        if fail_on and title in fail_on:
+            raise IssueFilingError(f"gh issue create failed for {title!r}")
+        counter["n"] += 1
+        warnings = [f"label(s) {labels} not found on repo {repo}; issue filed without them"] if (
+            warn_on and title in warn_on
+        ) else []
+        return CreatedIssue(url=f"https://github.com/{repo}/issues/{counter['n']}", warnings=warnings)
+
+    return _fake, calls
+
+
+def _configured_github_run(
+    mcp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, repo_dir: Path | None = None
+) -> None:
+    _begin_run(
+        mcp,
+        tmp_path / "audit-output",
+        repo_dir=str(repo_dir) if repo_dir else None,
+    )
+    _preset_config_env(monkeypatch, tmp_path, issue_mode="github")
+    _call(mcp, "start_config", {})
+    _call(mcp, "get_config", {"timeout_s": 1})
+
+
+def test_file_issues_preview_never_invokes_gh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _must_not_be_called(*_args, **_kwargs):
+        raise AssertionError("gh must not be invoked while previewing (confirm=False)")
+
+    _fake, calls = _fake_create_issue()
+    monkeypatch.setattr(server_module, "create_issue", _fake)
+    monkeypatch.setattr(server_module, "gh_available", _must_not_be_called)
+    monkeypatch.setattr(server_module, "detect_repo", _must_not_be_called)
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    _configured_github_run(mcp, tmp_path, monkeypatch)
+    _record_d01_with_finding(mcp)
+    _record_d02_all_pass(mcp)
+
+    result = _call(mcp, "file_issues", {})
+    assert result["count"] == 1
+    assert result["titles"] == ["Set shared-bed flag for bed-14"]
+    assert calls == []
+
+
+def test_file_issues_confirm_files_one_issue_per_finding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake, calls = _fake_create_issue()
+    monkeypatch.setattr(server_module, "create_issue", _fake)
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    _configured_github_run(mcp, tmp_path, monkeypatch)
+    _record_d01_with_finding(mcp)
+    _record_d02_all_pass(mcp)
+
+    result = _call(mcp, "file_issues", {"confirm": True, "repo": "rodlunt/widgets-app"})
+
+    assert result["repo"] == "rodlunt/widgets-app"
+    assert result["filed"] == {"D01-R02": "https://github.com/rodlunt/widgets-app/issues/1"}
+    assert calls == [
+        {
+            "repo": "rodlunt/widgets-app",
+            "title": "Set shared-bed flag for bed-14",
+            "body": (
+                "bed-14 has two occupants and no shared-bed flag.\n\n"
+                "Found by an engineering-practice audit (rule D01-R02, severity high, "
+                "at ledger/beds.py:42)."
+            ),
+            "labels": ["engineering-audit"],
+        }
+    ]
+
+
+def test_file_issues_issue_mode_report_errors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    mcp, _state = build_server(FIXTURE_PACK)
+    _configured_run(mcp, tmp_path, monkeypatch)  # defaults to issue_mode="report"
+    _record_d01_with_finding(mcp)
+    _record_d02_all_pass(mcp)
+
+    with pytest.raises(ToolError) as excinfo:
+        _call(mcp, "file_issues", {})
+    assert "issue_mode" in str(excinfo.value)
+    assert "github" in str(excinfo.value)
+
+
+def test_file_issues_requires_at_least_one_recorded_domain_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mcp, _state = build_server(FIXTURE_PACK)
+    _configured_github_run(mcp, tmp_path, monkeypatch)
+
+    with pytest.raises(ToolError) as excinfo:
+        _call(mcp, "file_issues", {})
+    assert "No domain results recorded" in str(excinfo.value)
+
+
+def test_file_issues_partial_failure_reports_filed_and_unfiled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # d01 has one finding (D01-R02); make its own fixture domain result carry
+    # a second finding on d02 so two issues are pending, and fail the second.
+    mcp, _state = build_server(FIXTURE_PACK)
+    _configured_github_run(mcp, tmp_path, monkeypatch)
+    _record_d01_with_finding(mcp)
+    verdicts = _all_pass_verdicts(_domain(mcp, "d02"))
+    verdicts[0] = {"rule_id": "D02-R01", "verdict": "finding"}
+    _call(
+        mcp,
+        "record_domain_result",
+        {
+            "result": {
+                "domain_id": "d02",
+                "status": "completed",
+                "rule_verdicts": verdicts,
+                "findings": [
+                    {
+                        "rule_id": "D02-R01",
+                        "severity": "low",
+                        "title": "A d02 finding",
+                        "location": "x.py",
+                        "body_md": "x",
+                        "issue_title": "A d02 finding",
+                        "issue_body": "x",
+                    }
+                ],
+            }
+        },
+    )
+
+    _fake, calls = _fake_create_issue(fail_on={"A d02 finding"})
+    monkeypatch.setattr(server_module, "create_issue", _fake)
+
+    with pytest.raises(ToolError) as excinfo:
+        _call(mcp, "file_issues", {"confirm": True, "repo": "rodlunt/widgets-app"})
+    message = str(excinfo.value)
+    assert "D01-R02" in message  # filed
+    assert "D02-R01" in message  # not filed
+    assert len(calls) == 2
+
+    # The one that succeeded must be recorded, so a retry does not re-file it.
+    _fake2, calls2 = _fake_create_issue()
+    monkeypatch.setattr(server_module, "create_issue", _fake2)
+    retry_result = _call(mcp, "file_issues", {"confirm": True, "repo": "rodlunt/widgets-app"})
+    assert retry_result["filed"] == {"D02-R01": "https://github.com/rodlunt/widgets-app/issues/1"}
+    assert [c["title"] for c in calls2] == ["A d02 finding"]
+
+
+def test_file_issues_missing_label_warning_is_surfaced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake, _calls = _fake_create_issue(warn_on={"Set shared-bed flag for bed-14"})
+    monkeypatch.setattr(server_module, "create_issue", _fake)
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    _configured_github_run(mcp, tmp_path, monkeypatch)
+    _record_d01_with_finding(mcp)
+    _record_d02_all_pass(mcp)
+
+    result = _call(mcp, "file_issues", {"confirm": True, "repo": "rodlunt/widgets-app"})
+    assert result["warnings"] and "not found on repo" in result["warnings"][0]
+
+
+def test_file_issues_confirm_detects_repo_from_repo_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audited_repo = tmp_path / "audited-repo"
+    audited_repo.mkdir()
+    _fake, calls = _fake_create_issue()
+    monkeypatch.setattr(server_module, "create_issue", _fake)
+    monkeypatch.setattr(server_module, "gh_available", lambda: True)
+    monkeypatch.setattr(server_module, "detect_repo", lambda cwd: "rodlunt/detected-repo")
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    _configured_github_run(mcp, tmp_path, monkeypatch, repo_dir=audited_repo)
+    _record_d01_with_finding(mcp)
+    _record_d02_all_pass(mcp)
+
+    result = _call(mcp, "file_issues", {"confirm": True})
+    assert result["repo"] == "rodlunt/detected-repo"
+    assert calls[0]["repo"] == "rodlunt/detected-repo"
+
+
+def test_file_issues_confirm_raises_when_gh_unavailable_and_no_repo_given(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audited_repo = tmp_path / "audited-repo"
+    audited_repo.mkdir()
+    monkeypatch.setattr(server_module, "gh_available", lambda: False)
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    _configured_github_run(mcp, tmp_path, monkeypatch, repo_dir=audited_repo)
+    _record_d01_with_finding(mcp)
+    _record_d02_all_pass(mcp)
+
+    with pytest.raises(ToolError) as excinfo:
+        _call(mcp, "file_issues", {"confirm": True})
+    assert "gh is not available" in str(excinfo.value)
+
+
+def test_file_issues_confirm_raises_when_no_repo_dir_and_no_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mcp, _state = build_server(FIXTURE_PACK)
+    _configured_github_run(mcp, tmp_path, monkeypatch)  # no repo_dir
+    _record_d01_with_finding(mcp)
+    _record_d02_all_pass(mcp)
+
+    with pytest.raises(ToolError) as excinfo:
+        _call(mcp, "file_issues", {"confirm": True})
+    assert "No repo_dir" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# submit_feedback
+# ---------------------------------------------------------------------------
+
+
+def test_submit_feedback_errors_when_nothing_to_send(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mcp, _state = build_server(FIXTURE_PACK)
+    _configured_run(mcp, tmp_path, monkeypatch)  # feedback_text unset
+
+    with pytest.raises(ToolError) as excinfo:
+        _call(mcp, "submit_feedback", {})
+    assert "Nothing to send" in str(excinfo.value)
+
+
+def test_submit_feedback_extra_text_is_accepted_when_config_has_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake, calls = _fake_create_issue()
+    monkeypatch.setattr(server_module, "create_issue", _fake)
+    monkeypatch.setattr(server_module, "gh_available", lambda: True)
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    _configured_run(mcp, tmp_path, monkeypatch)
+
+    result = _call(mcp, "submit_feedback", {"extra_text": "This came from the agent, not the form."})
+    assert result["mode"] == "issue"
+    assert "This came from the agent, not the form." in calls[0]["body"]
+
+
+def test_submit_feedback_files_to_feedback_repo_with_feedback_label(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake, calls = _fake_create_issue()
+    monkeypatch.setattr(server_module, "create_issue", _fake)
+    monkeypatch.setattr(server_module, "gh_available", lambda: True)
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    _configured_run(mcp, tmp_path, monkeypatch, feedback_text="The gnome export was slow.")
+
+    result = _call(mcp, "submit_feedback", {})
+    assert result["mode"] == "issue"
+    assert calls[0]["repo"] == "rodlunt/engineering-audit"
+    assert calls[0]["labels"] == ["feedback"]
+    assert "The gnome export was slow." in calls[0]["body"]
+    assert "Run metadata" in calls[0]["body"]
+
+
+def test_submit_feedback_omits_unconsented_sections(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake, calls = _fake_create_issue()
+    monkeypatch.setattr(server_module, "create_issue", _fake)
+    monkeypatch.setattr(server_module, "gh_available", lambda: True)
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    _begin_run(mcp, tmp_path / "audit-output")
+    _preset_config_env(
+        monkeypatch,
+        tmp_path,
+        feedback_text="The gnome export was slow.",
+        telemetry_consent={
+            "coverage": False,
+            "rollup": False,
+            "self_assessment": False,
+            "environment": False,
+        },
+    )
+    _call(mcp, "start_config", {})
+    _call(mcp, "get_config", {"timeout_s": 1})
+    _record_d01_with_finding(mcp)
+    _record_d02_all_pass(mcp)
+
+    _call(mcp, "submit_feedback", {})
+    body = calls[0]["body"]
+    assert "Coverage" not in body
+    assert "Findings rollup" not in body
+    assert "Self-assessment" not in body
+    assert "Environment" not in body
+
+
+def test_submit_feedback_includes_consented_sections(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake, calls = _fake_create_issue()
+    monkeypatch.setattr(server_module, "create_issue", _fake)
+    monkeypatch.setattr(server_module, "gh_available", lambda: True)
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    _begin_run(mcp, tmp_path / "audit-output")
+    _preset_config_env(
+        monkeypatch,
+        tmp_path,
+        feedback_text="The gnome export was slow.",
+        telemetry_consent={
+            "coverage": True,
+            "rollup": True,
+            "self_assessment": True,
+            "environment": True,
+        },
+    )
+    _call(mcp, "start_config", {})
+    _call(mcp, "get_config", {"timeout_s": 1})
+    _record_d01_with_finding(mcp)
+    _record_d02_all_pass(mcp)
+
+    _call(mcp, "submit_feedback", {})
+    body = calls[0]["body"]
+    assert "Coverage" in body
+    assert "Findings rollup" in body
+    assert "Self-assessment by domain" in body
+    assert "Environment" in body
+    # Finding text must never leave via feedback, only counts.
+    assert "Two gnomes share bed-14 without the shared-bed flag" not in body
+
+
+def test_submit_feedback_gh_unavailable_returns_mailto_with_encoded_body(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(server_module, "gh_available", lambda: False)
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    _configured_run(mcp, tmp_path, monkeypatch, feedback_text="The gnome export was slow.")
+
+    result = _call(mcp, "submit_feedback", {})
+    assert result["mode"] == "mailto"
+    assert result["mailto_url"].startswith("mailto:rodneylunt79@gmail.com?subject=")
+    assert "The%20gnome%20export%20was%20slow." in result["mailto_url"] or "The+gnome" in result["mailto_url"]
+    assert "The gnome export was slow." in result["body"]
+
+
+def test_submit_feedback_filing_failure_falls_back_to_mailto(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(server_module, "gh_available", lambda: True)
+
+    def _always_fail(repo, title, body, labels):
+        raise IssueFilingError("HTTP 500")
+
+    monkeypatch.setattr(server_module, "create_issue", _always_fail)
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    _configured_run(mcp, tmp_path, monkeypatch, feedback_text="The gnome export was slow.")
+
+    result = _call(mcp, "submit_feedback", {})
+    assert result["mode"] == "mailto"
+    assert "The gnome export was slow." in result["body"]
+
+
+def test_submit_feedback_then_render_report_links_the_filed_issue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake, calls = _fake_create_issue()
+    monkeypatch.setattr(server_module, "create_issue", _fake)
+    monkeypatch.setattr(server_module, "gh_available", lambda: True)
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    _configured_run(mcp, tmp_path, monkeypatch, feedback_text="The gnome export was slow.")
+    _record_d01_with_finding(mcp)
+    _record_d02_all_pass(mcp)
+
+    feedback_result = _call(mcp, "submit_feedback", {})
+    assert feedback_result["mode"] == "issue"
+
+    report_result = _call(mcp, "render_report", {"finished": "2026-08-09T10:00:00Z"})
+    report_text = Path(report_result["report_path"]).read_text(encoding="utf-8")
+    assert feedback_result["url"] in report_text
+    assert 'href="mailto:' not in report_text
