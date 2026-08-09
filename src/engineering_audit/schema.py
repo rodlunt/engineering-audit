@@ -11,6 +11,7 @@ rather than letting the gap pass unnoticed.
 from __future__ import annotations
 
 import json
+from collections import Counter
 from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING
@@ -146,6 +147,24 @@ class DomainResult(BaseModel):
         if value not in allowed:
             raise ValueError(f"status must be one of {sorted(allowed)}, got {value!r}")
         return value
+
+    @model_validator(mode="after")
+    def _rule_verdict_ids_unique(self) -> "DomainResult":
+        # The two consumers that check this list for consistency (this class's
+        # own _consistency validator and validate_completeness) both build a
+        # set of rule ids first, which quietly discards a duplicate rather
+        # than rejecting it. That lets a run's saved output record the same
+        # rule as both passed and a finding with nothing catching it, so the
+        # duplicate is rejected here, before either check gets a chance to
+        # collapse it away.
+        counts = Counter(rv.rule_id for rv in self.rule_verdicts)
+        duplicates = sorted(rule_id for rule_id, n in counts.items() if n > 1)
+        if duplicates:
+            raise ValueError(
+                f"domain {self.domain_id}: duplicate rule_verdict(s) for rule id(s) "
+                f"{duplicates}; each rule may carry at most one verdict per domain result"
+            )
+        return self
 
     @model_validator(mode="after")
     def _consistency(self) -> "DomainResult":
