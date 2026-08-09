@@ -154,14 +154,50 @@ A live example: [docs/demo/report.html](docs/demo/report.html) (download and ope
 GitHub does not render raw HTML in the browser). Generated from the invented demo rules pack
 in `tests/fixture_pack`, not a real audit against a real repository.
 
-## Rules access
+## The rules
 
-This repository contains no rule content; the audit cannot run without a rules pack. The
-author's pack (16 engineering-practice domains, roughly 260 rules, each carrying a cited
-source and a review cadence) lives in a private repository with access granted per user.
-Open an issue here to ask. The tooling works with any rules directory in the expected
-format (`**Trigger:**` header, `### N. Title` rules, `Rule id:` footers with `Source:`
-fragments).
+The author's rules pack covers sixteen decision domains, 260 rules in all, each rule
+carrying a cited source, a volatility tier and a verification date, and each domain proven
+against a real system before it is trusted:
+
+| # | Domain | Rules | Fires when you are... |
+|---|---|---|---|
+| d01 | Designing a Data Model | 15 | modelling entities, choosing keys, constraints, normalising, writing DDL or migrations |
+| d02 | Eliciting and Specifying Requirements | 16 | deciding what to build, writing requirements or user stories, checking the right problem is being solved |
+| d03 | Modelling Structure and Behaviour Before Building | 15 | deciding what to diagram before coding, drawing or reviewing FMC/UML/SysML models |
+| d04 | Structuring Code and Applying Design Patterns | 14 | designing classes or modules, weighing a design pattern, choosing data structures or error handling |
+| d05 | Choosing What to Test and How Much | 18 | choosing test levels and coverage, weighing testing against risk, planning load or soak tests and CI gates |
+| d06 | Structuring a Repo, Branches and CI/CD | 15 | structuring a repository, writing CI/CD workflows, handling automation credentials, cutting releases |
+| d07 | Handling Untrusted Input and Secure Coding | 16 | writing code untrusted input can reach: forms, auth flows, credentials, sessions |
+| d08 | Threat Modelling and Security Risk Decision-Making | 15 | running a risk assessment, threat-modelling a system, prioritising vulnerabilities, justifying a control |
+| d09 | Responding When Something Breaks in Production | 16 | writing incident response plans, defining recovery objectives, running post-incident reviews |
+| d10 | Designing APIs and Service Contracts | 14 | creating or extending an HTTP API, choosing verbs and status codes, versioning or deprecating an interface |
+| d11 | Choosing Architecture and Deployment Topology | 16 | picking an application architecture, deciding VM/container/serverless topology, planning scaling and rollout |
+| d12 | Making an Ethical or Professional Judgement Call | 17 | facing pressure to cut a corner, decisions affecting users or the public, handling personal data |
+| d13 | Estimating and Pricing Work | 16 | scoping work before quoting, choosing estimation methods, setting contingency, defending an estimate |
+| d14 | Fault Diagnosis of a Running System | 19 | investigating an outage, a slow or wrong-answering service, or an intermittent bug |
+| d15 | Interface Design and Prototyping | 17 | laying out a screen, designing a form, writing button and error copy, deciding confirmation vs undo |
+| d16 | Presenting Data for Decisions | 21 | putting a number, chart or table in front of somebody who has to decide something |
+
+### Try it right now: the taster pack
+
+Three complete domains (d01, d05, d16, 54 rules with their full source citations) are
+published in [examples/taster-rules/](examples/taster-rules/) as point-in-time exports
+from the maintained pack. They are a working rules directory: point the server at them
+and run a real audit before asking for anything.
+
+```sh
+claude mcp add engineering-audit -- uvx --from git+https://github.com/rodlunt/engineering-audit \
+    engineering-audit-mcp --rules-dir /path/to/engineering-audit/examples/taster-rules
+```
+
+### Full access
+
+The full pack lives in a private repository with access granted per user (the maintained
+originals, their revision history and proving records). Open an issue here to ask. The
+tooling works with any rules directory in the expected format (`**Trigger:**` header,
+`### N. Title` rules, `Rule id:` footers with `Source:` fragments), so you can also write
+your own pack.
 
 ## Development
 
