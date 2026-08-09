@@ -34,3 +34,50 @@ jobs:
             exit 1
           fi
           echo "tag v$tag matches pyproject version $version"
+
+  sbom:
+    name: sbom
+    runs-on: ubuntu-latest
+    # Only produce an SBOM for a tag that already passed the version guard:
+    # no point auditing a release build that is going to be retagged.
+    needs: check-version
+    # Needs write access to attach a release asset; every other job in this
+    # workflow stays on the workflow-level read-only default.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+      - name: Sync runtime dependencies
+        # --no-dev: the SBOM should describe what ships to users, not the
+        # project's own test tooling.
+        run: uv sync --frozen --no-dev
+      - name: Generate SBOM (CycloneDX)
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          uvx --from cyclonedx-bom==7.3.1 cyclonedx-py environment .venv/bin/python \
+            --of JSON \
+            --output-reproducible \
+            -o "sbom-${TAG}.cdx.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sbom-${{ github.ref_name }}
+          path: sbom-*.cdx.json
+      - name: Attach SBOM to the GitHub release, if one exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          # Releases for this repo are not created by automation, so a tag
+          # can land before its release does. Attach when possible; when
+          # not, say so plainly rather than reporting a false success, since
+          # the SBOM is still recoverable from the workflow artifact above.
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" "sbom-${TAG}.cdx.json" --repo "$GITHUB_REPOSITORY" --clobber
+            echo "attached SBOM to release $TAG"
+          else
+            echo "no GitHub release exists yet for $TAG: SBOM is available as the workflow artifact above, attach it manually once the release is created" >&2
+          fi
