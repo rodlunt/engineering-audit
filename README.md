@@ -29,9 +29,9 @@ no sign-up; the full sixteen-domain, 260-rule pack is available on request
 
 | Configure a run | Report |
 |---|---|
-| ![Configuration page: domain tick boxes, issue delivery, feedback consent](docs/images/config-page.png) | ![Report: run metadata and tool performance summary](docs/images/report.png) |
+| <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/config-page-dark.png"><img alt="Configuration page: domain tick boxes, issue delivery, feedback consent" src="docs/images/config-page-light.png"></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/report-dark.png"><img alt="Report: run metadata and tool performance summary" src="docs/images/report-light.png"></picture> |
 
-![Issues with selection tick boxes and GitHub filing, feedback form, footer](docs/images/issues-feedback.png)
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/issues-feedback-dark.png"><img alt="Issues with selection tick boxes and GitHub filing, feedback form, footer" src="docs/images/issues-feedback-light.png"></picture>
 
 ## How to use
 
