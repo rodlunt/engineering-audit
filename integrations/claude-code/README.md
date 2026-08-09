@@ -11,7 +11,7 @@ claude mcp add engineering-audit -- uvx --from git+https://github.com/rodlunt/en
 ```
 
 `@v0.5.0` pins the install to the current tagged release rather than the moving `main` branch;
-see the root README's [Install](../../README.md#install) section for how to find the latest tag
+see the root README's [How to use](../../README.md#how-to-use) section for how to find the latest tag
 and update to it deliberately.
 
 `<path-to-rules-clone>` is a local checkout of a rules pack: a directory of `NN-slug.md` domain
