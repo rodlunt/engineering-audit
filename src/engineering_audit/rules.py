@@ -38,7 +38,13 @@ _H1_RE = re.compile(r"^#\s*Domain\s+(?P<number>\d+)\s*:\s*(?P<title>.+?)\s*$", r
 _LOAD_WHEN_RE = re.compile(
     r"\*\*Load this when:\*\*\s*(?P<load_when>.*?)(?:\n\s*\n|\Z)", re.DOTALL
 )
-_RULE_HEADING_RE = re.compile(r"^###\s*(?P<number>\d+)\.\s*(?P<title>.+?)\s*$", re.MULTILINE)
+# Rule headings come in numbered series that may carry a letter prefix, e.g.
+# '### 8. Title' and '### T1. Title' (tier-2 rules in the real pack use a T
+# series). The label keeps the full token; Rule.number keeps the digits.
+_RULE_HEADING_RE = re.compile(
+    r"^###\s*(?P<label>[A-Za-z]*\d+)\.\s*(?P<title>.+?)\s*$", re.MULTILINE
+)
+_ANY_H3_RE = re.compile(r"^###\s.*$", re.MULTILINE)
 _RULE_ID_RE = re.compile(r"Rule id:\s*(?P<rule_id>[A-Za-z0-9]+-[A-Za-z0-9]+)\s*\.")
 _VOLATILITY_RE = re.compile(r"Volatility:\s*(?P<volatility>[^.]+)\.")
 _FILENAME_SLUG_RE = re.compile(r"^\d{2}-(?P<slug>.+)$")
@@ -117,12 +123,30 @@ def _parse_rules(path: Path, text: str) -> list[Rule]:
         raise RulesPackParseError(
             f"{path}: declares a Trigger but has no '### N. Rule title' headings"
         )
+
+    # Every '###' heading must be a recognised rule heading. A heading the
+    # rule pattern does not match would otherwise have its whole block
+    # silently absorbed into the previous rule (wrong footer id, hidden
+    # rules), which is exactly the silent drop this loader exists to prevent.
+    all_h3_lines = [line.rstrip() for line in _ANY_H3_RE.findall(text)]
+    matched_lines = {m.group(0).rstrip() for m in headings}
+    unmatched = [line for line in all_h3_lines if line not in matched_lines]
+    if len(all_h3_lines) != len(headings):
+        detail = f": {unmatched[:5]}" if unmatched else ""
+        raise RulesPackParseError(
+            f"{path}: {len(all_h3_lines) - len(headings)} '###' heading(s) do not match "
+            f"the '### <label>. <title>' rule-heading shape and would be silently "
+            f"absorbed into the previous rule{detail}"
+        )
+
     rules: list[Rule] = []
+    seen_ids: dict[str, str] = {}
     for index, heading_match in enumerate(headings):
         start = heading_match.end()
         end = headings[index + 1].start() if index + 1 < len(headings) else len(text)
         block = text[start:end]
-        heading_number = int(heading_match.group("number"))
+        heading_label = heading_match.group("label")
+        heading_number = int(re.sub(r"\D", "", heading_label))
         heading_title = heading_match.group("title").strip()
 
         # A rule block can carry a prose cross-reference to another rule's id
@@ -136,6 +160,13 @@ def _parse_rules(path: Path, text: str) -> list[Rule]:
                 "'Rule id: ...' metadata line"
             )
         rule_id = id_matches[-1].group("rule_id").upper()
+        if rule_id in seen_ids:
+            raise RulesPackParseError(
+                f"{path}: rule id {rule_id} appears on both '{seen_ids[rule_id]}' and "
+                f"'{heading_title}'. Duplicate ids make verdicts unattributable; each "
+                "rule needs its own id."
+            )
+        seen_ids[rule_id] = heading_title
 
         volatility_match = _VOLATILITY_RE.search(block)
         volatility = (

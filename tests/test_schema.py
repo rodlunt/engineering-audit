@@ -210,3 +210,20 @@ def test_run_state_round_trip_json() -> None:
     restored = RunState.from_json(dumped)
     assert restored == state
     assert restored.domain_results["d01"].coverage.files_inspected == 3
+
+
+def test_validate_completeness_rejects_verdicts_for_unknown_rule_ids() -> None:
+    # The symmetric half of skipped-is-not-a-pass: a verdict naming a rule id
+    # the domain does not define is unattributable and must be rejected at
+    # record time, not discovered at render time.
+    pack = load_pack(FIXTURE_PACK)
+    d01 = pack.get_domain("d01")
+    assert d01 is not None
+    verdicts = [
+        RuleVerdict(rule_id=rule.id, verdict="pass") for rule in d01.rules
+    ] + [RuleVerdict(rule_id="D01-T99", verdict="pass")]
+    result = DomainResult(domain_id="d01", status="completed", rule_verdicts=verdicts)
+    with pytest.raises(IncompleteResultError) as excinfo:
+        validate_completeness(d01, result)
+    assert "D01-T99" in str(excinfo.value)
+    assert "not define" in str(excinfo.value)
