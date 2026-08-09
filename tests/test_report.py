@@ -137,6 +137,16 @@ def test_rollup_counts_match_computed_sums() -> None:
     assert "Gnome Husbandry Record Keeping: 1" in rendered
 
 
+def test_rollup_by_domain_includes_a_domain_audited_and_found_clean() -> None:
+    # d02 in _base_run_state has zero findings but did complete; it must
+    # show up in "By domain" at zero, distinguishable from a domain that was
+    # never selected or never run at all.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    rendered = render_report(run_state, pack)
+    assert "d02: Teacup Logistics Handling: 0" in rendered
+
+
 def test_coverage_totals_are_summed_from_domain_results() -> None:
     pack = _pack()
     run_state = _base_run_state(pack)

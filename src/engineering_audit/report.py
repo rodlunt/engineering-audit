@@ -190,7 +190,9 @@ def _coverage_summary(selected: dict[str, DomainResult], domain_titles: dict[str
 
 
 def _findings_rollup(
-    all_findings: list[tuple[str, Finding]], domain_titles: dict[str, str]
+    all_findings: list[tuple[str, Finding]],
+    selected: dict[str, DomainResult],
+    domain_titles: dict[str, str],
 ) -> str:
     severity_counts: Counter[str] = Counter(f.severity.value for _, f in all_findings)
     # Keyed by domain id, not title: two domains with identical titles (from
@@ -201,12 +203,17 @@ def _findings_rollup(
     sev_items = "".join(
         f"<li>{_esc(sev)}: {severity_counts.get(sev, 0)}</li>" for sev in _SEVERITY_ORDER
     )
+    # Built from every selected domain, defaulting to zero, the same way the
+    # by-severity breakdown above always shows all four severities including
+    # zero counts: a domain that was audited and came back clean must still
+    # appear here, not be indistinguishable from one that was never run.
     domain_items = (
         "".join(
-            f"<li>{_esc(domain_id)}: {_esc(domain_titles[domain_id])}: {count}</li>"
-            for domain_id, count in domain_counts.items()
+            f"<li>{_esc(domain_id)}: {_esc(domain_titles[domain_id])}: "
+            f"{domain_counts.get(domain_id, 0)}</li>"
+            for domain_id in selected
         )
-        or "<li>No findings.</li>"
+        or "<li>No domains selected.</li>"
     )
     return (
         f"<p>Total findings: <strong>{total}</strong></p>"
@@ -591,7 +598,7 @@ def render_report(run_state: RunState, pack: RulesPack) -> str:
     performance_summary = (
         f'<div class="perf-block"><h3>Coverage</h3>{_coverage_summary(selected, domain_titles)}</div>'
         f'<div class="perf-block"><h3>Findings rollup</h3>'
-        f"{_findings_rollup(all_findings, domain_titles)}</div>"
+        f"{_findings_rollup(all_findings, selected, domain_titles)}</div>"
         f'<div class="perf-block prominent">{_could_not_evaluate_list(selected, rule_index)}</div>'
         f'<div class="perf-block"><h3>Self-assessment by domain</h3>'
         f"{_self_assessment_list(selected, domain_titles)}</div>"

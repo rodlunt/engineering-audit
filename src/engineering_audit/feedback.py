@@ -109,9 +109,15 @@ def build_feedback_sections(
     severity_lines = "\n".join(
         f"- {sev}: {severity_counts.get(sev, 0)}" for sev in _SEVERITY_ORDER
     )
+    # Built from every domain in domain_results, defaulting to zero, the same
+    # way severity_lines above always lists all four severities: a domain
+    # audited and found clean must still appear here, not be indistinguishable
+    # from a domain that never ran at all.
     domain_lines = (
-        "\n".join(f"- {domain_id}: {count}" for domain_id, count in domain_counts.items())
-        or "- No findings."
+        "\n".join(
+            f"- {domain_id}: {domain_counts.get(domain_id, 0)}" for domain_id in domain_results
+        )
+        or "- No domains audited."
     )
     rollup = (
         "Findings rollup\n"
