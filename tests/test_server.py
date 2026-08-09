@@ -833,7 +833,7 @@ def test_file_issues_confirm_files_one_issue_per_finding(
     result = _call(mcp, "file_issues", {"confirm": True, "repo": "rodlunt/widgets-app"})
 
     assert result["repo"] == "rodlunt/widgets-app"
-    assert result["filed"] == {"D01-R02": "https://github.com/rodlunt/widgets-app/issues/1"}
+    assert result["filed"] == {"D01-R02#1": "https://github.com/rodlunt/widgets-app/issues/1"}
     assert calls == [
         {
             "repo": "rodlunt/widgets-app",
@@ -962,8 +962,129 @@ def test_file_issues_partial_failure_reports_filed_and_unfiled(
     _fake2, calls2 = _fake_create_issue()
     monkeypatch.setattr(server_module, "create_issue", _fake2)
     retry_result = _call(mcp, "file_issues", {"confirm": True, "repo": "rodlunt/widgets-app"})
-    assert retry_result["filed"] == {"D02-R01": "https://github.com/rodlunt/widgets-app/issues/1"}
+    assert retry_result["filed"] == {"D02-R01#1": "https://github.com/rodlunt/widgets-app/issues/1"}
     assert [c["title"] for c in calls2] == ["A d02 finding"]
+
+
+def _record_d01_with_two_findings_on_one_rule(mcp) -> dict:
+    """A domain result carrying two findings for the same rule, which the
+    schema allows and real runs produce."""
+    verdicts = _all_pass_verdicts(_domain(mcp, "d01"))
+    verdicts[1] = {"rule_id": "D01-R02", "verdict": "finding"}
+    result = {
+        "domain_id": "d01",
+        "status": "completed",
+        "rule_verdicts": verdicts,
+        "findings": [
+            {
+                "rule_id": "D01-R02",
+                "severity": "high",
+                "title": "bed-14 has no shared-bed flag",
+                "location": "ledger/beds.py:42",
+                "body_md": "bed-14 holds two gnomes.",
+                "issue_title": "Set shared-bed flag for bed-14",
+                "issue_body": "bed-14 has two occupants and no shared-bed flag.",
+            },
+            {
+                "rule_id": "D01-R02",
+                "severity": "medium",
+                "title": "bed-19 has no shared-bed flag",
+                "location": "ledger/beds.py:57",
+                "body_md": "bed-19 holds two gnomes.",
+                "issue_title": "Set shared-bed flag for bed-19",
+                "issue_body": "bed-19 has two occupants and no shared-bed flag.",
+            },
+        ],
+    }
+    return _call(mcp, "record_domain_result", {"result": result})
+
+
+def test_file_issues_keeps_both_urls_for_two_findings_on_one_rule(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Keyed by rule id, the second finding's url overwrote the first's and
+    # the caller could never report or link it.
+    _fake, calls = _fake_create_issue()
+    monkeypatch.setattr(server_module, "create_issue", _fake)
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    _configured_github_run(mcp, tmp_path, monkeypatch)
+    _record_d01_with_two_findings_on_one_rule(mcp)
+    _record_d02_all_pass(mcp)
+
+    result = _call(mcp, "file_issues", {"confirm": True, "repo": "rodlunt/widgets-app"})
+
+    assert result["filed"] == {
+        "D01-R02#1": "https://github.com/rodlunt/widgets-app/issues/1",
+        "D01-R02#2": "https://github.com/rodlunt/widgets-app/issues/2",
+    }
+    assert result["all_filed_issue_urls"] == result["filed"]
+    assert [c["title"] for c in calls] == [
+        "Set shared-bed flag for bed-14",
+        "Set shared-bed flag for bed-19",
+    ]
+
+
+def test_file_issues_retry_after_a_failure_between_two_findings_on_one_rule(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The bookkeeping was keyed by rule id, so the first finding's success
+    # marked the whole rule filed and the second one was skipped forever on
+    # retry: a finding that was never reported, looking exactly like one that
+    # was.
+    _fake, _calls = _fake_create_issue(fail_on={"Set shared-bed flag for bed-19"})
+    monkeypatch.setattr(server_module, "create_issue", _fake)
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    _configured_github_run(mcp, tmp_path, monkeypatch)
+    _record_d01_with_two_findings_on_one_rule(mcp)
+    _record_d02_all_pass(mcp)
+
+    with pytest.raises(ToolError) as excinfo:
+        _call(mcp, "file_issues", {"confirm": True, "repo": "rodlunt/widgets-app"})
+    message = str(excinfo.value)
+    assert "D01-R02#1" in message  # filed
+    assert "D01-R02#2" in message  # not filed
+
+    _fake2, calls2 = _fake_create_issue()
+    monkeypatch.setattr(server_module, "create_issue", _fake2)
+    retry = _call(mcp, "file_issues", {"confirm": True, "repo": "rodlunt/widgets-app"})
+
+    assert [c["title"] for c in calls2] == ["Set shared-bed flag for bed-19"]
+    assert retry["filed"] == {"D01-R02#2": "https://github.com/rodlunt/widgets-app/issues/1"}
+    assert retry["all_filed_issue_urls"] == {
+        "D01-R02#1": "https://github.com/rodlunt/widgets-app/issues/1",
+        "D01-R02#2": "https://github.com/rodlunt/widgets-app/issues/1",
+    }
+
+    # Nothing is left pending: a third call has nothing to file.
+    preview = _call(mcp, "file_issues", {})
+    assert preview["count"] == 0
+
+
+def test_render_report_projects_duplicate_rule_findings_onto_the_first_filed_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # RunState.filed_issue_urls is keyed by rule id (the report marks a
+    # finding filed by looking its rule id up), so the written run state can
+    # only carry one url per rule. This pins which one: the first filed, never
+    # a silently-overwritten last one.
+    _fake, _calls = _fake_create_issue()
+    monkeypatch.setattr(server_module, "create_issue", _fake)
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    _configured_github_run(mcp, tmp_path, monkeypatch)
+    _record_d01_with_two_findings_on_one_rule(mcp)
+    _record_d02_all_pass(mcp)
+    _call(mcp, "file_issues", {"confirm": True, "repo": "rodlunt/widgets-app"})
+
+    report_result = _call(mcp, "render_report", {"finished": "2026-08-09T10:00:00Z"})
+    restored = RunState.from_json(
+        Path(report_result["run_state_path"]).read_text(encoding="utf-8")
+    )
+    assert restored.filed_issue_urls == {
+        "D01-R02": "https://github.com/rodlunt/widgets-app/issues/1"
+    }
 
 
 def test_file_issues_missing_label_warning_is_surfaced(

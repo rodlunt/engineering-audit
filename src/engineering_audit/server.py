@@ -51,6 +51,7 @@ from engineering_audit.rules import Rule, RulesPack, RulesPackError, get_domain_
 from engineering_audit.schema import (
     AuditConfig,
     DomainResult,
+    Finding,
     RunMeta,
     RunState,
     validate_completeness,
@@ -169,7 +170,11 @@ class RunTracker:
     config_url: str | None = None
     config_server: ConfigServer | None = None
     domain_results: dict[str, DomainResult] = field(default_factory=dict)
-    filed_issue_urls: dict[str, str] = field(default_factory=dict)
+    # Keyed by finding key (see _pending_issues), not by rule id: a domain
+    # result may legitimately carry two findings for the same rule, and a map
+    # keyed by rule id drops one of the two issue urls without saying so, and
+    # makes the second finding look already-filed on a retry.
+    filed_issues: dict[str, str] = field(default_factory=dict)
     feedback_issue_url: str | None = None
 
 
@@ -197,6 +202,63 @@ class AppState:
     pack: RulesPack
     run: RunTracker | None = None
     finished: FinishedRun | None = None
+
+
+@dataclass(frozen=True)
+class PendingIssue:
+    """One recorded finding, with the key its filing bookkeeping is under.
+
+    ``key`` is ``<rule id>#<n>``, where n counts occurrences of that rule id
+    across the run in recording order, so two findings on the same rule stay
+    distinguishable. The key is positional by construction: re-recording a
+    domain (record_domain_result with replace=True) after some of its issues
+    were filed can shift which finding a key refers to.
+    """
+
+    key: str
+    domain_id: str
+    finding: Finding
+
+
+def _run_issues(run: RunTracker) -> list[PendingIssue]:
+    """Every recorded finding in this run, in recording order, keyed by
+    finding identity rather than by rule id."""
+    seen: Counter[str] = Counter()
+    issues: list[PendingIssue] = []
+    for domain_id, result in run.domain_results.items():
+        for finding in result.findings:
+            seen[finding.rule_id] += 1
+            issues.append(
+                PendingIssue(
+                    key=f"{finding.rule_id}#{seen[finding.rule_id]}",
+                    domain_id=domain_id,
+                    finding=finding,
+                )
+            )
+    return issues
+
+
+def _pending_issues(run: RunTracker) -> list[PendingIssue]:
+    """The findings in this run that have not been filed as issues yet."""
+    return [issue for issue in _run_issues(run) if issue.key not in run.filed_issues]
+
+
+def _filed_urls_by_rule(run: RunTracker) -> dict[str, str]:
+    """Project the run's filed-issue bookkeeping onto the rule-id-keyed shape
+    RunState.filed_issue_urls uses.
+
+    The report marks a finding as already filed by looking its rule id up in
+    that map, so it cannot hold two urls for one rule: where a rule has two
+    findings, both show the first url filed for it. The tool's own file_issues
+    result keeps every url under its own finding key; this projection is
+    lossy only in the written run state, and only for that case.
+    """
+    by_rule: dict[str, str] = {}
+    for issue in _run_issues(run):
+        url = run.filed_issues.get(issue.key)
+        if url is not None:
+            by_rule.setdefault(issue.finding.rule_id, url)
+    return by_rule
 
 
 def _resolve_rules_dir(argv: list[str]) -> Path:
@@ -605,13 +667,6 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
             "finding_count": finding_count,
         }
 
-    def _all_findings(run: RunTracker) -> list[tuple[str, Any]]:
-        return [
-            (domain_id, finding)
-            for domain_id, result in run.domain_results.items()
-            for finding in result.findings
-        ]
-
     @mcp.tool()
     def file_issues(confirm: bool = False, repo: str | None = None) -> dict[str, Any]:
         """Preview or file GitHub issues for every recorded finding, via the
@@ -629,12 +684,15 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
         this confirmation step is mandatory, not decorative.
 
         confirm=True files one issue per finding that has not already been
-        filed (a finding whose rule_id is already in this run's filed set is
-        skipped, so retrying after a partial failure does not double-file
-        the ones that succeeded). The target repository is `repo` if given,
+        filed, so retrying after a partial failure does not double-file the
+        ones that succeeded. Filed issues are tracked, and returned, per
+        finding under a key of the form "<rule id>#<n>" (n counting that
+        rule's findings in recording order), not per rule id: a domain result
+        may carry two findings for the same rule, and both of their issue
+        urls have to survive. The target repository is `repo` if given,
         otherwise detected from the audited repository directory recorded
         by begin_run's repo_dir. If any issue fails to file, filing stops
-        immediately and the error lists exactly which rule ids were filed
+        immediately and the error lists exactly which findings were filed
         (with their URLs) and which were not, so a retry knows where to
         resume.
         """
@@ -652,17 +710,13 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
                 "domain before filing issues."
             )
 
-        pending = [
-            (domain_id, finding)
-            for domain_id, finding in _all_findings(run)
-            if finding.rule_id not in run.filed_issue_urls
-        ]
+        pending = _pending_issues(run)
 
         if not confirm:
             return {
                 "repo": repo,
                 "count": len(pending),
-                "titles": [finding.issue_title for _, finding in pending],
+                "titles": [issue.finding.issue_title for issue in pending],
                 "instruction": (
                     "Show this list of issue titles, and the target repository once known, to "
                     "the user and ask for their explicit approval. Call file_issues again with "
@@ -694,7 +748,8 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
 
         filed_this_call: dict[str, str] = {}
         warnings: list[str] = []
-        for _domain_id, finding in pending:
+        for issue in pending:
+            finding = issue.finding
             # A filed issue is a published claim. It never goes out without
             # the evidence backing it: a finding whose rule is missing from
             # the pack or has no cited source stops filing loudly, before
@@ -710,29 +765,27 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
                     f"Refusing to file issue for finding on rule {finding.rule_id}: the rule "
                     f"{problem}. A filed issue is a published claim; this tool does not "
                     "publish claims without evidence. Nothing was filed for this finding. "
-                    f"Already filed before this stop: {run.filed_issue_urls or 'none'}."
+                    f"Already filed before this stop: {run.filed_issues or 'none'}."
                 )
             trailing_line = build_issue_trailing_line(finding, rule)
             body = f"{finding.issue_body}\n\n{trailing_line}"
             try:
                 created = create_issue(target_repo, finding.issue_title, body, ["engineering-audit"])
             except IssueFilingError as exc:
-                unfiled = [
-                    f.rule_id for _, f in pending if f.rule_id not in run.filed_issue_urls
-                ]
+                unfiled = [p.key for p in pending if p.key not in run.filed_issues]
                 raise ValueError(
                     f"Filing stopped after {len(filed_this_call)} of {len(pending)} issue(s) "
-                    f"this call. Filed: {run.filed_issue_urls}. Not filed: {unfiled}. Failure "
-                    f"filing rule '{finding.rule_id}' on {target_repo}: {exc}"
+                    f"this call. Filed: {run.filed_issues}. Not filed: {unfiled}. Failure "
+                    f"filing finding '{issue.key}' on {target_repo}: {exc}"
                 ) from exc
-            run.filed_issue_urls[finding.rule_id] = created.url
-            filed_this_call[finding.rule_id] = created.url
+            run.filed_issues[issue.key] = created.url
+            filed_this_call[issue.key] = created.url
             warnings.extend(created.warnings)
 
         return {
             "repo": target_repo,
             "filed": filed_this_call,
-            "all_filed_issue_urls": dict(run.filed_issue_urls),
+            "all_filed_issue_urls": dict(run.filed_issues),
             "warnings": warnings,
         }
 
@@ -861,7 +914,7 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
             meta=finished_meta,
             config=config,
             domain_results=run.domain_results,
-            filed_issue_urls=run.filed_issue_urls,
+            filed_issue_urls=_filed_urls_by_rule(run),
             feedback_issue_url=run.feedback_issue_url,
         )
 
