@@ -146,8 +146,11 @@ def _write_run_state(path: Path, run_state: RunState) -> Path:
     [
         ("schema.sql", "schema.sql", True),
         ("schema.sql", "repo/schema.sql:12", True),
+        ("schema.sql", "schema.sql:24-30", True),
         ("schema.sql", "old_schema.sql.bak", False),
+        ("schema.sql", "old_schema.sql.bak:24-30", False),
         ("tests/", "tests/test_signup_flow.py", True),
+        ("tests/", "tests/test_signup_flow.py:14-21", True),
         ("tests/", "integration_tests/helpers.py", False),
     ],
 )

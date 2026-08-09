@@ -1,6 +1,10 @@
 {
   "golden_repo": "evals/golden/repo",
-  "domains": ["d01", "d05", "d16"],
+  "domains": [
+    "d01",
+    "d05",
+    "d16"
+  ],
   "expectations": [
     {
       "rule_id": "D01-R05",
@@ -23,7 +27,7 @@
     {
       "rule_id": "D01-R07",
       "expect": "no-finding",
-      "why": "Control. schema.sql bounds every domain-constrained attribute it defines with an explicit CHECK: amount_spent >= 0 on visits, loyalty_tier restricted to a known set on customers, points_balance >= 0 on customers. Two of those bounds are live-run catches: the first recorded run flagged an unbounded points_balance, and a later run flagged redemptions.points_spent the same way, so CHECK (points_spent > 0) was added too (NULLs still pass the CHECK, so the D01-R06 planted nullability defect on that column is untouched). The control is now genuinely exercised and satisfied."
+      "why": "Control. schema.sql bounds every domain-constrained attribute it defines with an explicit CHECK: amount_spent >= 0 on visits, loyalty_tier restricted to a known set on customers, points_balance >= 0 on customers, points_spent > 0 and reward_name restricted to the fixed reward menu on redemptions. Three of those bounds are live-run catches: the first recorded run flagged an unbounded points_balance, a later run flagged redemptions.points_spent, and the second recorded run flagged reward_name as free text with no catalogue bound, so the CHECK IN reward-menu constraint was added too. (NULLs still pass the points_spent CHECK, so the D01-R06 planted nullability defect is untouched, and the redemptions natural-key plant for D01-R05 is untouched.) The control is now genuinely exercised and satisfied."
     },
     {
       "rule_id": "D05-R08",

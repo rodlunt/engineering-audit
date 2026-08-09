@@ -32,7 +32,9 @@ CREATE TABLE visits (
 CREATE TABLE redemptions (
     id SERIAL PRIMARY KEY,
     customer_id INTEGER NOT NULL REFERENCES customers(id),
-    reward_name TEXT NOT NULL,
+    -- The reward menu is fixed by the loyalty programme, so the name is
+    -- bound to it here rather than left as free text.
+    reward_name TEXT NOT NULL CHECK (reward_name IN ('free flat white', 'free pastry', 'coffee bag discount')),
     points_spent INTEGER CHECK (points_spent > 0),
     redeemed_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );

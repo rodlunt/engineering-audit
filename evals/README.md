@@ -142,7 +142,9 @@ folding it into a false clean bill of health.
   this short of keeping the golden repo and its answers private, which was deliberately not done
   here so the harness itself could ship in the open.
 
-## First recorded run
+## Recorded runs
+
+### First run
 
 2026-08-09, Claude Code headless on Sonnet, taster pack, against GrindPoints: 6 of 7 planted
 findings hit, 1 missed (D05-R08, the test-suite-layering judgement call; the auditor recorded
@@ -154,3 +156,21 @@ Fixed in the fixture the same day (see `schema.sql` and the D01-R07 entry in `ex
 run is not a trend (see Known limitations above), but this is the harness doing the thing it
 exists to do: catching a defect in its own fixture on day one, from a real disagreement between
 the spec and a live audit, rather than from a human re-reading the schema by hand.
+
+### Second run
+
+2026-08-09 (later the same day), same setup: 7 of 7 planted findings hit, including D05-R08,
+the first run's miss, which now looks like ordinary run-to-run variance rather than a defective
+plant. 3 of 4 controls held. The run surfaced two more defects on our side, neither of them in
+the auditor:
+
+- **A scorer bug.** This run cited findings with line-range locations (`schema.sql:24-30`)
+  where the first run used single lines, and the scorer's line-suffix strip only handled
+  `:<line>`, so four correctly-placed plants scored `found-wrong-location`. Fixed in the
+  scorer; the numbers above are the corrected scoring of the same run-state.
+- **The D01-R07 control failed to hold a second time, and the auditor was right again.**
+  `redemptions.reward_name` was free text with no rewards catalogue anywhere in the schema for
+  it to reference, which is exactly the unbounded-domain-value shape the rule exists to catch.
+  The fixture now binds it to the fixed reward menu with a CHECK. That control has now been
+  falsified and repaired three times (points_balance, points_spent, reward_name), which is the
+  strongest evidence in this file that the controls are being genuinely exercised.
