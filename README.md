@@ -210,9 +210,17 @@ CI runs the same suite on every push and pull request. Tests use an invented fix
 pack; no private rule content exists in this repository. The renderer and configuration
 page are deterministic and fully testable with no LLM involved.
 
+### Eval harness
+
+`evals/` holds a deterministic scorer for audit quality: a small fictional golden repository with
+known planted findings and controls, and `engineering-audit-eval` to check a run-state.json
+against them. The scorer is CI-safe and has its own tests; the audit run that feeds it calls a
+real LLM and is run and checked by hand. See [evals/README.md](evals/README.md).
+
 ## Roadmap
 
-- Thin CLI wrapper driving an agent CLI headlessly end to end.
+- Thin CLI wrapper driving an agent CLI headlessly end to end (a manual, scripted version of this
+  now lives in [evals/README.md](evals/README.md); a first-class wrapper command is still open).
 - Remotely served rules with revocable access.
 - Codex and Gemini support-matrix rows moving to proven once live runs are recorded.
 
