@@ -1,0 +1,30 @@
+name: Rules pack access request
+description: Ask for access to the full sixteen-domain rules pack.
+labels: ["rules-access"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The taster pack (three complete domains) ships in this repository and
+        needs no request; this form is for the full pack, which lives in a
+        private repository with access granted per user.
+  - type: input
+    id: github-user
+    attributes:
+      label: GitHub username to grant access to
+      placeholder: your-username
+    validations:
+      required: true
+  - type: textarea
+    id: use
+    attributes:
+      label: What you want to use it for
+      description: A sentence or two is plenty; team, project, or just curious all count.
+    validations:
+      required: true
+  - type: checkboxes
+    id: tried-taster
+    attributes:
+      label: Taster pack
+      options:
+        - label: I have run an audit with the taster pack (not required, but tell us how it went in Discussions!)

@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question about installing, running or reading a report
+    url: https://github.com/rodlunt/engineering-audit/discussions/categories/q-a
+    about: Ask in Q&A Discussions; questions filed as issues will be converted.
+  - name: Idea or feature request
+    url: https://github.com/rodlunt/engineering-audit/discussions/categories/ideas
+    about: Rules or domains you wish the pack covered, report and config page suggestions, new integrations.
+  - name: Security problem
+    url: https://github.com/rodlunt/engineering-audit/security/advisories/new
+    about: Never report security issues publicly. This link opens a private advisory only the maintainer can see; SECURITY.md has the details and an email fallback.
