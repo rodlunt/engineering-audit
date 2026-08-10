@@ -75,37 +75,66 @@ Rules of thumb from this run, for a small-to-medium repository:
 
 ### Run shape
 
-- **Host**: Codex CLI 0.147.0, model `gpt-5.6-luna`, macOS.
+- **Host**: Codex CLI 0.147.0, model `gpt-5.6-sol` at high reasoning effort, macOS.
 - **Tool version**: 0.5.1, rules pack commit `82edb80`.
 - **Repository under audit**: an external React single-page app, roughly 344 files. A
   different repository to the Claude Code run above, so file counts and per-domain figures
   are not comparable to that run's line-count figure even setting the token gap aside.
 - **Scope**: all 16 domains of the standard pack.
-- **Wall clock**: 61 minutes end to end, 05:41:12Z to 06:42:26Z, as reported in the
-  rendered report header.
+- **Active time**: 19 minutes 21 seconds, from the Codex task-start event (06:23:05Z) to
+  the token-count event emitted as the report finished rendering (06:42:26Z).
 - **Findings**: 32, with 122 rules recorded as could not evaluate in the findings rollup.
 
-### Token consumption: not captured
+**Two figures in the rendered report for this run are wrong, and are corrected above.**
+The run was started by an earlier turn, left unfinished, and resumed. The report header
+therefore names `gpt-5.6-luna`, the model of the turn that started it, rather than
+`gpt-5.6-sol`, the one that swept the domains and rendered the report. That is a tool
+defect, tracked as issue #93, not a transcription error here. For the same reason the
+header's 61-minute span (05:41:12Z to 06:42:26Z) measures from the abandoned turn's start
+and so includes idle time between the two, which is why the active figure above is the one
+to budget from.
 
-No token figure is given for this run, and none should be inferred. The usage report for
-this session exists on the Codex host but has not been brought into this repository, so
-there is no reliable figure to record here. This is not a zero and it is not the Claude Code
-per-domain range above applied by analogy: Codex's orchestration shape (below) means a
-transferred figure would not mean the same thing even if one were guessed. When the usage
-report is captured, this section will carry an update; until then, budgeting for a Codex
-run on token cost alone should treat it as an open unknown, not as similar to Claude Code's
-recorded figure.
+### Token consumption
+
+Measured from the Codex `token_count` event emitted at report-render completion.
+
+| Measure | Tokens |
+|---|---:|
+| Input, total | 6,145,122 |
+| Input, cached | 5,903,104 |
+| Input, non-cached | 242,018 |
+| Output, total | 27,275 |
+| Output, of which reasoning | 11,658 |
+| **Total input plus output** | **6,172,397** |
+
+Cached input is a subset of input, and reasoning output is a subset of output, so neither
+is added twice in the total.
+
+**Read the 6.17M figure carefully before comparing it to anything.** Ninety-six per cent of
+the input is cache reads, which are the same audit procedure and rule text being re-read
+across a long single-context run rather than fresh work. The figure closest to fresh work
+is non-cached input plus output, **269,293 tokens**. Neither number is comparable to the
+Claude Code run's 2,010,691: that figure counts per-subagent totals, excludes the
+orchestrator conversation entirely, and comes from a different metering basis. Comparing
+them directly would be arithmetic without meaning. Use each within its own row.
+
+These figures cover Codex model usage only. They do not include compute inside the MCP
+server or other tools, which do not expose separate token accounting.
 
 ### Why this run has no per-domain table
 
 Unlike the Claude Code run above, Codex did not fan out to one subagent per domain. The
 Claude Code skill dispatches a separate Sonnet subagent per domain, four at a time, which
 is what produces both the per-domain token/duration breakdown and the "four waves" shape of
-its wall clock. Codex swept all 16 domains without that per-domain fan-out, so there is no
-equivalent set of 16 rows to report, and its 61-minute wall clock is not shaped by the same
-four-at-a-time parallelism factor as Claude Code's 47 minutes. The two totals are both real
-measurements of a full run, but they are measurements of different shapes of work, not the
-same shape at two prices.
+its wall clock. Codex swept all 16 domains in one long context without that fan-out, so
+there is no equivalent set of 16 rows to report, and its 19 minutes of active time is not
+shaped by the same four-at-a-time parallelism factor as Claude Code's 47 minutes.
+
+That single difference explains the whole token picture. Fanning out gives each subagent a
+fresh, small context and bills mostly uncached input; staying in one context re-reads a
+large accumulated context every turn, which is why 96 per cent of Codex's input is cache
+reads. The two totals are both real measurements of a full run, but they are measurements
+of different shapes of work, not the same shape at two prices.
 
 ## Not directly comparable: read before budgeting
 
