@@ -169,14 +169,22 @@ def _render_meta_block(run_state: RunState) -> str:
 
 
 def _coverage_summary(selected: dict[str, DomainResult], domain_titles: dict[str, str]) -> str:
-    total_inspected = 0
-    total_skipped = 0
+    """Render the per-domain coverage list.
+
+    This used to also sum inspected/skipped file counts across every
+    selected domain and publish two "Total files..." figures. Each domain
+    audits the same repository from its own angle, so a file that sixteen
+    domains each independently declined to open was counted as sixteen
+    separate skips: the totals inflated by roughly the domain count and had
+    no honest reading (a 344-file repository rendered "5320 skipped", see
+    issue #87). The per-domain list below is already correct and
+    unambiguous on its own, so the totals are dropped rather than fixed:
+    nothing a reader needs is lost.
+    """
     rows = []
     for domain_id, result in selected.items():
         title = domain_titles[domain_id]
         if result.coverage is not None:
-            total_inspected += result.coverage.files_inspected
-            total_skipped += result.coverage.files_skipped
             note = f" ({_esc(result.coverage.note)})" if result.coverage.note else ""
             rows.append(
                 f"<li>{_esc(title)}: {result.coverage.files_inspected} file(s) inspected, "
@@ -184,12 +192,7 @@ def _coverage_summary(selected: dict[str, DomainResult], domain_titles: dict[str
             )
         else:
             rows.append(f"<li>{_esc(title)}: no coverage reported</li>")
-    summary = (
-        f"<p>Total files inspected across selected domains: <strong>{total_inspected}</strong>. "
-        f"Total files skipped: <strong>{total_skipped}</strong>.</p>"
-        f"<ul>{''.join(rows)}</ul>"
-    )
-    return summary
+    return f"<ul>{''.join(rows)}</ul>"
 
 
 def _findings_rollup(
@@ -230,7 +233,13 @@ def _could_not_evaluate_list(
     rule_index: dict[str, Rule],
     domain_titles: dict[str, str],
 ) -> str:
-    rows = []
+    # Grouped by the verdict's own reason text, not rendered one row per
+    # rule: a real 16-domain run produced 122 could-not-evaluate rows
+    # carrying only 18 distinct reasons, eight of which accounted for 105
+    # rows of near-identical boilerplate ("no X in this repository"). That
+    # buried the handful of genuinely rule-specific reasons and made a
+    # tool-performance section read like 122 more defects (see issue #88).
+    reason_to_rule_ids: dict[str, list[str]] = {}
     for domain_id, result in selected.items():
         for rv in result.rule_verdicts:
             if rv.verdict != Verdict.COULD_NOT_EVALUATE:
@@ -244,9 +253,9 @@ def _could_not_evaluate_list(
                     f"domain '{domain_id}' has a rule_verdict for rule id "
                     f"'{rv.rule_id}', which is not in the rules pack"
                 )
-            rows.append(
-                f"<li><strong>{_esc(rv.rule_id)}</strong> ({_esc(rule.title)}): {_esc(rv.note)}</li>"
-            )
+            reason_to_rule_ids.setdefault(rv.note or "", []).append(rv.rule_id)
+
+    total = sum(len(rule_ids) for rule_ids in reason_to_rule_ids.values())
 
     # A could-not-run domain has no rule_verdicts by design (DomainResult's
     # own consistency check enforces this), so it satisfies "no rule left
@@ -258,16 +267,34 @@ def _could_not_evaluate_list(
         domain_id for domain_id, result in selected.items() if result.status == "could-not-run"
     ]
 
-    if not rows and not not_run_domain_ids:
+    if not reason_to_rule_ids and not not_run_domain_ids:
         return (
             '<h3>Could not evaluate</h3>'
             '<p class="ok">Every selected rule reached a verdict of pass, finding or '
             "not applicable. Nothing was left could-not-evaluate.</p>"
         )
 
-    parts = [f"<h3>Could not evaluate ({len(rows)})</h3>"]
-    if rows:
-        parts.append(f"<ul>{''.join(rows)}</ul>")
+    parts = [f"<h3>Could not evaluate ({total})</h3>"]
+    if reason_to_rule_ids:
+        parts.append(
+            "<p>These are rules the audit could not reach a verdict on, usually because "
+            "the evidence lives outside the repository. They are not findings.</p>"
+        )
+        # Sorted by descending rule count, reason text as the tie-breaker for
+        # a stable order: the reasons that account for the most rows (almost
+        # always boilerplate) collapse to the top, leaving the rare,
+        # genuinely rule-specific reasons visible near the bottom rather than
+        # buried inside a hundred near-identical rows.
+        ordered_reasons = sorted(
+            reason_to_rule_ids.items(), key=lambda item: (-len(item[1]), item[0])
+        )
+        items = "".join(
+            f"<li><strong>{_esc(reason)}</strong><br>"
+            f"{_esc(', '.join(sorted(rule_ids)))} "
+            f"({len(rule_ids)} rule{'' if len(rule_ids) == 1 else 's'})</li>"
+            for reason, rule_ids in ordered_reasons
+        )
+        parts.append(f"<ul>{items}</ul>")
     else:
         parts.append(
             "<p>No individual rule was left could-not-evaluate, but see below: "
@@ -362,7 +389,20 @@ def _environment_info(run_state: RunState) -> str:
     return f"<ul>{rows}</ul>"
 
 
-def _reference_line(rule: Rule) -> str:
+# Independent of citation()'s own capping, and deliberately larger than
+# rules._MAX_CITATION_LENGTH: any citation, from a v1 or a v2 pack, can run
+# up to that ceiling plus the visible truncation marker's own length.
+#
+# This is a backstop for a programming error in citation() itself, not a
+# second policy. citation() now applies its ceiling unconditionally, on both
+# the v1 and v2 branches, so a citation arriving here oversized means the
+# capping did not run at all rather than that a pack broke its authoring
+# contract. Turning that into a loud render failure is preferable to
+# shipping an oversized reference (see the rule-footer-format-v2 contract).
+_MAX_REFERENCE_LENGTH = 900
+
+
+def _reference_line(rule: Rule, pack_is_v2: bool) -> str:
     """Build the deterministic reference line appended after every rendered
     finding's body.
 
@@ -380,13 +420,22 @@ def _reference_line(rule: Rule) -> str:
             "rules pack. A finding is a published claim; this tool does not publish "
             "claims without evidence. Fix the rule's Source: footer or drop the finding."
         )
-    return f"Reference: {rule.id}: {citation(rule.source)}"
+    cited = citation(rule.source, pack_is_v2=pack_is_v2)
+    if len(cited) > _MAX_REFERENCE_LENGTH:
+        raise ReportError(
+            f"finding references rule {rule.id}, whose citation is {len(cited)} "
+            f"characters long, over the {_MAX_REFERENCE_LENGTH}-character reference "
+            "ceiling. A finding's reference line must stay publishable; fix the rule's "
+            "Source: (or Verification:) footer rather than shipping an oversized reference."
+        )
+    return f"Reference: {rule.id}: {cited}"
 
 
 def _findings_section(
     selected: dict[str, DomainResult],
     domain_titles: dict[str, str],
     rule_index: dict[str, Rule],
+    pack_is_v2: bool,
 ) -> str:
     blocks = []
     for domain_id, result in selected.items():
@@ -413,7 +462,7 @@ def _findings_section(
                 f'<span class="finding-rule">({_esc(finding.rule_id)})</span></div>'
                 f'<div class="finding-location">{_esc(finding.location)}</div>'
                 f'<div class="finding-body">{_markdownish(finding.body_md)}</div>'
-                f'<div class="finding-reference">{_esc(_reference_line(rule))}</div>'
+                f'<div class="finding-reference">{_esc(_reference_line(rule, pack_is_v2))}</div>'
                 "</div>"
             )
         blocks.append(f"<h3>{_esc(title)}</h3>{''.join(items)}")
@@ -730,7 +779,7 @@ def render_report(run_state: RunState, pack: RulesPack) -> str:
         page_title=f"Engineering practice audit report: {_esc(run_state.meta.repo_name)}",
         meta_block=_render_meta_block(run_state),
         performance_summary=performance_summary,
-        findings_section=_findings_section(selected, domain_titles, rule_index),
+        findings_section=_findings_section(selected, domain_titles, rule_index, pack.is_v2),
         issues_section=_issues_section(
             selected, rule_index, run_state.filed_issue_urls or None, repo_prefill
         ),
