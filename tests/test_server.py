@@ -13,6 +13,7 @@ import json
 import re
 import shutil
 import subprocess
+import time
 import urllib.request
 import webbrowser
 from pathlib import Path
@@ -101,6 +102,31 @@ def _domain(mcp, domain_id: str):
     from engineering_audit.rules import load_pack
 
     return load_pack(FIXTURE_PACK).get_domain(domain_id)
+
+
+def _completed_d01(mcp) -> dict:
+    return {
+        "domain_id": "d01",
+        "status": "completed",
+        "rule_verdicts": _all_pass_verdicts(_domain(mcp, "d01")),
+        "findings": [],
+    }
+
+
+def _submit_config_page(url: str, domain_ids: list[str], issue_mode: str = "report") -> None:
+    """Fill in and post the interactive configuration page, the way a browser
+    would: fetch the page first to read its per-run CSRF token, then post."""
+    with urllib.request.urlopen(url, timeout=5) as resp:
+        page = resp.read().decode("utf-8")
+    token_match = re.search(r'name="csrf_token" value="([^"]+)"', page)
+    assert token_match is not None
+    payload = urlencode(
+        {"domain": domain_ids, "issue_mode": issue_mode, "csrf_token": token_match.group(1)},
+        doseq=True,
+    ).encode("utf-8")
+    request = urllib.request.Request(url + "submit", data=payload, method="POST")
+    with urllib.request.urlopen(request, timeout=5) as resp:
+        assert resp.status == 200
 
 
 def _preset_config_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, **overrides) -> Path:
@@ -586,6 +612,219 @@ def test_get_config_interactive_timeout_surfaces_as_a_clear_tool_error(tmp_path:
     message = str(excinfo.value)
     assert "No configuration submitted" in message
     assert started["url"] in message
+
+
+# ---------------------------------------------------------------------------
+# get_config's three states (issue #85)
+# ---------------------------------------------------------------------------
+
+
+def test_get_config_returns_waiting_rather_than_holding_the_call_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The defect in issue #85: a get_config that blocks for the whole of
+    # timeout_s is cancelled by any host whose own per-tool timeout is
+    # shorter, and that cancellation took the MCP process and the config page
+    # down with it. The call must come back inside the poll interval no matter
+    # how long the run's overall deadline is.
+    monkeypatch.setattr(server_module, "_CONFIG_POLL_INTERVAL_S", 0.2)
+    mcp, _state = build_server(FIXTURE_PACK)
+    _begin_run(mcp, tmp_path / "audit-output")
+    started = _call(mcp, "start_config", {})
+
+    before = time.monotonic()
+    result = _call(mcp, "get_config", {"timeout_s": 3600})
+    elapsed = time.monotonic() - before
+
+    assert result["status"] == "waiting"
+    assert elapsed < 30, "get_config held the call open past its poll interval"
+    assert result["url"] == started["url"]
+    assert "config" not in result
+    assert "selected_domain_ids" not in result
+    assert result["timeout_s"] == 3600
+    assert result["waited_s"] >= 0
+    assert "call get_config again" in result["instruction"]
+
+
+def test_get_config_waiting_is_never_mistakable_for_a_configuration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A caller that reads "status" gets an unambiguous answer, and a caller
+    # that reads nothing at all still cannot proceed: nothing downstream will
+    # accept a domain result while the run has no config.
+    monkeypatch.setattr(server_module, "_CONFIG_POLL_INTERVAL_S", 0.2)
+    mcp, _state = build_server(FIXTURE_PACK)
+    _begin_run(mcp, tmp_path / "audit-output")
+    _call(mcp, "start_config", {})
+
+    assert _call(mcp, "get_config", {"timeout_s": 3600})["status"] == "waiting"
+    with pytest.raises(ToolError) as excinfo:
+        _call(mcp, "record_domain_result", {"result": _completed_d01(mcp)})
+    assert "configuration" in str(excinfo.value)
+
+
+def test_get_config_polled_repeatedly_reaches_configured_after_the_form_is_posted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(server_module, "_CONFIG_POLL_INTERVAL_S", 0.2)
+    mcp, _state = build_server(FIXTURE_PACK)
+    _begin_run(mcp, tmp_path / "audit-output")
+    started = _call(mcp, "start_config", {})
+    url = started["url"]
+
+    assert _call(mcp, "get_config", {"timeout_s": 60})["status"] == "waiting"
+    assert _call(mcp, "get_config", {"timeout_s": 60})["status"] == "waiting"
+
+    _submit_config_page(url, ["d01", "d02"])
+
+    result = _call(mcp, "get_config", {"timeout_s": 60})
+    assert result["status"] == "configured"
+    assert sorted(result["selected_domain_ids"]) == ["d01", "d02"]
+
+
+def test_get_config_deadline_is_cumulative_across_polls_not_per_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The deadline is the run's, not the call's. Polling more often must not
+    # buy the user more waiting time, or timeout_s would mean nothing.
+    monkeypatch.setattr(server_module, "_CONFIG_POLL_INTERVAL_S", 0.1)
+    mcp, _state = build_server(FIXTURE_PACK)
+    _begin_run(mcp, tmp_path / "audit-output")
+    _call(mcp, "start_config", {})
+
+    deadline = time.monotonic() + 10
+    statuses = []
+    while time.monotonic() < deadline:
+        try:
+            statuses.append(_call(mcp, "get_config", {"timeout_s": 0.5})["status"])
+        except ToolError as exc:
+            assert "No configuration submitted within 0.5 seconds" in str(exc)
+            break
+    else:  # pragma: no cover - only reached if the deadline is never enforced
+        pytest.fail("get_config never reported a timeout despite a 0.5 second deadline")
+
+    assert statuses, "get_config timed out without ever reporting the waiting state first"
+    assert set(statuses) == {"waiting"}
+
+
+def test_get_config_after_a_timeout_keeps_waiting_when_given_a_larger_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Timing out does not tear the page down: the user may still be halfway
+    # through ticking domains, and their submission must still be picked up.
+    monkeypatch.setattr(server_module, "_CONFIG_POLL_INTERVAL_S", 0.2)
+    mcp, _state = build_server(FIXTURE_PACK)
+    _begin_run(mcp, tmp_path / "audit-output")
+    started = _call(mcp, "start_config", {})
+
+    with pytest.raises(ToolError):
+        _call(mcp, "get_config", {"timeout_s": 0.01})
+
+    _submit_config_page(started["url"], ["d01"])
+    result = _call(mcp, "get_config", {"timeout_s": 600})
+    assert result["status"] == "configured"
+    assert result["selected_domain_ids"] == ["d01"]
+
+
+def test_get_config_reports_a_submission_that_landed_after_the_deadline_passed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An expired budget must not throw away a configuration that is already
+    # sitting there: the user did the work, and reporting a timeout over the
+    # top of a real submission would send them round the loop for nothing.
+    monkeypatch.setattr(server_module, "_CONFIG_POLL_INTERVAL_S", 0.2)
+    mcp, _state = build_server(FIXTURE_PACK)
+    _begin_run(mcp, tmp_path / "audit-output")
+    started = _call(mcp, "start_config", {})
+    _submit_config_page(started["url"], ["d02"])
+
+    result = _call(mcp, "get_config", {"timeout_s": 0.0})
+    assert result["status"] == "configured"
+    assert result["selected_domain_ids"] == ["d02"]
+
+
+def test_get_config_preset_path_reports_the_configured_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mcp, _state = build_server(FIXTURE_PACK)
+    _begin_run(mcp, tmp_path / "audit-output")
+    _preset_config_env(monkeypatch, tmp_path)
+    _call(mcp, "start_config", {})
+
+    assert _call(mcp, "get_config", {"timeout_s": 1})["status"] == "configured"
+
+
+# ---------------------------------------------------------------------------
+# environment metadata (issue #89)
+# ---------------------------------------------------------------------------
+
+
+def test_begin_run_accepts_the_three_documented_environment_keys(tmp_path: Path) -> None:
+    environment = {
+        "os": "Ubuntu 24.04",
+        "host_cli": "codex",
+        "host_cli_version": "0.147.0",
+    }
+    mcp, _state = build_server(FIXTURE_PACK)
+    result = _begin_run(mcp, tmp_path / "audit-output", environment=environment)
+    assert result["meta"]["environment"] == environment
+
+
+def test_begin_run_accepts_a_subset_of_the_environment_keys(tmp_path: Path) -> None:
+    # Omitting a key the assistant could not determine is the honest answer,
+    # and must not be harder than inventing one.
+    mcp, _state = build_server(FIXTURE_PACK)
+    result = _begin_run(mcp, tmp_path / "audit-output", environment={"os": "macOS 15.2"})
+    assert result["meta"]["environment"] == {"os": "macOS 15.2"}
+
+
+def test_begin_run_rejects_an_environment_key_outside_the_documented_set(
+    tmp_path: Path,
+) -> None:
+    # The security-relevant half of issue #89: this metadata ships inside
+    # feedback issues filed publicly, and the assistant supplying it is
+    # untrusted input. Prose in AUDIT.md is not enforcement.
+    mcp, _state = build_server(FIXTURE_PACK)
+    with pytest.raises(ToolError) as excinfo:
+        _begin_run(
+            mcp,
+            tmp_path / "audit-output",
+            environment={"os": "linux", "repo_secret": "internal-project-codename"},
+        )
+    message = str(excinfo.value)
+    assert "repo_secret" in message
+    assert "host_cli_version" in message
+
+
+def test_begin_run_rejecting_an_environment_starts_nothing(tmp_path: Path) -> None:
+    output_dir = tmp_path / "audit-output"
+    mcp, state = build_server(FIXTURE_PACK)
+    with pytest.raises(ToolError):
+        _begin_run(mcp, output_dir, environment={"python": "3.12"})
+    assert state.run is None
+    assert not output_dir.exists()
+
+
+def test_begin_run_rejects_an_over_long_environment_value(tmp_path: Path) -> None:
+    # A closed key set with a paragraph stuffed into one of the values
+    # discloses exactly as much as the open dict it replaced.
+    mcp, _state = build_server(FIXTURE_PACK)
+    with pytest.raises(ToolError) as excinfo:
+        _begin_run(mcp, tmp_path / "audit-output", environment={"os": "x" * 500})
+    assert "character limit" in str(excinfo.value)
+
+
+def test_begin_run_rejects_a_blank_environment_value(tmp_path: Path) -> None:
+    mcp, _state = build_server(FIXTURE_PACK)
+    with pytest.raises(ToolError) as excinfo:
+        _begin_run(mcp, tmp_path / "audit-output", environment={"host_cli": "   "})
+    assert "Omit the key entirely" in str(excinfo.value)
+
+
+def test_begin_run_without_an_environment_still_works(tmp_path: Path) -> None:
+    mcp, _state = build_server(FIXTURE_PACK)
+    result = _begin_run(mcp, tmp_path / "audit-output")
+    assert result["meta"]["environment"] is None
 
 
 # ---------------------------------------------------------------------------

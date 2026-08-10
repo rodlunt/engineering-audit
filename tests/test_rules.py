@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from engineering_audit.rules import (
+    _MAX_CITATION_LENGTH,
     citation,
     RulesPackDuplicateIdError,
     RulesPackError,
@@ -295,25 +296,124 @@ def test_citation_returns_a_plain_source_unchanged() -> None:
     assert citation(source) == source
 
 
-def test_citation_caps_before_the_first_quoted_excerpt() -> None:
+def test_citation_caps_at_the_sentence_boundary_before_the_excerpt() -> None:
+    # A complete sentence precedes the excerpt marker here ("v4.0.1." is a
+    # safe place to cut, since the heuristic only needs a period followed
+    # by whitespace, not a linguistically perfect sentence split), so the
+    # cap lands cleanly at the end of that sentence, dropping the sentence
+    # that introduces the quote entirely rather than cutting it mid-clause.
+    source = (
+        'The ISTQB Foundation Level syllabus, v4.0.1. Sections 3.1.2 and 3.1.3 '
+        'state: "Static testing can detect defects early."'
+    )
+    assert citation(source) == "The ISTQB Foundation Level syllabus, v4.0.1."
+
+
+def test_citation_with_no_sentence_boundary_before_the_excerpt_is_not_cut() -> None:
+    # Issue #86: the old heuristic cut at the colon itself regardless of
+    # whether that produced a complete clause, which is how a real audit
+    # run shipped fragments like "...rules 4 and 6. Rule 4" and "...Table 1
+    # and surrounding text. Beneficence". When no sentence boundary exists
+    # before the excerpt marker, a cut there would repeat that bug, so the
+    # source is published whole (subject only to the hard character
+    # ceiling) rather than fragmented.
     source = (
         'ISTQB Certified Tester Foundation Level syllabus v4.0.1, sections 3.1.2 '
-        'and 3.1.3: "Static testing can detect defects early"; "and more quotes"'
+        'and 3.1.3: "Static testing can detect defects early"'
     )
-    assert citation(source) == (
-        "ISTQB Certified Tester Foundation Level syllabus v4.0.1, "
-        "sections 3.1.2 and 3.1.3"
-    )
+    assert citation(source) == source
 
 
-def test_citation_keeps_a_quoted_work_title_before_the_excerpt() -> None:
-    # A title quoted after a comma is part of the citation; only a colon
-    # introducing a quote starts an excerpt.
+def test_citation_keeps_a_quoted_work_title_when_no_sentence_boundary_precedes_it() -> None:
+    # A title quoted after a comma has no sentence-ending punctuation before
+    # the excerpt colon either, so (per the rule above) nothing is cut.
     source = (
         'Mike Cohn, "The Forgotten Layer of the Test Automation Pyramid," '
         'Mountain Goat Software (2009): "At the base of the pyramid is unit testing"'
     )
-    assert citation(source) == (
-        'Mike Cohn, "The Forgotten Layer of the Test Automation Pyramid," '
-        "Mountain Goat Software (2009)"
+    assert citation(source) == source
+
+
+def test_citation_hard_truncates_an_unbounded_source_with_a_visible_marker() -> None:
+    # Issue #86's other failure mode: a source with no excerpt marker at
+    # all was previously published whole and unbounded, which is how a
+    # 2,051-character verification narrative reached a client-facing
+    # report. The fix is a hard ceiling with a visible marker, never a
+    # silent cut.
+    source = "A very long verification narrative. " * 30
+    assert len(source) > 400
+    result = citation(source)
+    assert len(result) < len(source)
+    assert result.endswith("[reference truncated]")
+    # The cut must not land mid-word: the character immediately before the
+    # marker's leading space is not a letter fragment.
+    assert " [reference truncated]" in result
+
+
+def test_citation_skips_excerpt_capping_for_a_v2_pack() -> None:
+    # A v2 pack's Source: is self-contained and publishable verbatim by its
+    # own authoring contract (the rule-footer-format-v2 contract), so the
+    # sentence-boundary excerpt cap must not fire: the colon-then-quote here
+    # is part of the citation, not the start of a supporting excerpt.
+    source = (
+        'ISTQB Certified Tester Foundation Level syllabus v4.0.1, sections 3.1.2 '
+        'and 3.1.3: "Static testing can detect defects early"'
     )
+    assert citation(source, pack_is_v2=True) == source
+
+
+def test_citation_still_applies_the_hard_ceiling_to_a_v2_pack() -> None:
+    # The ceiling is NOT part of the v1-only path. Pack-wide v2 detection
+    # flips on a single Verification: marker found anywhere, so a partly
+    # migrated pack reports v2 while still holding unmigrated footers with
+    # narrative in Source:. Those must still be truncated visibly rather
+    # than published whole, and rather than tripping report.py's own
+    # ReportError backstop and failing the entire render.
+    long_source = "A very long but, per the v2 contract, self-contained citation. " * 20
+    result = citation(long_source, pack_is_v2=True)
+
+    assert result != long_source
+    assert len(result) <= _MAX_CITATION_LENGTH + len(" [reference truncated]")
+    assert result.endswith("[reference truncated]")
+
+
+def test_extract_source_stops_at_a_verification_marker(tmp_path: Path) -> None:
+    # Under the rule-footer-format-v2 contract a footer may carry
+    # Source: <citation> Verification: <trail> ... in that order; the
+    # verification trail must never leak into the parsed source, since it
+    # is the pack maintainer's own bookkeeping, not a citation.
+    scratch = _write_pack(
+        tmp_path,
+        "# Domain 01: Verification Marker Domain\n\n"
+        "**Trigger:** you are about to exercise a Verification: marker.\n\n"
+        "### 1. A rule whose footer carries a Verification: trail.\n\n"
+        "Body.\n\n"
+        "*Source: a self-contained citation. Verification: checked on 2026-08-05 and "
+        "ruled out three other candidates. Rule id: D01-R01. Volatility: durable.*\n",
+    )
+    pack = load_pack(scratch)
+    d01 = pack.get_domain("d01")
+    assert d01 is not None
+    assert d01.rules[0].source == "a self-contained citation"
+
+
+def test_rules_pack_is_v2_false_when_no_verification_marker_anywhere() -> None:
+    # The fixture pack's footers use "Verified:" (past tense, a bare date
+    # stamp), never the "Verification:" field name the v2 contract defines;
+    # it must not be mistaken for a migrated pack.
+    pack = load_pack(FIXTURE_PACK)
+    assert pack.is_v2 is False
+
+
+def test_rules_pack_is_v2_true_when_any_domain_carries_the_marker(tmp_path: Path) -> None:
+    scratch = _write_pack(
+        tmp_path,
+        "# Domain 01: Verification Marker Domain\n\n"
+        "**Trigger:** you are about to exercise a Verification: marker.\n\n"
+        "### 1. A rule whose footer carries a Verification: trail.\n\n"
+        "Body.\n\n"
+        "*Source: a self-contained citation. Verification: checked on 2026-08-05. "
+        "Rule id: D01-R01. Volatility: durable.*\n",
+    )
+    pack = load_pack(scratch)
+    assert pack.is_v2 is True

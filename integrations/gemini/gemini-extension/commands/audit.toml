@@ -6,9 +6,12 @@ server was installed from. It is the source of truth for this audit; do not
 improvise a different flow.
 
 Summary: gather run metadata (repository name, HEAD commit, your own
-assistant/model identity, an ISO 8601 started timestamp), call begin_run, call
-start_config (show any interactive configuration URL as a clickable link and wait
-for get_config, or proceed directly if a preset configuration was already
+assistant/model identity, an ISO 8601 started timestamp, and the host
+environment as exactly {os, host_cli, host_cli_version}, omitting any key you
+cannot determine and adding no others), call begin_run, call start_config (show
+any interactive configuration URL as a clickable link, then call get_config
+repeatedly while its response status is "waiting" and go on only once the status
+is "configured", or proceed directly if a preset configuration was already
 loaded), sweep every selected domain by calling get_domain then
 record_domain_result with an honest verdict for every rule (pass, finding,
 not-applicable, or could-not-evaluate with a reason; never a guessed pass), check

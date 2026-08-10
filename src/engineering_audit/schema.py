@@ -42,6 +42,9 @@ __all__ = [
     "UnknownRuleIdError",
     "validate_completeness",
     "validate_consulted_sources",
+    "validate_environment",
+    "ENVIRONMENT_KEYS",
+    "MAX_ENVIRONMENT_VALUE_CHARS",
 ]
 
 # Bumped whenever RunState gains or changes a field in a way a reader written
@@ -347,7 +350,17 @@ class RunMeta(BaseModel):
     repo_commit: str
     started: str
     finished: str | None = None
-    environment: dict[str, str] | None = None
+    environment: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "Host facts the report header cannot carry, keyed by ENVIRONMENT_KEYS "
+            "('os', 'host_cli', 'host_cli_version'). Validated at the tool boundary by "
+            "validate_environment, not by this model: this model also has to load "
+            "run-state files written by older builds, and refusing to read a finished "
+            "run's record because it carries a key that is no longer accepted would "
+            "turn a stale key into an unreadable report."
+        ),
+    )
 
     @field_validator("started", "finished")
     @classmethod
@@ -647,6 +660,79 @@ def validate_completeness(domain: "Domain", result: DomainResult) -> None:
         )
     if problems:
         raise IncompleteResultError(f"domain {domain.id}: " + " ".join(problems))
+
+
+# The complete, closed set of keys begin_run will accept for a run's
+# environment metadata, and the reason the field is a fixed vocabulary rather
+# than the free-form dict it used to be: this metadata ships inside feedback
+# issues filed publicly on the tool's own repository, and the driving
+# assistant that supplies it is untrusted input. An open dict populated by a
+# model is an unbounded disclosure surface when the repository being audited
+# is private; three named keys are not.
+#
+# These three, specifically, are the facts the report header cannot already
+# carry. Assistant, model and tool version are fixed header rows, so naming
+# them here would duplicate the header and add nothing, which is exactly why
+# nobody ever populated the free-form version of this field.
+ENVIRONMENT_KEYS = ("os", "host_cli", "host_cli_version")
+
+# A per-value character cap. The three keys hold an OS name, a CLI name and a
+# version string, none of which is long. The cap exists because constraining
+# the key set alone still leaves the values model-written and unbounded: a
+# closed vocabulary of keys with a paragraph of repository detail stuffed into
+# one of them would disclose exactly as much as the open dict did.
+MAX_ENVIRONMENT_VALUE_CHARS = 200
+
+
+def validate_environment(environment: dict[str, str] | None) -> dict[str, str] | None:
+    """Return ``environment`` unchanged, or raise ValueError describing what is
+    wrong with it.
+
+    None and an empty dict both pass through: not reporting the environment is
+    a legitimate state (the assistant genuinely could not determine it), and it
+    renders as "No environment information reported for this run" rather than
+    as anything resembling a confirmed fact.
+
+    Rejection is deliberate rather than filtering the unknown keys out
+    silently: an assistant that sent a key this tool does not accept has
+    misunderstood the contract, and quietly dropping the value would leave it
+    believing the fact was recorded when it was not.
+    """
+    if environment is None:
+        return None
+
+    unknown = sorted(set(environment) - set(ENVIRONMENT_KEYS))
+    if unknown:
+        raise ValueError(
+            f"environment carries key(s) this tool does not accept: {unknown}. "
+            f"The accepted keys are exactly {list(ENVIRONMENT_KEYS)}. This metadata is "
+            "included in feedback issues filed publicly, so the key set is closed; put "
+            "nothing else in it."
+        )
+
+    problems: list[str] = []
+    for key in ENVIRONMENT_KEYS:
+        if key not in environment:
+            continue
+        value = environment[key]
+        if not isinstance(value, str):
+            problems.append(f"{key} must be a string, got {type(value).__name__}")
+            continue
+        if not value.strip():
+            problems.append(
+                f"{key} is empty. Omit the key entirely rather than sending a blank value: "
+                "an omitted fact and a fact reported as blank are not the same thing"
+            )
+            continue
+        if len(value) > MAX_ENVIRONMENT_VALUE_CHARS:
+            problems.append(
+                f"{key} is {len(value)} characters, over the "
+                f"{MAX_ENVIRONMENT_VALUE_CHARS} character limit. This field takes an OS "
+                "name, a host CLI name and a version string, nothing longer"
+            )
+    if problems:
+        raise ValueError("environment is not acceptable: " + "; ".join(problems) + ".")
+    return environment
 
 
 class UnknownRuleIdError(Exception):

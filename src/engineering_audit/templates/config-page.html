@@ -55,9 +55,22 @@
   .radio-row, .consent-row { display: block; padding: 0.3rem 0; }
   .consent-row.locked { color: var(--muted); }
   .form-error { color: #b3261e; font-weight: 600; margin: 0 0 0.75rem; }
+  .draft-notice { color: var(--muted); font-size: 0.9rem; margin: 0 0 0.75rem; }
+  .dead-banner {
+    background: #fdecea;
+    border: 1px solid #b3261e;
+    border-radius: 8px;
+    color: #5f1512;
+    padding: 1rem 1.25rem;
+    margin-bottom: 1.25rem;
+  }
+  .dead-banner h2 { margin-top: 0; color: inherit; }
+  .dead-banner p:last-child { margin-bottom: 0; }
   @media (prefers-color-scheme: dark) {
     .form-error { color: #ff8a80; }
+    .dead-banner { background: #2b1614; border-color: #ff8a80; color: #ffd4cf; }
   }
+  button[disabled] { opacity: 0.5; cursor: not-allowed; }
   label[for="feedback-textarea"] { display: block; font-weight: 500; margin-bottom: 0.3rem; }
   textarea {
     width: 100%;
@@ -86,12 +99,19 @@
 <h1>Configure this audit run</h1>
 <p class="lede">This page is served on your machine only. Nothing here leaves your computer until you tick a box below and choose to send it.</p>
 
-<form action="/submit" method="post">
+<div class="dead-banner" id="dead-banner" hidden>
+  <h2>The audit process is no longer running</h2>
+  <p>This page can no longer reach the audit that opened it, so submitting it would do nothing. Your domain selection has been saved in this browser.</p>
+  <p>This address will not come back: the next configuration page is served on a new one. Go back to your assistant and ask it to resume the audit. It will open a fresh configuration page, with the domains you picked here already ticked.</p>
+</div>
+
+<form action="/submit" method="post" id="audit-config-form">
 <input type="hidden" name="csrf_token" value="$csrf_token">
 
 <section>
   <h2>Domains to audit</h2>
   $domain_error
+  $draft_notice
   $domain_checkboxes
 </section>
 
@@ -129,8 +149,9 @@
   </label>
   <label class="consent-row">
     <input type="checkbox" name="consent_environment" $consent_environment_checked>
-    Environment information (free-form details recorded by the AI assistant driving this
-    run; typically assistant, model and tool version, but may include more)
+    Host environment (exactly three values, and nothing else: your operating system, the
+    name of the CLI application driving this audit, and that CLI's version. These are what
+    decide whether a reported bug can be reproduced.)
   </label>
   <label class="consent-row">
     <input type="checkbox" name="consent_consulted_sources" $consent_consulted_sources_checked>
@@ -144,7 +165,73 @@
   </label>
 </section>
 
-<button type="submit">Start audit</button>
+<button type="submit" id="submit-button">Start audit</button>
 </form>
+
+<script nonce="$csp_nonce">
+// Heartbeat. This page is static after first paint, so without this it keeps
+// presenting a working-looking form long after the process behind it has gone
+// (host restart, machine asleep, the audit cancelled), and the first thing the
+// user hears about it is a browser error page after they have done the work of
+// choosing domains. Polling a cheap endpoint is the only way the page can find
+// out, since a dead server sends nothing at all.
+(function () {
+  var form = document.getElementById("audit-config-form");
+  var banner = document.getElementById("dead-banner");
+  var submit = document.getElementById("submit-button");
+  var failures = 0;
+  var dead = false;
+
+  function saveDraft() {
+    // Written only when the server is declared gone, and read back exactly
+    // once by the next configuration page. Carries the domain ticks and the
+    // delivery mode, and deliberately not the consent boxes or the feedback
+    // text: see _DRAFT_COOKIE_NAME in config_page.py.
+    var domains = [];
+    var boxes = form.querySelectorAll('input[name="domain"]');
+    for (var i = 0; i < boxes.length; i++) {
+      if (boxes[i].checked) {
+        domains.push(boxes[i].value);
+      }
+    }
+    var mode = form.querySelector('input[name="issue_mode"]:checked');
+    var draft = JSON.stringify({ d: domains, m: mode ? mode.value : "report" });
+    document.cookie =
+      "$draft_cookie_name=" + encodeURIComponent(draft) +
+      "; Path=/; Max-Age=$draft_cookie_max_age; SameSite=Strict";
+  }
+
+  function markDead() {
+    if (dead) {
+      return;
+    }
+    dead = true;
+    saveDraft();
+    submit.disabled = true;
+    banner.hidden = false;
+    banner.scrollIntoView({ block: "start" });
+  }
+
+  function ping() {
+    fetch("$alive_path", { cache: "no-store" })
+      .then(function (response) {
+        if (!response.ok) {
+          throw new Error("heartbeat status " + response.status);
+        }
+        failures = 0;
+      })
+      .catch(function () {
+        // Counted, not acted on immediately: one dropped request is noise, and
+        // telling someone their run has died when it has not is its own bug.
+        failures += 1;
+        if (failures >= $heartbeat_failures_before_dead) {
+          markDead();
+        }
+      });
+  }
+
+  setInterval(ping, $heartbeat_interval_ms);
+})();
+</script>
 </body>
 </html>

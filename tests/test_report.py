@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from engineering_audit import report as report_module
 from engineering_audit.feedback import build_feedback_body, build_feedback_sections
 from engineering_audit.report import _INLINE_SCRIPT, ReportError, render_report, write_report
 from engineering_audit.rules import load_pack
@@ -148,14 +149,23 @@ def test_rollup_by_domain_includes_a_domain_audited_and_found_clean() -> None:
     assert "d02: Teacup Logistics Handling: 0" in rendered
 
 
-def test_coverage_totals_are_summed_from_domain_results() -> None:
+def test_coverage_section_lists_per_domain_counts_with_no_cross_domain_totals() -> None:
+    # Issue #87: summed "Total files inspected/skipped" figures across
+    # selected domains double-counted every file once per domain that
+    # declined to open it (a 344-file repository rendered "5320 skipped"
+    # across 16 domains). The totals are dropped entirely; the per-domain
+    # list is already correct and unambiguous on its own.
     pack = _pack()
     run_state = _base_run_state(pack)
     rendered = render_report(run_state, pack)
 
-    # 12 + 5 files inspected, 1 + 0 skipped, computed, not passed in.
-    assert "Total files inspected across selected domains: <strong>17</strong>" in rendered
-    assert "Total files skipped: <strong>1</strong>" in rendered
+    assert "Total files inspected" not in rendered
+    assert "Total files skipped" not in rendered
+    assert (
+        "Gnome Husbandry Record Keeping: 12 file(s) inspected, 1 skipped "
+        "(one binary asset skipped)" in rendered
+    )
+    assert "Teacup Logistics Handling: 5 file(s) inspected, 0 skipped" in rendered
 
 
 def test_report_error_when_selected_domain_has_no_result() -> None:
@@ -223,6 +233,170 @@ def test_could_not_evaluate_verdict_for_unknown_rule_id_raises() -> None:
     )
     with pytest.raises(ReportError):
         render_report(run_state, pack)
+
+
+def test_could_not_evaluate_groups_rows_by_reason_sorted_by_descending_count() -> None:
+    # Issue #88: a real 16-domain run produced 122 could-not-evaluate rows
+    # carrying only 18 distinct reasons, with the boilerplate reasons
+    # burying the rare, rule-specific ones. Rows sharing the same reason
+    # text must collapse into one group listing every rule id, with groups
+    # ordered by descending rule count.
+    pack = _pack()
+    common_reason = "no requirements documentation found in this repository"
+    rare_reason = "the persistence schema is managed by a separate database-migrations repository"
+
+    d01_verdicts = [
+        RuleVerdict(rule_id="D01-R01", verdict=Verdict.COULD_NOT_EVALUATE, note=common_reason),
+        RuleVerdict(rule_id="D01-R02", verdict=Verdict.COULD_NOT_EVALUATE, note=common_reason),
+        RuleVerdict(rule_id="D01-R03", verdict=Verdict.COULD_NOT_EVALUATE, note=rare_reason),
+        RuleVerdict(rule_id="D01-R04", verdict=Verdict.pass_),
+    ]
+    d02 = pack.get_domain("d02")
+    d02_verdicts = _all_pass_verdicts(d02)
+    d02_verdicts[0] = RuleVerdict(
+        rule_id="D02-R01", verdict=Verdict.COULD_NOT_EVALUATE, note=common_reason
+    )
+    run_state = RunState(
+        meta=_meta(),
+        config=AuditConfig(selected_domain_ids=["d01", "d02"], issue_mode="report"),
+        domain_results={
+            "d01": DomainResult(domain_id="d01", status="completed", rule_verdicts=d01_verdicts),
+            "d02": DomainResult(domain_id="d02", status="completed", rule_verdicts=d02_verdicts),
+        },
+    )
+    rendered = render_report(run_state, pack)
+
+    # Heading keeps the total row count (4), not the distinct-reason count (2).
+    assert "Could not evaluate (4)" in rendered
+    assert "These are rules the audit could not reach a verdict on" in rendered
+    assert "not findings" in rendered
+
+    assert "D01-R01, D01-R02, D02-R01 (3 rules)" in rendered
+    assert "D01-R03 (1 rule)" in rendered
+    # The common reason (3 rule ids) sorts ahead of the rare one (1 rule id).
+    assert rendered.index(common_reason) < rendered.index(rare_reason)
+
+
+def test_could_not_evaluate_all_clear_message_survives_the_grouping_change() -> None:
+    pack = _pack()
+    d01 = pack.get_domain("d01")
+    d02 = pack.get_domain("d02")
+    run_state = RunState(
+        meta=_meta(),
+        config=AuditConfig(selected_domain_ids=["d01", "d02"], issue_mode="report"),
+        domain_results={
+            "d01": DomainResult(
+                domain_id="d01", status="completed", rule_verdicts=_all_pass_verdicts(d01)
+            ),
+            "d02": DomainResult(
+                domain_id="d02", status="completed", rule_verdicts=_all_pass_verdicts(d02)
+            ),
+        },
+    )
+    rendered = render_report(run_state, pack)
+    assert (
+        "Every selected rule reached a verdict of pass, finding or not applicable. "
+        "Nothing was left could-not-evaluate." in rendered
+    )
+
+
+def _write_single_rule_pack(tmp_path: Path, source_footer: str):
+    """Build a minimal one-domain, one-rule pack whose footer is exactly
+    ``*Source: {source_footer} Rule id: D01-R01. Volatility: durable.*``, for
+    tests that need precise control over a rule's parsed source (e.g.
+    exercising the v1/v2 citation split from issue #86)."""
+    scratch = tmp_path / "pack"
+    scratch.mkdir()
+    (scratch / "01-domain.md").write_text(
+        "# Domain 01: Solo Rule Domain\n\n"
+        "**Trigger:** you are about to exercise a single rule.\n\n"
+        "### 1. The only rule in this domain.\n\n"
+        "Body.\n\n"
+        f"*Source: {source_footer} Rule id: D01-R01. Volatility: durable.*\n",
+        encoding="utf-8",
+    )
+    return load_pack(scratch)
+
+
+def _single_finding_run_state(rule_id: str) -> RunState:
+    return RunState(
+        meta=_meta(),
+        config=AuditConfig(selected_domain_ids=["d01"], issue_mode="report"),
+        domain_results={
+            "d01": DomainResult(
+                domain_id="d01",
+                status="completed",
+                rule_verdicts=[RuleVerdict(rule_id=rule_id, verdict=Verdict.FINDING)],
+                findings=[
+                    Finding(
+                        rule_id=rule_id,
+                        severity=Severity.LOW,
+                        title="a finding",
+                        location="x.py",
+                        body_md="x",
+                        issue_title="x",
+                        issue_body="x",
+                    )
+                ],
+            )
+        },
+    )
+
+
+def test_v2_pack_reference_line_publishes_the_source_whole_with_no_capping(
+    tmp_path: Path,
+) -> None:
+    # A footer carrying a Verification: marker (rule-footer-format-v2)
+    # marks the whole pack as migrated; citation() must skip its v1
+    # safety-net capping entirely, even for a citation that contains a
+    # colon-quote pattern and a preceding sentence boundary that would
+    # otherwise trigger the v1 heuristic to cut it.
+    pack = _write_single_rule_pack(
+        tmp_path,
+        'A self-contained citation. It quotes the standard directly: "here is the '
+        'quoted text". Verification: checked on 2026-08-05 and ruled out two other '
+        "candidates.",
+    )
+    assert pack.is_v2 is True
+    run_state = _single_finding_run_state("D01-R01")
+    rendered = render_report(run_state, pack)
+
+    assert (
+        "Reference: D01-R01: A self-contained citation. It quotes the standard "
+        'directly: &quot;here is the quoted text&quot;' in rendered
+    )
+
+
+def test_an_oversized_v2_source_is_truncated_rather_than_failing_the_render(
+    tmp_path: Path,
+) -> None:
+    # A v2 pack that breaks its own authoring contract by leaving narrative
+    # in Source: must still produce a report. citation() applies its ceiling
+    # on both branches precisely so a partly migrated pack degrades to a
+    # visibly truncated reference instead of taking the whole render down.
+    pack = _write_single_rule_pack(tmp_path, "A" * 1200 + ". Verification: checked recently.")
+    assert pack.is_v2 is True
+
+    rendered = render_report(_single_finding_run_state("D01-R01"), pack)
+
+    assert "[reference truncated]" in rendered
+
+
+def test_render_report_raises_when_citation_itself_returns_an_oversized_reference(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The render-time ceiling is a backstop for a programming error in
+    # citation(), not a second policy: citation() now caps unconditionally,
+    # so the only way a reference arrives here oversized is that the capping
+    # did not run. Breaking citation() deliberately is therefore the only
+    # honest way to exercise this path, and it must fail loudly rather than
+    # ship the oversized reference.
+    monkeypatch.setattr(report_module, "citation", lambda source, **_: "B" * 1000)
+    pack = _write_single_rule_pack(tmp_path, "A short, self-contained citation.")
+
+    with pytest.raises(ReportError, match="reference ceiling"):
+        render_report(_single_finding_run_state("D01-R01"), pack)
 
 
 def _consulted_source(**overrides) -> ConsultedSource:

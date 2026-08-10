@@ -124,6 +124,25 @@ class RulesPack:
         return None
 
     @cached_property
+    def is_v2(self) -> bool:
+        """True when this pack has migrated to the rule-footer-format-v2
+        contract (a ``Source:``/``Verification:`` split footer).
+
+        Detection is pack-wide, not per-rule: a ``Verification:`` marker
+        found anywhere in any domain file is taken as proof the whole pack
+        was authored to the v2 contract, where ``Source:`` is self-contained
+        and publishable verbatim by construction (see the contract, and
+        :func:`citation`). A pack with no ``Verification:`` marker anywhere,
+        including any third-party pack this tool has never seen, is treated
+        as unmigrated: :func:`citation` falls back to its own v1 safety-net
+        capping for every rule in it.
+        """
+        return any(
+            _VERIFICATION_MARKER_RE.search(get_domain_text(domain)) is not None
+            for domain in self.domains
+        )
+
+    @cached_property
     def rule_index(self) -> dict[str, Rule]:
         """Every rule in this pack, keyed by rule id, built once and cached.
 
@@ -167,6 +186,16 @@ def _extract_source(block: str, rule_id_start: int) -> str | None:
     ``Source:`` occurrence wins, for the same reason the rule id itself
     takes the last match.
 
+    Under the rule-footer-format-v2 contract a footer may also carry a
+    ``Verification:`` field after ``Source:``, holding the maintainer's own
+    verification trail: what was checked and ruled out, drift corrections
+    and their dates, and other detail that is the pack maintainer's
+    business, never a report reader's. That field is never part of the
+    citation, so capture stops at the first ``Verification:`` marker found
+    after ``Source:``, regardless of whether the pack has otherwise
+    migrated to v2 (see :attr:`RulesPack.is_v2`): a stray verification
+    trail must never leak into a published reference from any pack.
+
     A footer with no ``Source:`` fragment at all is a deliberately
     unsourced rule (see the rules pack's own sourcing policy): that is a
     legitimate result, so this returns ``None`` rather than raising.
@@ -180,6 +209,9 @@ def _extract_source(block: str, rule_id_start: int) -> str | None:
         return None
 
     source_text = footer_segment[source_matches[-1].end():]
+    verification_match = _VERIFICATION_MARKER_RE.search(source_text)
+    if verification_match is not None:
+        source_text = source_text[: verification_match.start()]
     source_text = " ".join(source_text.split())  # collapse whitespace/newlines
     source_text = source_text.strip().rstrip(",.").strip()
     return source_text or None
@@ -337,25 +369,116 @@ def load_pack(rules_dir: Path) -> RulesPack:
 
 
 _EXCERPT_START_RE = re.compile(r':\s*["“]')
+_VERIFICATION_MARKER_RE = re.compile(r"Verification:")
+# A sentence boundary is a '.', '!' or '?' immediately followed by
+# whitespace or the end of the string. This is a heuristic, not a
+# linguistically correct sentence splitter (it will treat a decimal point
+# in "v4.0.1. Section" as a boundary, which is harmless here: the only use
+# is finding somewhere safe to cut, and a version number's own trailing
+# period is a perfectly safe place to cut), and it deliberately does not
+# try to special-case abbreviations. See citation() for why the fallback
+# when no boundary exists is "publish the full source", never a fragment.
+_SENTENCE_END_RE = re.compile(r"[.!?](?=\s|$)")
+_TRUNCATION_MARKER = "[reference truncated]"
+# The bug this ceiling exists to catch (issue #86) shipped a 2,051-character
+# reference, a verification narrative that had leaked into Source.
+#
+# 800 is chosen to match the rules pack's own authoring ceiling, which its
+# footer lint enforces, rather than being picked independently. That
+# alignment is the point: a tool ceiling tighter than the pack's would
+# silently truncate citations the pack considers valid. Measured against the
+# migrated standard pack (260 footers): median 169 characters, p90 296, max
+# 732, so nothing legitimate is near this limit while the 2,051-character
+# failure case is still caught. If the pack's lint ceiling moves, move this
+# with it.
+_MAX_CITATION_LENGTH = 800
 
 
-def citation(source: str) -> str:
-    """Return the citation part of a rule's parsed source, capped before any
-    quoted excerpt.
+def _cap_before_sentence_containing(text: str, marker_start: int) -> str | None:
+    """Return `text` truncated to the end of the last complete sentence that
+    finishes strictly before `marker_start`, or None if no sentence boundary
+    exists in that span.
 
-    Pack sources often follow the citation with supporting quotes, e.g.
-    'ISTQB syllabus v4.0.1, sections 3.1.2 and 3.1.3: "Static testing can..."'.
-    Published references cap at the citation itself; the excerpts stay in the
-    pack. The cut point is the first colon that introduces a quote, which
-    leaves quoted work titles (preceded by commas) intact. A cut that would
-    yield an empty string falls back to the full source rather than
-    publishing a blank reference.
+    None is a deliberate signal to the caller not to cut here at all: a cut
+    made without a sentence boundary to land on is exactly the failure mode
+    in issue #86 (fragments like "...rules 4 and 6. Rule 4", "...Table 1 and
+    surrounding text. Beneficence", stopped mid-clause because the old
+    heuristic cut at the colon itself rather than at a sentence's end).
+    Publishing the excerpt whole, or falling through to the hard-ceiling
+    truncation below, is preferred over ever risking a mid-clause fragment.
     """
-    match = _EXCERPT_START_RE.search(source)
-    if match is None:
-        return source
-    capped = source[: match.start()].rstrip(" ,;")
-    return capped if capped else source
+    boundary = None
+    for match in _SENTENCE_END_RE.finditer(text[:marker_start]):
+        boundary = match.end()
+    if boundary is None:
+        return None
+    capped = text[:boundary].strip()
+    return capped or None
+
+
+def _truncate_with_marker(text: str, limit: int) -> str:
+    """Hard-truncate `text` to at most `limit` characters, backing up to the
+    nearest word boundary, and append a visible marker.
+
+    This is the fix for the other half of issue #86: a source with no
+    excerpt marker at all was previously published whole and unbounded,
+    which is how a 2,051-character verification narrative reached a
+    client-facing report. A silent cut was the bug; the marker makes the
+    truncation visible to the reader instead of quietly shortening the
+    reference.
+    """
+    window = text[:limit]
+    last_space = window.rfind(" ")
+    if last_space > 0:
+        window = window[:last_space]
+    window = window.rstrip(" ,;.")
+    return f"{window} {_TRUNCATION_MARKER}"
+
+
+def citation(source: str, *, pack_is_v2: bool = False) -> str:
+    """Return the citation part of a rule's parsed source, safe to publish
+    verbatim in a client-facing report.
+
+    ``pack_is_v2`` should be the loaded pack's :attr:`RulesPack.is_v2`. It
+    selects the *excerpt-capping heuristic* only:
+
+    - **v2 packs**: ``Source:`` is citation-only and self-contained by the
+      pack's own authoring contract (any ``Verification:`` trail has
+      already been excluded during parsing, see :func:`_extract_source`),
+      so no excerpt capping is attempted.
+    - **v1 fallback** (the default, and the only behaviour for any pack,
+      including a third party's, that has not migrated): this tool cannot
+      trust an unmigrated ``Source:`` field to be self-contained, so it
+      applies a safety-net heuristic. Pack sources often follow the
+      citation with a supporting quote, e.g. 'ISTQB syllabus v4.0.1,
+      sections 3.1.2 and 3.1.3: "Static testing can..."'; where such an
+      excerpt marker is found, the citation is capped at the end of the
+      last complete sentence *before* it, never mid-sentence, and never at
+      all if no such sentence boundary exists (see
+      :func:`_cap_before_sentence_containing`).
+
+    The :data:`_MAX_CITATION_LENGTH` ceiling then applies to **both**
+    branches, unconditionally. It is deliberately not part of the v1-only
+    path: pack-wide v2 detection flips on a single ``Verification:`` marker
+    found anywhere, so a pack that is only *partly* migrated reports v2
+    while still holding unmigrated footers with narrative in ``Source:``.
+    Exempting the trusted branch from its own backstop is how a safety net
+    ends up disabled exactly where it was still needed, and it would also
+    turn a partial migration into a hard :class:`ReportError` at render
+    time (see ``report._reference_line``) instead of a visibly truncated
+    reference. A ceiling that only guards the path already believed safe is
+    not a ceiling.
+    """
+    text = source
+    if not pack_is_v2:
+        excerpt_match = _EXCERPT_START_RE.search(text)
+        if excerpt_match is not None:
+            capped = _cap_before_sentence_containing(text, excerpt_match.start())
+            if capped is not None:
+                text = capped
+    if len(text) > _MAX_CITATION_LENGTH:
+        text = _truncate_with_marker(text, _MAX_CITATION_LENGTH)
+    return text
 
 
 def get_domain_text(domain: Domain) -> str:

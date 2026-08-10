@@ -108,6 +108,16 @@ cat /tmp/eaf/GEMINI-fragment.md >> GEMINI.md
 
 ## Standalone audit mode
 
+### Host environment metadata
+
+`begin_run` takes an `environment` map, and the assistant should populate it: on this
+host that is `{"os": "<from uname -sr or sw_vers>", "host_cli": "gemini",
+"host_cli_version": "<from gemini --version>"}`. Those three keys are the whole
+accepted set and any other key is refused; omit one you cannot determine rather than
+guessing. `AUDIT.md` step 1 has the full rules and the reason the set is closed. The
+host CLI and its version are what decide whether a reported bug reproduces, and
+neither is derivable from the report header's assistant and model rows.
+
 **Interactive**: start `gemini` in the repository to audit and either run `/audit`
 (if the extension is installed) or tell it directly to follow `AUDIT.md` from the
 engineering-audit repository, driving the MCP tools through to a rendered report.

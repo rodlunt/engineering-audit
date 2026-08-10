@@ -22,6 +22,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import webbrowser
 from collections import Counter
 from dataclasses import dataclass, field
@@ -74,12 +75,26 @@ from engineering_audit.schema import (
     RunState,
     validate_completeness,
     validate_consulted_sources,
+    validate_environment,
 )
 from engineering_audit.update_check import check_for_update
 
 __all__ = ["AppState", "FinishedRun", "PriorRun", "RunTracker", "build_server", "main"]
 
 _SEVERITY_ORDER = ("critical", "high", "medium", "low")
+
+# The longest get_config will block inside a single MCP call before returning
+# status="waiting" and asking to be called again.
+#
+# Chosen to sit well under the shortest per-tool timeout a host is known to
+# impose: Codex has mcp_servers.<name>.tool_timeout_sec, and the run reported
+# in issue #85 was cancelled by it after 300 seconds. A call cancelled by a
+# host timeout does not merely fail, it can take the whole stdio MCP process
+# down with it and the run's configuration page along with it. The margin is
+# deliberately large, because
+# the cost of being wrong in one direction (a dead process and a stale form)
+# is nothing like the cost in the other (one more cheap tool call).
+_CONFIG_POLL_INTERVAL_S = 25.0
 
 
 def _default_tool_version() -> str:
@@ -188,6 +203,12 @@ class RunTracker:
     config_mode: str | None = None
     config_url: str | None = None
     config_server: ConfigServer | None = None
+    # A monotonic stamp taken when the interactive configuration page starts,
+    # so get_config can hold the run's overall waiting deadline across many
+    # short polls instead of inside one long blocking call. Monotonic, not
+    # wall clock: a machine that sleeps or has its clock stepped mid-wait must
+    # not be able to turn "still waiting" into "timed out" or the reverse.
+    config_wait_started_at: float | None = None
     domain_results: dict[str, DomainResult] = field(default_factory=dict)
     # Keyed by finding key (see _pending_issues), not by rule id: a domain
     # result may legitimately carry two findings for the same rule, and a map
@@ -906,7 +927,7 @@ def _register_run_tools(mcp: MCPServer, state: AppState) -> None:
 
         assistant/model/repo_name/repo_commit/started are supplied by the
         calling agent; tool_version defaults to the installed package version
-        if omitted; environment is optional free-form metadata. repo_dir is
+        if omitted. repo_dir is
         the path to the repository being audited, on disk; it is optional,
         but file_issues needs it to detect the GitHub repository to file
         against, unless a repo is given explicitly on that call instead.
@@ -930,6 +951,17 @@ def _register_run_tools(mcp: MCPServer, state: AppState) -> None:
         resuming one whose saved state cannot be read; either way, nothing is
         started and nothing is deleted until told.
 
+        environment records the host facts the report header cannot carry, and
+        its keys are a closed set: 'os' (e.g. "macOS 15.2", "Ubuntu 24.04"),
+        'host_cli' (the CLI application driving this audit, e.g. "codex",
+        "claude-code") and 'host_cli_version' (that CLI's version string).
+        Collect them from the machine you are running on rather than guessing,
+        and omit any key you cannot determine: an omitted fact and a guessed
+        one are not the same thing. Any other key is refused outright, because
+        this metadata is included in feedback issues filed publicly on the
+        tool's own repository. Do not name the assistant, the model or the tool
+        version here; all three are already fixed rows in the report header.
+
         The recorded metadata also stamps two provenance SHAs, best-effort:
         tool_commit (the git commit the installed tool build was made from,
         via its PEP 610 install record) and rules_pack_commit (the loaded
@@ -951,6 +983,14 @@ def _register_run_tools(mcp: MCPServer, state: AppState) -> None:
         reference, and a stale pin or cache would otherwise serve an old
         build forever with nothing to say so.
         """
+        # First, before any branch can return early: an environment the tool
+        # will not accept is a bad call, and the caller has to hear that
+        # whether this turns into a fresh run, a resume offer or nothing at
+        # all. Validating here rather than on RunMeta is deliberate; see
+        # validate_environment and RunMeta.environment for why the model
+        # itself stays permissive.
+        validate_environment(environment)
+
         if state.run is not None and not replace:
             raise ValueError(
                 f"A run is already in progress (started at {state.run.meta.started}, "
@@ -1098,6 +1138,11 @@ def _register_config_tools(mcp: MCPServer, state: AppState) -> None:
         run.config_server = config_server
         run.config_mode = "interactive"
         run.config_url = url
+        # The waiting clock starts when the page starts, not when get_config is
+        # first called: what the deadline is about is how long the person has
+        # had the page in front of them, not how promptly the assistant got
+        # round to polling.
+        run.config_wait_started_at = time.monotonic()
         # Best-effort convenience, never load-bearing: the URL in the response
         # stays the contract, because a remote or display-less session has no
         # browser to open and must still work. The swallow is safe precisely
@@ -1113,32 +1158,87 @@ def _register_config_tools(mcp: MCPServer, state: AppState) -> None:
 
     @mcp.tool()
     def get_config(timeout_s: float = 300) -> dict[str, Any]:
-        """Fetch the resolved audit configuration.
+        """Fetch the resolved audit configuration, or report that the user has
+        not submitted the configuration page yet.
 
-        Requires start_config to have been called first. In preset mode the
-        configuration is already known and is returned immediately. In
-        interactive mode this blocks for up to timeout_s seconds waiting for
-        the user to submit the configuration page; on timeout it raises a
-        clear error rather than proceeding with a default configuration the
-        user never actually chose. Call it again (the user's submission is
-        still awaited) rather than treating a timeout as a green light.
+        Requires start_config to have been called first. Every response carries
+        a "status" field, and it is the only field worth branching on:
+
+        - "configured": the configuration is resolved and is in the response's
+          "config" and "selected_domain_ids". Stop calling this tool.
+        - "waiting": the interactive page is up and nobody has submitted it
+          yet. This is NOT a failure and NOT a configuration. Tell the user the
+          audit is waiting on them at the "url" in the response, then CALL THIS
+          TOOL AGAIN. Keep calling it while the status says "waiting".
+        - a raised error: the run's overall deadline (timeout_s) elapsed with
+          no submission. Tell the user the audit is not proceeding. Never fall
+          back to a domain selection nobody chose.
+
+        In preset mode the configuration is already known and comes back as
+        "configured" on the first call.
+
+        This tool deliberately blocks for at most a short interval per call
+        (about 25 seconds) and then returns "waiting", rather than holding one
+        call open for the whole of timeout_s. Hosts impose their own per-tool
+        timeouts, independent of timeout_s (Codex has
+        mcp_servers.<name>.tool_timeout_sec), and a call held open past one of
+        those is cancelled by the host, which can take the whole MCP process
+        and this run's configuration page down with it (issue #85). timeout_s
+        remains
+        the run's overall waiting budget and is enforced here, cumulatively,
+        across however many calls it takes: it is measured from the moment the
+        page opened, so polling more often does not buy the user more time, and
+        polling less often does not cost them any. To keep waiting past the
+        deadline, call again with a larger timeout_s; that is an explicit
+        decision to extend, not a silent one.
         """
         run = _require_run(state)
         if run.config_mode is None:
             raise ValueError("start_config must be called before get_config.")
 
         if run.config is not None:
-            return _config_summary(run)
+            return {"status": "configured", **_config_summary(run)}
 
         assert run.config_server is not None  # config_mode == "interactive" implies this
+        assert run.config_wait_started_at is not None  # set alongside config_server
+
+        waited_s = time.monotonic() - run.config_wait_started_at
+        remaining_s = timeout_s - waited_s
+        # Never block longer than the caller's remaining budget, and never
+        # longer than one poll interval whatever that budget is. A remaining
+        # budget at or below zero still gets a zero-length wait rather than a
+        # straight-to-timeout return: the user may have submitted the page in
+        # the moment between the last poll and this call, and a submission
+        # already sitting there must be picked up, not thrown away on a
+        # technicality.
+        block_s = max(0.0, min(_CONFIG_POLL_INTERVAL_S, remaining_s))
         try:
-            config = run.config_server.wait(timeout_s)
+            config = run.config_server.wait(block_s)
         except ConfigTimeoutError as exc:
-            raise ValueError(
-                f"{exc} The user has not submitted the configuration page at {run.config_url}. "
-                "Tell the user the audit is waiting on them there, then call get_config again "
-                "rather than proceeding with a default configuration."
-            ) from exc
+            waited_s = time.monotonic() - run.config_wait_started_at
+            if waited_s >= timeout_s:
+                raise ValueError(
+                    f"No configuration submitted within {timeout_s} seconds. The user has "
+                    f"not submitted the configuration page at {run.config_url}. Tell the "
+                    "user the audit is waiting on them there and is not proceeding. Do not "
+                    "proceed with a default configuration: call get_config again with a "
+                    "larger timeout_s if they still intend to submit it."
+                ) from exc
+            return {
+                "status": "waiting",
+                "mode": "interactive",
+                "url": run.config_url,
+                "waited_s": round(waited_s, 1),
+                "timeout_s": timeout_s,
+                "remaining_s": round(max(0.0, timeout_s - waited_s), 1),
+                "instruction": (
+                    "Nobody has submitted the configuration page yet. This is not a "
+                    "configuration and not an error. Tell the user the audit is waiting "
+                    f"on them at {run.config_url}, then call get_config again. Keep "
+                    "calling it while status is 'waiting'. Do not start auditing any "
+                    "domain until status is 'configured'."
+                ),
+            }
 
         _validate_selected_domains(state, config)
         run.config = config
@@ -1148,7 +1248,7 @@ def _register_config_tools(mcp: MCPServer, state: AppState) -> None:
         # interruption before the first domain must not make them fill the
         # page in again.
         _persist_run(run)
-        return _with_warnings(run, _config_summary(run))
+        return _with_warnings(run, {"status": "configured", **_config_summary(run)})
 
 
 def _register_result_tools(mcp: MCPServer, state: AppState) -> None:

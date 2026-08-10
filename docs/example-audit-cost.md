@@ -1,11 +1,14 @@
-# What a full audit costs: a recorded example
+# What a full audit costs: recorded examples
 
-A full 16-domain audit is token-hungry. This page records the actual consumption of one
-real run so nobody is surprised by the bill. The numbers below are from the recorded
-self-audit of this repository (2026-08-09, tool v0.4.0, all 16 domains of the standard
-rules pack, 260 rules total).
+A full 16-domain audit is token-hungry. This page records the actual consumption of real
+runs so nobody is surprised by the bill. Two runs are recorded so far, on two different
+hosts. Read the "not directly comparable" section below before budgeting from either one:
+the orchestration models differ enough that a figure from one run does not transfer to the
+other.
 
-## Run shape
+## Claude Code (2026-08-09)
+
+### Run shape
 
 - **Orchestrator**: Claude Code with Fable 5 (`claude-fable-5`) driving the run: fetching
   config, dispatching one sweep agent per domain in four waves of four, validating each
@@ -17,7 +20,7 @@ rules pack, 260 rules total).
 - **Wall clock**: 47 minutes end to end (begin_run 10:39 UTC to report 11:26 UTC),
   including issue filing and user confirmation pauses. Sweeps ran four at a time.
 
-## Per-domain consumption
+### Per-domain consumption
 
 Token figures are as reported by Claude Code's Agent tool for each subagent (its total
 token usage, including its tool-result context). They are not a billing statement: cache
@@ -44,7 +47,7 @@ as a sizing guide, not an invoice.
 | d16 presenting-data | 21 | 2 | 168,559 | 32 | 6m 40s |
 | **Total** | **260** | **33** | **2,010,691** | **415** | **~35m agent time in 4 waves** |
 
-## What is not in the table
+### What is not in the table
 
 - **Orchestrator tokens.** The main Fable 5 conversation (dispatch prompts, result
   validation, recording calls, issue preview and filing, report rendering) was not
@@ -58,7 +61,7 @@ as a sizing guide, not an invoice.
   (82k); d09 spent 140k to conclude honestly that nothing applied. Paying for verified
   clean verdicts is the point of the tool.
 
-## Sizing a run
+### Sizing a run on Claude Code
 
 Rules of thumb from this run, for a small-to-medium repository:
 
@@ -67,3 +70,48 @@ Rules of thumb from this run, for a small-to-medium repository:
   clock with four-way parallel sweeps.
 - Auditing fewer domains scales cost close to linearly: the config page's domain tick
   boxes are the cost control.
+
+## Codex CLI (2026-08-10)
+
+### Run shape
+
+- **Host**: Codex CLI 0.147.0, model `gpt-5.6-luna`, macOS.
+- **Tool version**: 0.5.1, rules pack commit `82edb80`.
+- **Repository under audit**: an external React single-page app, roughly 344 files. A
+  different repository to the Claude Code run above, so file counts and per-domain figures
+  are not comparable to that run's line-count figure even setting the token gap aside.
+- **Scope**: all 16 domains of the standard pack.
+- **Wall clock**: 61 minutes end to end, 05:41:12Z to 06:42:26Z, as reported in the
+  rendered report header.
+- **Findings**: 32, with 122 rules recorded as could not evaluate in the findings rollup.
+
+### Token consumption: not captured
+
+No token figure is given for this run, and none should be inferred. The usage report for
+this session exists on the Codex host but has not been brought into this repository, so
+there is no reliable figure to record here. This is not a zero and it is not the Claude Code
+per-domain range above applied by analogy: Codex's orchestration shape (below) means a
+transferred figure would not mean the same thing even if one were guessed. When the usage
+report is captured, this section will carry an update; until then, budgeting for a Codex
+run on token cost alone should treat it as an open unknown, not as similar to Claude Code's
+recorded figure.
+
+### Why this run has no per-domain table
+
+Unlike the Claude Code run above, Codex did not fan out to one subagent per domain. The
+Claude Code skill dispatches a separate Sonnet subagent per domain, four at a time, which
+is what produces both the per-domain token/duration breakdown and the "four waves" shape of
+its wall clock. Codex swept all 16 domains without that per-domain fan-out, so there is no
+equivalent set of 16 rows to report, and its 61-minute wall clock is not shaped by the same
+four-at-a-time parallelism factor as Claude Code's 47 minutes. The two totals are both real
+measurements of a full run, but they are measurements of different shapes of work, not the
+same shape at two prices.
+
+## Not directly comparable: read before budgeting
+
+Do not read the two runs above as if they were the same experiment on two different
+providers. They differ in orchestration model (per-domain subagent fan-out versus a single
+non-fanned-out sweep), in repository (this repository's roughly 4,100 lines of Python
+versus an external React SPA of roughly 344 files), and one of the two is missing its token
+figure entirely. Use each run to size its own host. Interpolating a number between them,
+in either direction, is a guess dressed up as a measurement.

@@ -55,6 +55,14 @@ The symlink target and Claude Code's skill discovery convention above are correc
 see the root README's [support matrix](../../README.md#support-matrix), same as above, for
 whether this has actually been exercised against a live Claude Code session.
 
+## Host environment metadata
+
+`begin_run` takes an `environment` map, and the skill instructs Claude Code to populate it: on
+this host that is `{"os": "<from uname -sr or sw_vers>", "host_cli": "claude-code",
+"host_cli_version": "<from claude --version>"}`. Those three keys are the whole accepted set and
+any other key is refused, because this metadata is included in feedback issues filed publicly.
+`AUDIT.md` step 1 has the full rules.
+
 ## Headless / CI runs
 
 Set `ENGINEERING_AUDIT_CONFIG` to the path of a valid `AuditConfig` JSON file before starting the
