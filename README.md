@@ -288,7 +288,8 @@ anything.
 ### Rules access
 
 The full pack lives in a private repository with access granted per user (the maintained
-originals, their revision history and proving records). Open an issue here to ask. The
+originals, their revision history and proving records). Ask via the
+[rules pack access request form](https://github.com/rodlunt/engineering-audit/issues/new?template=rules-access.yml). The
 tooling works with any rules directory in the expected format (`**Trigger:**` header,
 `### N. Title` rules, `Rule id:` footers with `Source:` fragments), so you can also write
 your own pack.
