@@ -9,6 +9,8 @@ from pydantic import ValidationError
 
 from engineering_audit.rules import load_pack
 from engineering_audit.schema import (
+    ENVIRONMENT_KEYS,
+    MAX_ENVIRONMENT_VALUE_CHARS,
     RUN_STATE_SCHEMA_VERSION,
     AuditConfig,
     ConsultedSource,
@@ -28,6 +30,7 @@ from engineering_audit.schema import (
     Verdict,
     validate_completeness,
     validate_consulted_sources,
+    validate_environment,
 )
 
 from pathlib import Path
@@ -681,3 +684,90 @@ def test_run_state_filed_issue_urls_and_feedback_issue_url_round_trip() -> None:
     assert restored.filed_issue_urls == state.filed_issue_urls
     assert restored.feedback_issue_url == state.feedback_issue_url
     assert restored == state
+
+
+# ---------------------------------------------------------------------------
+# environment metadata (issue #89)
+# ---------------------------------------------------------------------------
+
+
+def test_environment_keys_are_the_three_facts_the_report_header_cannot_carry() -> None:
+    # Assistant, model and tool version are already fixed header rows, which
+    # is precisely why the old free-form version of this field was never
+    # populated by anyone. If one of them turns up here, the field has gone
+    # back to duplicating the header.
+    assert ENVIRONMENT_KEYS == ("os", "host_cli", "host_cli_version")
+
+
+def test_validate_environment_accepts_the_documented_keys() -> None:
+    environment = {"os": "macOS 15.2", "host_cli": "codex", "host_cli_version": "0.147.0"}
+    assert validate_environment(environment) == environment
+
+
+def test_validate_environment_accepts_a_subset_and_none_and_empty() -> None:
+    assert validate_environment(None) is None
+    assert validate_environment({}) == {}
+    assert validate_environment({"host_cli": "claude-code"}) == {"host_cli": "claude-code"}
+
+
+def test_validate_environment_rejects_an_unknown_key_and_names_the_accepted_set() -> None:
+    with pytest.raises(ValueError) as excinfo:
+        validate_environment({"os": "linux", "repo_layout": "monorepo, 344 files"})
+    message = str(excinfo.value)
+    assert "repo_layout" in message
+    for key in ENVIRONMENT_KEYS:
+        assert key in message
+
+
+def test_validate_environment_rejects_rather_than_silently_dropping_unknown_keys() -> None:
+    # Filtering would leave the assistant believing a fact was recorded when
+    # it was not, which is the same shape of bug as a skipped check reported
+    # as a pass.
+    with pytest.raises(ValueError):
+        validate_environment({"model": "gpt-5.6-luna"})
+
+
+def test_validate_environment_rejects_a_value_past_the_character_cap() -> None:
+    over = "x" * (MAX_ENVIRONMENT_VALUE_CHARS + 1)
+    with pytest.raises(ValueError) as excinfo:
+        validate_environment({"os": over})
+    assert "character limit" in str(excinfo.value)
+    at_cap = "x" * MAX_ENVIRONMENT_VALUE_CHARS
+    assert validate_environment({"os": at_cap}) == {"os": at_cap}
+
+
+def test_validate_environment_rejects_a_blank_value() -> None:
+    with pytest.raises(ValueError) as excinfo:
+        validate_environment({"os": "  "})
+    assert "Omit the key entirely" in str(excinfo.value)
+
+
+def test_validate_environment_reports_every_problem_at_once() -> None:
+    with pytest.raises(ValueError) as excinfo:
+        validate_environment({"os": "", "host_cli_version": "y" * 300})
+    message = str(excinfo.value)
+    assert "os" in message
+    assert "host_cli_version" in message
+
+
+def test_run_meta_itself_still_loads_an_environment_key_it_would_no_longer_accept() -> None:
+    # The model stays permissive on purpose: it also has to read run-state
+    # files written by older builds, and refusing to load a finished run's
+    # record over a key that is no longer accepted would turn a stale key into
+    # an unreadable report. The gate lives at the tool boundary (begin_run),
+    # which is where the untrusted input actually arrives.
+    state = RunState(
+        meta=RunMeta(
+            tool_version="0.1.0",
+            rules_pack_name="pack",
+            assistant="codex",
+            model="gpt-5.6-luna",
+            repo_name="widgets-app",
+            repo_commit="abc1234",
+            started="2026-08-10T09:00:00Z",
+            environment={"python": "3.12"},
+        ),
+        config=_config(),
+    )
+    restored = RunState.from_json(state.to_json())
+    assert restored.meta.environment == {"python": "3.12"}

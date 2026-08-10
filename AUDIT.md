@@ -25,6 +25,24 @@ Before calling any tool, collect:
   do not guess at a value you cannot confirm.
 - **Started timestamp**: the current time as an ISO 8601 string, e.g. via `date -u
   +%Y-%m-%dT%H:%M:%SZ`.
+- **Host environment**: the three facts the report header cannot carry, passed to `begin_run` as
+  `environment`. The key set is closed; `begin_run` refuses any other key outright.
+  - `os`: the operating system of the machine this is running on, e.g. `"macOS 15.2"`,
+    `"Ubuntu 24.04"`, `"Windows 11"`. Read it from the machine (`uname -sr`, `sw_vers`,
+    `/etc/os-release`); do not infer it.
+  - `host_cli`: the CLI application driving this audit, e.g. `"codex"`, `"claude-code"`,
+    `"gemini"`.
+  - `host_cli_version`: that CLI's version string, e.g. `"0.147.0"`, read from its own
+    `--version` output.
+
+  Omit any key you cannot determine rather than guessing at it: an omitted fact and an invented
+  one are not the same thing, and the report says "no environment information reported" rather
+  than pretending otherwise. Do **not** put the assistant, the model or the tool version in here;
+  all three are already fixed rows in the report header, and duplicating them is why this field
+  sat empty in every run until now. This metadata is included in feedback issues filed publicly
+  on the tool's own repository, which is why the key set is closed and the values are capped in
+  length: it is the one part of a run whose disclosure surface is not under the user's eye at
+  submission time.
 
 ## 2. Begin the run
 
@@ -100,16 +118,46 @@ Call `start_config`. It responds in one of two modes:
   false (a remote or display-less session), **show the URL to the user as a clickable line** and
   ask them to open it. Either way: choose which domains to audit, and submit the form.
 
-In interactive mode, call `get_config` (with a reasonable `timeout_s`, e.g. 300) to wait for the
-submission. `get_config` blocks until the user submits, or raises a clear error on timeout.
+In interactive mode, **call `get_config` in a loop.** It does not hold one call open until the
+user submits: it waits internally for about 25 seconds, then returns and expects to be called
+again. Branch on the `status` field of its response, and on nothing else:
 
-**If `get_config` times out, tell the user directly that the audit is waiting on them and is not
-proceeding.** Never fall back to a default domain selection: an audit that silently picks domains
-nobody chose is worse than no audit, because it looks authoritative. Call `get_config` again once
-the user confirms they have submitted the form.
+| `status` | What it means | What to do |
+|---|---|---|
+| `"configured"` | The configuration is resolved. `config` and `selected_domain_ids` are in the response. | Stop calling `get_config` and go to step 4. |
+| `"waiting"` | The page is up and nobody has submitted it yet. This is neither a configuration nor a failure. | Call `get_config` again. Keep going while the status says `waiting`. |
+| an error is raised | The overall deadline (`timeout_s`) elapsed with no submission. | Stop. Tell the user the audit is waiting on them and is not proceeding. |
 
-Once `get_config` succeeds, note the `selected_domain_ids` in its response: these are the only
-domains you are authorised to record results for.
+So the loop is: call `get_config`, and while the response's `status` is `"waiting"`, call it
+again. Nothing else in the run may start until the status is `"configured"`. **Never fall back to
+a default domain selection**, on a `waiting` response or on a timeout: an audit that silently
+picks domains nobody chose is worse than no audit, because it looks authoritative.
+
+The first `waiting` response is the one to speak up on: tell the user the configuration page is
+open at the response's `url` and the audit is waiting on them there. After that, keep polling
+quietly rather than narrating every call.
+
+`timeout_s` is the run's **overall** waiting budget, not a per-call one. It is measured from the
+moment the page opened and is enforced cumulatively across every call, so polling more often does
+not buy the user more time and polling less often does not cost them any. Pass a value that
+reflects how long the user might reasonably take (300 is the default; a sixteen-domain choice may
+deserve more). If it expires and the user still intends to submit, calling `get_config` again with
+a **larger** `timeout_s` resumes waiting: the page is still up and their submission is still
+accepted.
+
+Why the loop exists, so nobody "simplifies" it back: host applications impose their own per-tool
+timeouts, independent of `timeout_s` (Codex has `mcp_servers.<name>.tool_timeout_sec`; the run
+reported in issue #85 was cancelled by it after 300 seconds). A single tool call held open longer
+than the host's limit is cancelled by the host, and that cancellation can take the whole MCP
+process down with it, along with the configuration page the user was in the middle of filling in.
+
+Once `get_config` reports `"configured"`, note the `selected_domain_ids` in its response: these
+are the only domains you are authorised to record results for.
+
+If the user reports that the configuration page says the audit process is no longer running, that
+page is telling the truth and its URL is dead for good. Start again from step 2: `begin_run` will
+find the saved run and offer to resume it, and a fresh configuration page opens on a new URL with
+their domain selection already restored.
 
 ## 4. Sweep each selected domain
 
@@ -247,8 +295,9 @@ report's location and headline numbers are the actual deliverable.
 
 If the user supplied feedback text on the configuration page (`config.feedback_text`), call
 `submit_feedback`. It sends that text, plus a run-metadata section and whichever telemetry
-sections the user consented to (coverage, findings rollup, self-assessment, environment,
-consulted sources by rule id/URL/why; never finding text), to the tool author's repository via
+sections the user consented to (coverage, findings rollup, self-assessment, the three host
+environment facts from step 1, consulted sources by rule id/URL/why; never finding text), to the
+tool author's repository via
 `gh`. Every section defaults off until the user ticks it; the consulted-sources one carries its
 own reason on the configuration page too, since URLs fetched while auditing a private
 repository can hint at what that repository is about. If it returns `mode: "mailto"` (gh was

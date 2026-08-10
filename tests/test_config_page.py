@@ -3,15 +3,23 @@
 from __future__ import annotations
 
 import http.client
+import json
 import re
+import shutil
+import subprocess
 import urllib.request
 from pathlib import Path
-from urllib.error import HTTPError
-from urllib.parse import urlencode
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote, urlencode
 
 import pytest
 
-from engineering_audit.config_page import ConfigServer, ConfigTimeoutError
+from engineering_audit.config_page import (
+    _DRAFT_COOKIE_NAME,
+    ConfigServer,
+    ConfigTimeoutError,
+    _parse_draft_cookie,
+)
 from engineering_audit.rules import load_pack
 
 FIXTURE_PACK = Path(__file__).parent / "fixture_pack"
@@ -131,19 +139,24 @@ def test_get_page_telemetry_consent_defaults_are_all_unticked(domains) -> None:
 
 
 def test_get_page_environment_consent_label_matches_what_the_code_sends(domains) -> None:
-    # Issue #48: the label used to say "(assistant, model, tool version)",
-    # a fixed three-field description. The field it controls actually
-    # gates an open dict[str, str] the calling agent supplies (RunMeta.environment,
-    # see server.py's begin_run) and feedback.py serialises every key/value
-    # pair present, not a fixed subset. The label must say the contents are
-    # decided by the driving assistant, not imply a closed set of fields.
+    # Issue #48 made this label stop claiming a fixed three-field set, because
+    # the field it gated was an open dict the assistant filled however it
+    # liked. Issue #89 closed the schema instead (ENVIRONMENT_KEYS), so the
+    # label goes back to naming the contents exactly, and must name the three
+    # keys the server now accepts and nothing else. It must not restate
+    # assistant, model or tool version: those are fixed report-header rows,
+    # and a label that duplicated them is why nobody ever populated the field.
     srv = ConfigServer(domains)
     try:
         url = srv.start()
         with urllib.request.urlopen(url, timeout=5) as resp:
             page = resp.read().decode("utf-8")
         assert "(assistant, model, tool version)" not in page
-        assert "recorded by the AI assistant driving this" in page
+        assert "recorded by the AI assistant driving this" not in page
+        assert "exactly three values" in page
+        assert "your operating system" in page
+        assert "name of the CLI application driving this audit" in page
+        assert "that CLI's version" in page
     finally:
         srv.shutdown()
 
@@ -511,3 +524,409 @@ def test_wait_returns_immediately_once_submitted(domains) -> None:
         assert config.issue_mode == "github"
     finally:
         srv.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Heartbeat and the dead-server banner (issue #91)
+# ---------------------------------------------------------------------------
+
+
+def test_alive_endpoint_answers_204_with_no_body_and_no_cache(domains) -> None:
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        with urllib.request.urlopen(url + "alive", timeout=5) as resp:
+            assert resp.status == 204
+            assert resp.read() == b""
+            assert resp.getheader("Cache-Control") == "no-store"
+    finally:
+        srv.shutdown()
+
+
+def test_alive_endpoint_stops_answering_once_the_server_is_shut_down(domains) -> None:
+    # The whole heartbeat rests on this: a dead process does not answer, and
+    # a page whose fetch fails is looking at exactly the situation issue #91
+    # describes. A control first (the endpoint answering while the server is
+    # up), so the failure afterwards means something.
+    srv = ConfigServer(domains)
+    url = srv.start()
+    with urllib.request.urlopen(url + "alive", timeout=5) as resp:
+        assert resp.status == 204
+    srv.shutdown()
+    with pytest.raises(URLError):
+        urllib.request.urlopen(url + "alive", timeout=5)
+
+
+def test_page_carries_the_heartbeat_script_and_the_dead_banner(domains) -> None:
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            page = resp.read().decode("utf-8")
+        assert 'fetch("/alive"' in page
+        assert 'id="dead-banner"' in page
+        assert "submit.disabled = true" in page
+        # The banner has to say all three things a user in this state needs:
+        # the process is gone, this URL is not coming back, and the way out is
+        # to resume the run.
+        assert "The audit process is no longer running" in page
+        assert "This address will not come back" in page
+        assert "resume the audit" in page
+    finally:
+        srv.shutdown()
+
+
+def test_the_page_script_runs_under_a_nonce_that_matches_its_csp(domains) -> None:
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            csp = resp.getheader("Content-Security-Policy")
+            page = resp.read().decode("utf-8")
+        assert csp is not None
+        # connect-src is what lets the heartbeat fetch its own origin at all;
+        # without it the CSP would silently defeat the feature.
+        assert "connect-src 'self'" in csp
+        nonce_match = re.search(r'<script nonce="([^"]+)">', page)
+        assert nonce_match is not None, "page served no nonced script tag"
+        assert f"script-src 'nonce-{nonce_match.group(1)}'" in csp
+    finally:
+        srv.shutdown()
+
+
+def test_each_page_load_gets_its_own_script_nonce(domains) -> None:
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        nonces = []
+        for _ in range(2):
+            with urllib.request.urlopen(url, timeout=5) as resp:
+                match = re.search(r'<script nonce="([^"]+)">', resp.read().decode("utf-8"))
+            assert match is not None
+            nonces.append(match.group(1))
+        assert nonces[0] != nonces[1]
+    finally:
+        srv.shutdown()
+
+
+def test_a_response_with_no_script_grants_no_script_source(domains) -> None:
+    # The nonce is a grant, and a grant that lands on responses which carry no
+    # script of their own is a grant nobody is watching.
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        with pytest.raises(HTTPError) as excinfo:
+            urllib.request.urlopen(url + "nope", timeout=5)
+        assert "script-src 'none'" in excinfo.value.headers["Content-Security-Policy"]
+    finally:
+        srv.shutdown()
+
+
+def test_the_validation_error_re_render_keeps_its_heartbeat(domains) -> None:
+    # Forgetting to tick a domain must not be the thing that leaves the user
+    # on a page which can no longer tell them their run has died.
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        token = _fetch_csrf_token(url)
+        status, body = _post(url, {"issue_mode": "report", "csrf_token": token})
+        assert status == 400
+        assert re.search(r'<script nonce="([^"]+)">', body) is not None
+        assert 'fetch("/alive"' in body
+    finally:
+        srv.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# The one-shot draft cookie (issue #91)
+# ---------------------------------------------------------------------------
+
+
+def _get_page_with_cookie(url: str, cookie: str) -> tuple[str, str | None]:
+    """GET the config page with a Cookie header, returning (body, Set-Cookie)."""
+    request = urllib.request.Request(url, headers={"Cookie": cookie})
+    with urllib.request.urlopen(request, timeout=5) as resp:
+        return resp.read().decode("utf-8"), resp.getheader("Set-Cookie")
+
+
+def _draft_cookie(payload: object) -> str:
+    return f"{_DRAFT_COOKIE_NAME}={quote(json.dumps(payload))}"
+
+
+def _ticked_domain_ids(page: str) -> set[str]:
+    return set(re.findall(r'name="domain" value="([^"]+)" checked', page))
+
+
+def test_a_saved_draft_restores_the_domain_selection_on_a_fresh_page(domains) -> None:
+    # The point of issue #91's second half: the replacement page is served by
+    # a different process on a different port, and the user must not have to
+    # tick sixteen boxes again to get back to where they were.
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        page, _ = _get_page_with_cookie(url, _draft_cookie({"d": ["d02"], "m": "github"}))
+        assert _ticked_domain_ids(page) == {"d02"}
+        assert re.search(r'value="github" checked', page) is not None
+    finally:
+        srv.shutdown()
+
+
+def test_a_restored_draft_is_cleared_so_it_cannot_pre_tick_a_later_run(domains) -> None:
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        _, set_cookie = _get_page_with_cookie(url, _draft_cookie({"d": ["d02"], "m": "report"}))
+        assert set_cookie is not None
+        assert set_cookie.startswith(f"{_DRAFT_COOKIE_NAME}=;")
+        assert "Max-Age=0" in set_cookie
+    finally:
+        srv.shutdown()
+
+
+def test_a_page_served_without_a_draft_sets_no_cookie_at_all(domains) -> None:
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            assert resp.getheader("Set-Cookie") is None
+    finally:
+        srv.shutdown()
+
+
+def test_a_draft_never_pre_ticks_a_consent_box(domains) -> None:
+    # Consent that arrives pre-ticked from a host-scoped cookie any other
+    # local process could have written is not consent. The draft restores the
+    # tedious part (which domains) and nothing that is a decision about what
+    # leaves the machine.
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        page, _ = _get_page_with_cookie(
+            url,
+            _draft_cookie(
+                {
+                    "d": ["d01"],
+                    "m": "report",
+                    "c": ["consent_environment", "consent_consulted_sources"],
+                }
+            ),
+        )
+        for name in (
+            "consent_coverage",
+            "consent_rollup",
+            "consent_self_assessment",
+            "consent_environment",
+            "consent_consulted_sources",
+        ):
+            tag_match = re.search(rf'<input type="checkbox" name="{name}"[^>]*>', page)
+            assert tag_match is not None
+            assert "checked" not in tag_match.group(0), f"{name} was restored from a draft"
+    finally:
+        srv.shutdown()
+
+
+def test_a_draft_naming_a_domain_this_pack_does_not_have_is_intersected_away(
+    domains,
+) -> None:
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        page, _ = _get_page_with_cookie(url, _draft_cookie({"d": ["d01", "d99"], "m": "report"}))
+        assert _ticked_domain_ids(page) == {"d01"}
+    finally:
+        srv.shutdown()
+
+
+@pytest.mark.parametrize(
+    "cookie",
+    [
+        "",
+        "some_other_cookie=1",
+        f"{_DRAFT_COOKIE_NAME}=not-json",
+        f"{_DRAFT_COOKIE_NAME}={quote(json.dumps(['d01']))}",
+        f"{_DRAFT_COOKIE_NAME}={quote(json.dumps({'d': 'd01'}))}",
+        f"{_DRAFT_COOKIE_NAME}={quote(json.dumps({'d': []}))}",
+        f"{_DRAFT_COOKIE_NAME}={quote(json.dumps({'d': ['d99']}))}",
+        f"{_DRAFT_COOKIE_NAME}={'x' * 5000}",
+    ],
+)
+def test_an_unusable_draft_cookie_falls_back_to_the_normal_default(cookie, domains) -> None:
+    # Falling back means every domain ticked, which is the page's own default
+    # and a state the user can see; it is never a silently narrowed selection.
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        page, set_cookie = _get_page_with_cookie(url, cookie)
+        assert _ticked_domain_ids(page) == {d.id for d in domains}
+        assert set_cookie is None
+    finally:
+        srv.shutdown()
+
+
+def test_the_pages_inline_script_parses(domains) -> None:
+    # A syntax error in this script would not look like a failure: the browser
+    # refuses to run the whole block, the page renders exactly as before, and
+    # the heartbeat that was supposed to catch a dead server is itself dead
+    # with nothing to say so. Parsing it under node is the cheapest control
+    # available against that.
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip(
+            "node is not installed on this machine, so the configuration page's inline "
+            "script was not parse-checked. Node is present on CI runners; install node "
+            "to run this check locally."
+        )
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            page = resp.read().decode("utf-8")
+    finally:
+        srv.shutdown()
+    script = page[page.index(">", page.index("<script")) + 1 : page.index("</script>")]
+    result = subprocess.run(
+        [node, "--check", "-"], input=script, capture_output=True, text=True
+    )
+    assert result.returncode == 0, (
+        f"the configuration page's inline script does not parse:\n{result.stderr}"
+    )
+
+
+# A minimal stand-in for the bits of the DOM the page's script touches, so the
+# script can be run for real rather than only parsed. Everything the script is
+# supposed to do on a dead server (disable the submit control, show the banner,
+# save the draft) is observable in the JSON this prints.
+_DOM_STUB_JS = """
+var pings = 0;
+var domainBoxes = [
+  { value: "d01", checked: true },
+  { value: "d02", checked: false }
+];
+var banner = { hidden: true, scrollIntoView: function () {} };
+var submit = { disabled: false };
+var form = {
+  querySelectorAll: function () { return domainBoxes; },
+  querySelector: function () { return { value: "github" }; }
+};
+var cookieJar = "";
+globalThis.document = {
+  getElementById: function (id) {
+    if (id === "audit-config-form") { return form; }
+    if (id === "dead-banner") { return banner; }
+    if (id === "submit-button") { return submit; }
+    throw new Error("unexpected getElementById: " + id);
+  },
+  set cookie(value) { cookieJar = value; },
+  get cookie() { return cookieJar; }
+};
+globalThis.fetch = function () {
+  pings += 1;
+  return Promise.reject(new Error("connection refused"));
+};
+globalThis.setInterval = function (fn) { fn(); fn(); };
+"""
+
+_DOM_REPORT_JS = """
+setTimeout(function () {
+  console.log(JSON.stringify({
+    pings: pings,
+    cookie: cookieJar,
+    submitDisabled: submit.disabled,
+    bannerHidden: banner.hidden
+  }));
+}, 0);
+"""
+
+
+def test_the_page_script_disables_submit_and_saves_a_draft_when_the_heartbeat_fails(
+    domains,
+) -> None:
+    # The end of issue #91's loop, checked end to end: the script reacts to a
+    # dead server, and the cookie it writes is one the Python side can actually
+    # read back. Testing the two halves separately would let them drift into
+    # agreeing about nothing.
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip(
+            "node is not installed on this machine, so the configuration page's "
+            "heartbeat behaviour was not exercised. Node is present on CI runners; "
+            "install node to run this check locally."
+        )
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            page = resp.read().decode("utf-8")
+    finally:
+        srv.shutdown()
+    script = page[page.index(">", page.index("<script")) + 1 : page.index("</script>")]
+
+    result = subprocess.run(
+        [node, "--input-type=commonjs", "-"],
+        input=_DOM_STUB_JS + script + _DOM_REPORT_JS,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, f"the page script threw:\n{result.stderr}"
+    observed = json.loads(result.stdout)
+
+    assert observed["pings"] == 2
+    assert observed["submitDisabled"] is True
+    assert observed["bannerHidden"] is False
+
+    # And the draft it wrote is one this module's own parser accepts: only the
+    # ticked domain, and the delivery mode that was selected.
+    draft = _parse_draft_cookie(observed["cookie"], {d.id for d in domains})
+    assert draft is not None
+    assert draft.selected_domain_ids == {"d01"}
+    assert draft.issue_mode == "github"
+
+
+def test_the_page_script_leaves_the_form_alone_while_the_heartbeat_answers(domains) -> None:
+    # The control for the test above: an answering server must not produce a
+    # banner, a disabled button or a saved draft. Without this, a script that
+    # declared the server dead unconditionally would pass that test.
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip(
+            "node is not installed on this machine, so the configuration page's "
+            "heartbeat behaviour was not exercised. Node is present on CI runners; "
+            "install node to run this check locally."
+        )
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            page = resp.read().decode("utf-8")
+    finally:
+        srv.shutdown()
+    script = page[page.index(">", page.index("<script")) + 1 : page.index("</script>")]
+    healthy_fetch = (
+        'globalThis.fetch = function () { pings += 1; return Promise.resolve({ ok: true }); };'
+    )
+
+    result = subprocess.run(
+        [node, "--input-type=commonjs", "-"],
+        input=_DOM_STUB_JS + healthy_fetch + script + _DOM_REPORT_JS,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, f"the page script threw:\n{result.stderr}"
+    observed = json.loads(result.stdout)
+
+    assert observed["pings"] == 2
+    assert observed["submitDisabled"] is False
+    assert observed["bannerHidden"] is True
+    assert observed["cookie"] == ""
+
+
+def test_parse_draft_cookie_rejects_a_bad_issue_mode_without_dropping_the_domains() -> None:
+    draft = _parse_draft_cookie(
+        f"{_DRAFT_COOKIE_NAME}={quote(json.dumps({'d': ['d01'], 'm': 'rm -rf'}))}",
+        {"d01", "d02"},
+    )
+    assert draft is not None
+    assert draft.selected_domain_ids == {"d01"}
+    # An unrecognised mode falls back to the safe one (findings stay local)
+    # rather than being taken at face value from a cookie.
+    assert draft.issue_mode == "report"

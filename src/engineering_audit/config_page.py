@@ -10,14 +10,16 @@ this keyboard, not as a network service.
 from __future__ import annotations
 
 import html
+import json
 import secrets
 import string
 import threading
 from dataclasses import dataclass
 from http import HTTPStatus
+from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, unquote
 
 from pydantic import ValidationError
 
@@ -29,11 +31,64 @@ __all__ = ["ConfigServer", "ConfigTimeoutError"]
 _TEMPLATE_PATH = Path(__file__).parent / "templates" / "config-page.html"
 _SUBMITTED_TEMPLATE_PATH = Path(__file__).parent / "templates" / "config-submitted.html"
 
-# A localhost-only page with no scripts and one relative form post: this is
-# about as strict as a Content-Security-Policy gets. It buys nothing today
-# (there is no inline script here to restrict) but keeps the page safe by
-# construction if a future change ever adds one without also updating this.
-_CSP = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'"
+# The path the page's heartbeat polls. Deliberately its own route rather than
+# a HEAD of "/": it answers with no body and no work, so a poll every few
+# seconds costs nothing, and it cannot be confused with a real page fetch in
+# anything that later reads this handler.
+_ALIVE_PATH = "/alive"
+
+# How often the page polls _ALIVE_PATH, and how many consecutive failures it
+# takes before it declares the audit process gone. Two failures rather than
+# one so a single dropped request does not tell the user their run has died
+# when it has not; four seconds so the truth arrives within about ten, which
+# is well before anyone finishes ticking sixteen domains.
+_HEARTBEAT_INTERVAL_MS = 4000
+_HEARTBEAT_FAILURES_BEFORE_DEAD = 2
+
+# The one-shot cookie the page writes when its heartbeat fails, so the
+# replacement page served by a resumed run can restore the domain selection
+# the user had already made.
+#
+# A cookie rather than localStorage or sessionStorage because both of those
+# are scoped per origin, and an origin includes the port: the replacement page
+# is served on a fresh ephemeral port, so neither would ever be readable from
+# it. Cookies are scoped to the host, which is exactly the scope needed here.
+#
+# It is host-scoped, which means any other service on 127.0.0.1 can read it,
+# so it carries only what it has to: which domains were ticked and which
+# delivery mode was chosen. Not the feedback text (free prose the user wrote
+# for the tool author), and NOT the telemetry consent boxes. Consent that
+# arrives pre-ticked from a value another local process could have written is
+# not consent, and re-ticking five boxes is not the burden this is here to
+# remove.
+_DRAFT_COOKIE_NAME = "engineering_audit_config_draft"
+_DRAFT_COOKIE_MAX_AGE_S = 3600
+
+# A hard cap on the draft cookie before it is parsed. Sixteen domain ids and a
+# delivery mode is a few hundred bytes; anything past this did not come from
+# this page, and is dropped rather than parsed.
+_MAX_DRAFT_COOKIE_CHARS = 4096
+
+
+def _csp(script_nonce: str | None) -> str:
+    """The page's Content-Security-Policy, granting the one inline script this
+    page serves a per-response nonce and nothing else.
+
+    A nonce rather than 'unsafe-inline' because the two cannot be told apart
+    by a reader six months from now, and only one of them still says no to a
+    script this file did not write. Responses with no script of their own
+    (every error page, the submitted page, the heartbeat) get 'none', so the
+    grant exists only on the exact response that needs it.
+    """
+    script_src = f"'nonce-{script_nonce}'" if script_nonce else "'none'"
+    return (
+        "default-src 'none'; "
+        f"script-src {script_src}; "
+        "style-src 'unsafe-inline'; "
+        "connect-src 'self'; "
+        "form-action 'self'; "
+        "base-uri 'none'"
+    )
 
 # A generous but bounded cap on the submitted form body. The form is a
 # handful of checkboxes, a couple of radio buttons and one feedback
@@ -62,6 +117,67 @@ class _FormState:
     issue_mode: str
     feedback_text: str
     consent: TelemetryConsent
+
+
+@dataclass(frozen=True)
+class _ConfigDraft:
+    """The choices a previous configuration page saved when it noticed its own
+    server had gone: which domains were ticked, and which delivery mode.
+
+    Deliberately narrower than :class:`_FormState`. This one is rebuilt from a
+    cookie, which is to say from data this process did not write and cannot
+    vouch for, so it only carries the two fields whose worst case is a
+    pre-ticked box the user can see and change. Consent flags and feedback
+    text are not in it; see _DRAFT_COOKIE_NAME for why.
+    """
+
+    selected_domain_ids: set[str]
+    issue_mode: str
+
+
+def _parse_draft_cookie(header_value: str | None, known_domain_ids: set[str]) -> _ConfigDraft | None:
+    """Rebuild a :class:`_ConfigDraft` from a Cookie header, or None if there
+    is nothing usable in it.
+
+    Returning None for anything malformed is safe here, and is not the
+    "swallow the error" pattern this codebase refuses elsewhere, for one
+    specific reason: this value decides nothing. It pre-ticks boxes on a form
+    the user then reads and submits themselves, and the submission is
+    validated from scratch on the way back in. A draft that cannot be read
+    costs the user the re-ticking this feature was trying to save them, which
+    is exactly where they would have been without it, and it is never the
+    difference between an audit that ran and one that did not.
+    """
+    if not header_value or len(header_value) > _MAX_DRAFT_COOKIE_CHARS:
+        return None
+    jar: SimpleCookie = SimpleCookie()
+    try:
+        jar.load(header_value)
+    except CookieError:
+        return None
+    morsel = jar.get(_DRAFT_COOKIE_NAME)
+    if morsel is None:
+        return None
+    try:
+        payload = json.loads(unquote(morsel.value))
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+
+    raw_domains = payload.get("d")
+    if not isinstance(raw_domains, list):
+        return None
+    # Intersected with the pack actually loaded now, never trusted as given: a
+    # draft written against a different rules pack must not put an id on this
+    # page that this page cannot offer.
+    selected = {value for value in raw_domains if isinstance(value, str)} & known_domain_ids
+    if not selected:
+        return None
+
+    raw_mode = payload.get("m")
+    issue_mode = raw_mode if raw_mode in ("github", "report") else "report"
+    return _ConfigDraft(selected_domain_ids=selected, issue_mode=issue_mode)
 
 
 def _is_empty_domain_selection_error(exc: ValidationError) -> bool:
@@ -129,6 +245,12 @@ class ConfigServer:
         server = self
 
         class Handler(BaseHTTPRequestHandler):
+            # Set for the one response that carries the page's inline script,
+            # and left None for every other response, so end_headers can put a
+            # matching nonce in the CSP without any response ever granting a
+            # script it did not serve.
+            _script_nonce: str | None = None
+
             def log_message(self, format_str: str, *args: object) -> None:  # noqa: A002
                 # Best effort only: this is a localhost dev page, and request
                 # logging to stderr adds noise, not safety. Swallowing it here
@@ -141,19 +263,51 @@ class ConfigServer:
                 # this handler ever sends, including send_error's own error
                 # pages: a CSP only guards anything if it is genuinely on
                 # every response, not just the happy path.
-                self.send_header("Content-Security-Policy", _CSP)
+                self.send_header("Content-Security-Policy", _csp(self._script_nonce))
                 super().end_headers()
 
             def do_GET(self) -> None:  # noqa: N802 - stdlib handler method name
+                if self.path == _ALIVE_PATH:
+                    self._serve_heartbeat()
+                    return
                 if self.path not in ("/", ""):
                     self.send_error(HTTPStatus.NOT_FOUND)
                     return
-                body = server._render_form().encode("utf-8")
+                draft = _parse_draft_cookie(
+                    self.headers.get("Cookie"), {d.id for d in server._domains}
+                )
+                self._script_nonce = secrets.token_urlsafe(16)
+                body = server._render_form(
+                    draft=draft, script_nonce=self._script_nonce
+                ).encode("utf-8")
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
+                if draft is not None:
+                    # Restored once, then gone. A draft that outlived the page
+                    # it was restored into would quietly pre-tick a later,
+                    # unrelated audit with choices made for a different one,
+                    # and the user would have no way to tell that the ticks in
+                    # front of them were a leftover rather than the default.
+                    self.send_header(
+                        "Set-Cookie",
+                        f"{_DRAFT_COOKIE_NAME}=; Path=/; Max-Age=0; SameSite=Strict",
+                    )
                 self.end_headers()
                 self.wfile.write(body)
+
+            def _serve_heartbeat(self) -> None:
+                """Answer the page's liveness poll: no body, no work, no cache.
+
+                It exists so the page can tell that this process is still here.
+                Once it is gone nothing answers on this port at all, and the
+                page's failed fetch is the signal, which is why this endpoint
+                has nothing to say beyond 204.
+                """
+                self.send_response(HTTPStatus.NO_CONTENT)
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
 
             def do_POST(self) -> None:  # noqa: N802 - stdlib handler method name
                 if self.path != "/submit":
@@ -191,9 +345,15 @@ class ConfigServer:
                     config = server._parse_submission(fields)
                 except ValidationError as exc:
                     if _is_empty_domain_selection_error(exc):
+                        # This re-render gets its own nonce as well: it is the
+                        # same form, and a page that quietly lost its heartbeat
+                        # because the user forgot to tick a domain would be the
+                        # exact misleading state the heartbeat exists to end.
+                        self._script_nonce = secrets.token_urlsafe(16)
                         body = server._render_form(
                             error="Select at least one domain to audit.",
                             state=_form_state_from_fields(fields),
+                            script_nonce=self._script_nonce,
                         ).encode("utf-8")
                         self.send_response(HTTPStatus.BAD_REQUEST)
                         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -255,7 +415,14 @@ class ConfigServer:
             host = host.decode("ascii")
         return f"http://{host}:{port}/"
 
-    def _render_form(self, *, error: str | None = None, state: _FormState | None = None) -> str:
+    def _render_form(
+        self,
+        *,
+        error: str | None = None,
+        state: _FormState | None = None,
+        draft: _ConfigDraft | None = None,
+        script_nonce: str = "",
+    ) -> str:
         if state is not None:
             selected_ids = state.selected_domain_ids
             issue_mode = state.issue_mode
@@ -269,6 +436,13 @@ class ConfigServer:
             issue_mode = defaults.issue_mode if defaults else "report"
             consent = defaults.telemetry_consent if defaults else TelemetryConsent()
             feedback_text = (defaults.feedback_text or "") if defaults else ""
+            if draft is not None:
+                # A recovered draft beats the all-domains default, because it
+                # is a choice the user actually made, and it beats the run's
+                # own defaults for the same reason. It never touches consent:
+                # see _DRAFT_COOKIE_NAME.
+                selected_ids = draft.selected_domain_ids
+                issue_mode = draft.issue_mode
 
         domain_rows = []
         for domain in self._domains:
@@ -281,11 +455,24 @@ class ConfigServer:
                 "</label>"
             )
         domain_error = f'<p class="form-error">{html.escape(error)}</p>' if error else ""
+        draft_notice = (
+            '<p class="draft-notice">Your previous domain selection has been restored. '
+            "The consent boxes below start unticked: those are yours to choose again.</p>"
+            if draft is not None
+            else ""
+        )
 
         template = string.Template(self._template_text)
         return template.substitute(
             domain_checkboxes="\n".join(domain_rows),
             domain_error=domain_error,
+            draft_notice=draft_notice,
+            csp_nonce=html.escape(script_nonce),
+            alive_path=_ALIVE_PATH,
+            draft_cookie_name=_DRAFT_COOKIE_NAME,
+            draft_cookie_max_age=str(_DRAFT_COOKIE_MAX_AGE_S),
+            heartbeat_interval_ms=str(_HEARTBEAT_INTERVAL_MS),
+            heartbeat_failures_before_dead=str(_HEARTBEAT_FAILURES_BEFORE_DEAD),
             issue_mode_github_checked="checked" if issue_mode == "github" else "",
             issue_mode_report_checked="checked" if issue_mode == "report" else "",
             feedback_text=html.escape(feedback_text or ""),
