@@ -26,12 +26,12 @@ your own install before relying on it.
 pack (see the placeholder file for the exact command):
 
 ```
-gemini extensions install <repo-or-local-path-to-this-extension> --ref v0.5.0
+gemini extensions install <repo-or-local-path-to-this-extension> --ref v0.5.1
 ```
 
 Documented syntax: `gemini extensions install <url>` installs an extension from a
 git repository URL. A local, unpublished extension directory may need a different
-form; check `gemini extensions install --help` on your install. `--ref v0.5.0` pins
+form; check `gemini extensions install --help` on your install. `--ref v0.5.1` pins
 the install to the current tagged release rather than the moving `main` branch;
 see the root README's [How to use](../../README.md#how-to-use) section for how to find
 the latest tag and update to it deliberately. Drop `--ref` (or point it at a
@@ -48,7 +48,7 @@ your `~/.gemini/settings.json` (or the project-level `.gemini/settings.json`)
       "command": "uvx",
       "args": [
         "--from",
-        "git+https://github.com/rodlunt/engineering-audit@v0.5.0",
+        "git+https://github.com/rodlunt/engineering-audit@v0.5.1",
         "engineering-audit-mcp"
       ],
       "env": {
@@ -59,7 +59,7 @@ your `~/.gemini/settings.json` (or the project-level `.gemini/settings.json`)
 }
 ```
 
-`@v0.5.0` pins the install to the current tagged release rather than the moving `main` branch;
+`@v0.5.1` pins the install to the current tagged release rather than the moving `main` branch;
 see the root README's [How to use](../../README.md#how-to-use) section for how to find the latest tag
 and update to it deliberately.
 
