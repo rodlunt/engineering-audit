@@ -180,7 +180,7 @@ Two modes:
 | Assistant | Inline mode | Standalone audit |
 |---|---|---|
 | Claude Code | proven (in daily use via skills) | proven (recorded run 2026-08-09) |
-| OpenAI Codex CLI | documented, untested | documented, untested |
+| OpenAI Codex CLI | documented, untested | proven (recorded run 2026-08-10) |
 | Gemini CLI | documented, untested | documented, untested |
 | GitHub Copilot | unsupported | unsupported |
 
@@ -215,21 +215,19 @@ or delete it as that repository's own conventions dictate.
 ## What a full run costs
 
 A full sweep is token-hungry, and the configuration page's domain tick boxes are the cost
-control: cost scales close to linearly with the domains you tick. Budget from this
-recorded example run rather than guessing:
+control: cost scales close to linearly with the domains you tick. Budget from these
+recorded runs rather than guessing, one row per host that has completed one:
 
-| Measure | Recorded example (this repository, 2026-08-09) |
-|---|---|
-| Scope | all 16 domains of the standard pack, 260 rules |
-| Subagent tokens | 2,010,691 total, roughly 100k to 170k per domain |
-| Wall clock | 47 minutes end to end, sweeps running four at a time |
-| Findings | 33 (every one filed as a GitHub issue) |
+| Host | Scope | Wall clock | Findings | Subagent tokens |
+|---|---|---|---|---|
+| Claude Code, Fable 5 orchestrating Sonnet subagents (this repository, 2026-08-09) | all 16 domains, 260 rules | 47 minutes end to end, sweeps running four at a time | 33 (every one filed as a GitHub issue) | 2,010,691 total, roughly 100k to 170k per domain |
+| Codex CLI 0.147.0, gpt-5.6-luna (external React SPA, roughly 344 files, 2026-08-10) | all 16 domains of the standard pack | 61 minutes end to end | 32 (122 rules could not be evaluated) | not captured: the usage report exists but was not brought into this repository, so no figure is claimed here |
 
-Two caveats from the recorded run: the orchestrating conversation's own tokens are real
-overhead on top of the subagent figure and were not separately metered, and findings do
-not track cost (the cheapest domain produced the most findings; the dearest concluded
-honestly that nothing applied). The full per-domain table and sizing rules of thumb are
-in [docs/example-audit-cost.md](docs/example-audit-cost.md).
+The two hosts are not directly comparable row for row: Codex does not fan out to one
+subagent per domain the way the Claude Code skill does, so the Claude Code row's
+per-domain token range and its "four at a time" wall-clock shape do not transfer to the
+Codex figures. Full per-host detail, including everything each run did and did not
+measure, is in [docs/example-audit-cost.md](docs/example-audit-cost.md).
 
 ## The report
 

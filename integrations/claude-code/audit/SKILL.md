@@ -16,18 +16,23 @@ if the two ever disagree, `AUDIT.md` wins.
 ## Flow (summary)
 
 1. Gather run metadata: repository name, `git rev-parse HEAD`, your own assistant/model identity,
-   and an ISO 8601 started timestamp.
-2. Call `begin_run` with that metadata and `output_dir` set to `<repo>/audit-output/`.
+   an ISO 8601 started timestamp, and the host environment (see below).
+2. Call `begin_run` with that metadata and `output_dir` set to `<repo>/audit-output/`. Pass
+   `environment` with exactly these keys, omitting any you cannot determine: `os` (read from the
+   machine, e.g. `uname -sr` or `sw_vers`), `host_cli` (`"claude-code"`) and `host_cli_version`
+   (`claude --version`). Any other key is refused: see `AUDIT.md` step 1 for why the set is
+   closed.
 3. Call `start_config`.
    - **Preset mode** (`ENGINEERING_AUDIT_CONFIG` env var set): the config is already loaded, skip
      to step 4.
    - **Interactive mode**: the response has a `url`. **Show it to the user as a clickable
      line** (do not open it yourself, and do not try to fetch or wait on it via Bash) and ask
-     them to choose domains there. Then call `get_config` with a sensible `timeout_s` to block
-     until they submit.
-   - **If `get_config` times out**, tell the user plainly that the audit is waiting on them and
-     stop. Do not proceed with a guessed domain selection. Call `get_config` again once they
-     confirm.
+     them to choose domains there. Then **call `get_config` in a loop**: while its response's
+     `status` is `"waiting"`, call it again. Go to step 4 only once the status is
+     `"configured"`.
+   - **If `get_config` raises**, the run's overall waiting deadline has expired. Tell the user
+     plainly that the audit is waiting on them and stop. Do not proceed with a guessed domain
+     selection. Call `get_config` again, with a larger `timeout_s`, once they confirm.
 4. For each selected domain id: call `get_domain`, read the full rule text, sweep the repository
    giving every rule an honest verdict (`pass`, `finding`, `not-applicable`, or
    `could-not-evaluate` with a reason: never a guessed `pass`), then call
@@ -41,8 +46,11 @@ if the two ever disagree, `AUDIT.md` wins.
 ## Claude-Code-specific notes
 
 - **Drive the config wait through the `get_config` tool, not Bash.** Do not poll the config
-  server with `curl`, and do not try to open the browser yourself. `get_config` already blocks on
-  the user's submission and raises a clear error on timeout; that is the whole mechanism.
+  server with `curl`, and do not try to open the browser yourself. Calling `get_config` while its
+  `status` is `"waiting"` is the whole mechanism; each call returns within about 25 seconds, so
+  the loop is cheap and never sits inside one long-running tool call.
+- **A `"waiting"` response is not an error and not a configuration.** Say the audit is waiting on
+  the user the first time you see one, then keep polling without narrating every call.
 - **Show the config URL as a clickable line**, e.g. `Open this to choose domains:
   http://127.0.0.1:PORT/`, so the terminal renders it as a link the user can click straight away.
 - Severity guidance, the file:line citation rule, and the issue_title/issue_body

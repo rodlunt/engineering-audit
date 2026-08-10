@@ -65,6 +65,21 @@ the 32 KiB boundary would drop triggers with no warning.
 
 ## Standalone audit mode
 
+### Host environment metadata
+
+`begin_run` takes an `environment` map, and Codex should populate it: on this host
+that is `{"os": "<from uname -sr or sw_vers>", "host_cli": "codex",
+"host_cli_version": "<from codex --version>"}`. Those three keys are the whole
+accepted set and any other key is refused; omit one you cannot determine rather
+than guessing. `AUDIT.md` step 1 has the full rules and the reason the set is
+closed.
+
+This is not bookkeeping for its own sake. [#85](https://github.com/rodlunt/engineering-audit/issues/85)
+was caused by a host-side MCP timeout specific to a Codex CLI version, and the
+reporter had to hand-type "macOS" and "Codex CLI 0.147.0" into the issue because the
+report could not supply either: the header's `Assistant: codex` and
+`Model: gpt-5.6-luna` rows identify neither.
+
 **Interactive**: start a normal `codex` session in the repository to be audited and
 tell it to read `AUDIT.md` (from this tool's repository) and run the audit using the
 `engineering-audit` MCP tools. Recommended flags for an interactive run:
@@ -90,6 +105,71 @@ via `cat AUDIT.md | codex exec -` (or `codex exec -` with the same input
 redirected) is a supported way to hand it the audit procedure. A short driver
 prompt that just points at `AUDIT.md` and the target repository works equally well
 if you would rather not pipe the whole document in.
+
+### Preset configuration for headless runs
+
+**Set `ENGINEERING_AUDIT_CONFIG` for any unattended `codex exec` run.** Without it,
+the run takes the interactive path: `start_config` opens a localhost page and the
+audit stops dead until a human ticks domains in a browser, which is not a thing an
+unattended run has. Point it at a valid `AuditConfig` JSON file and `start_config`
+loads it directly instead:
+
+```
+ENGINEERING_AUDIT_CONFIG=/path/to/config.json codex exec - < AUDIT.md
+```
+
+An `AuditConfig` JSON file looks like:
+
+```json
+{
+  "selected_domain_ids": ["d01", "d02"],
+  "issue_mode": "report",
+  "telemetry_consent": {
+    "coverage": true,
+    "rollup": true,
+    "self_assessment": true,
+    "environment": false
+  }
+}
+```
+
+`selected_domain_ids` must be non-empty and every id must exist in the loaded rules
+pack, or `start_config` refuses the file with a clear error rather than falling back
+to a default selection. See `src/engineering_audit/schema.py`'s `AuditConfig` model
+for the full field list.
+
+This section exists because its absence caused
+[#85](https://github.com/rodlunt/engineering-audit/issues/85): the Claude Code
+integration README documented the preset path and this one did not, so a headless
+Codex run went down the interactive path and stalled.
+
+### `tool_timeout_sec` and the configuration wait
+
+Codex applies a per-server MCP tool timeout, `mcp_servers.<name>.tool_timeout_sec`
+in `~/.codex/config.toml`, and cancels any tool call that outlives it. In an
+interactive run the tool call that waits longest is `get_config`, because it is
+waiting on a person.
+
+`get_config` does not hold a single call open for the whole of that wait. It blocks
+for about 25 seconds, returns `status: "waiting"`, and expects the assistant to call
+it again (see `AUDIT.md` step 3). That sits comfortably under any plausible
+`tool_timeout_sec`, so the default needs no adjustment for the sake of this tool.
+
+If you have lowered `tool_timeout_sec` below about 30 seconds for other reasons,
+raise it back for this server:
+
+```toml
+[mcp_servers.engineering-audit]
+tool_timeout_sec = 60
+```
+
+What a cancelled call costs is worth knowing, because it is not just one failed
+tool call: `codex exec` exits after the failure, which terminates the stdio MCP
+process and the localhost configuration server it was hosting. The browser page
+stays open and still looks usable, but submitting it reaches nothing. The page now
+notices this itself, disables its submit button and says so, and the domains you
+had ticked are restored into the fresh page a resumed run opens; the run is
+recoverable from `audit-output/run-state.progress.json` either way.
 
 ### Approval and sandboxing for headless runs
 
