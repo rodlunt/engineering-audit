@@ -218,16 +218,20 @@ A full sweep is token-hungry, and the configuration page's domain tick boxes are
 control: cost scales close to linearly with the domains you tick. Budget from these
 recorded runs rather than guessing, one row per host that has completed one:
 
-| Host | Scope | Wall clock | Findings | Subagent tokens |
+| Host | Scope | Active time | Findings | Tokens |
 |---|---|---|---|---|
-| Claude Code, Fable 5 orchestrating Sonnet subagents (this repository, 2026-08-09) | all 16 domains, 260 rules | 47 minutes end to end, sweeps running four at a time | 33 (every one filed as a GitHub issue) | 2,010,691 total, roughly 100k to 170k per domain |
-| Codex CLI 0.147.0, gpt-5.6-luna (external React SPA, roughly 344 files, 2026-08-10) | all 16 domains of the standard pack | 61 minutes end to end | 32 (122 rules could not be evaluated) | not captured: the usage report exists but was not brought into this repository, so no figure is claimed here |
+| Claude Code, Fable 5 orchestrating Sonnet subagents (this repository, 2026-08-09) | all 16 domains, 260 rules | 47 minutes end to end, sweeps running four at a time | 33 (every one filed as a GitHub issue) | 2,010,691 subagent tokens, roughly 100k to 170k per domain (excludes the orchestrator) |
+| Codex CLI 0.147.0, gpt-5.6-sol at high reasoning effort (external React SPA, roughly 344 files, 2026-08-10) | all 16 domains of the standard pack | 19 minutes 21 seconds | 32 (122 rules could not be evaluated) | 6,172,397 input plus output, of which 96% is cached input; 269,293 non-cached input plus output |
 
-The two hosts are not directly comparable row for row: Codex does not fan out to one
-subagent per domain the way the Claude Code skill does, so the Claude Code row's
-per-domain token range and its "four at a time" wall-clock shape do not transfer to the
-Codex figures. Full per-host detail, including everything each run did and did not
-measure, is in [docs/example-audit-cost.md](docs/example-audit-cost.md).
+**The two token columns are not the same measurement and must not be subtracted or
+averaged.** Codex does not fan out to one subagent per domain the way the Claude Code skill
+does, and that single difference drives everything: fanning out gives each subagent a small
+fresh context and bills mostly uncached input, while staying in one long context re-reads a
+large accumulated context every turn. Hence Codex's 6.17M being 96 per cent cache reads.
+The Claude Code figure counts per-subagent totals and excludes the orchestrator conversation
+entirely. Use each row within itself, for the shape of run it describes. Full per-host
+detail, including what each run did and did not measure, is in
+[docs/example-audit-cost.md](docs/example-audit-cost.md).
 
 ## The report
 
