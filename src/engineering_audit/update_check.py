@@ -26,10 +26,11 @@ the user their stale build is fine, which is worse than saying nothing.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 
-__all__ = ["TOOL_REPO_URL", "check_for_update"]
+__all__ = ["TOOL_REPO_URL", "check_for_update", "check_pack_for_update"]
 
 # The tool's own repository. `feedback.py`'s FEEDBACK_REPO is a separate
 # "owner/name" slug used for `gh` issue filing (a different API, a different
@@ -167,3 +168,76 @@ def check_for_update(
         return _resolve_update_status(result.stdout, installed_commit, installed_version)
     except Exception as exc:  # noqa: BLE001 - telemetry only, never fatal; see module docstring
         return f"could-not-check: unexpected error parsing remote refs ({exc})"
+
+
+def _pack_remote_url(pack_dir: str) -> str | None:
+    """The pack's ``origin`` URL, or None if it has no remote or git could not
+    run. A pack served from a plain directory with no remote is a normal,
+    supported case, not an error."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", pack_dir, "remote", "get-url", "origin"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def check_pack_for_update(
+    pack_dir: str,
+    pack_commit: str | None,
+    pack_version: str | None,
+) -> str:
+    """Best-effort: compare the loaded rules pack against its own remote's
+    latest release tag. Same tri-state contract as :func:`check_for_update`.
+
+    This exists because the tool checked itself for staleness and did not
+    check its ruleset, which is the thing that actually determines what gets
+    audited. A run against a pack a year behind the published one produces
+    confident findings against superseded rules and, before this, said
+    nothing about it.
+
+    A pack with no remote, no tags, or no git at all reports could-not-check.
+    That is the common case for a third-party or vendored pack and is a
+    perfectly legitimate way to run the tool, so it must never read as
+    "current": a check that could not run is not evidence of freshness.
+
+    ``GIT_TERMINAL_PROMPT=0`` is set throughout because the standard pack is a
+    private repository. Without it, a machine lacking cached credentials would
+    have git block on an interactive password prompt inside what is meant to
+    be optional telemetry, hanging the run.
+    """
+    if pack_commit is None:
+        return "could-not-check: rules pack's commit is unknown (not a git checkout)"
+    if pack_commit.endswith("-dirty"):
+        # Deliberately not "stale": a modified working tree may be ahead of the
+        # latest release, behind it, or neither. What is certain is that it
+        # corresponds to no released version, so no comparison is meaningful.
+        return "could-not-check: rules pack has uncommitted changes, so it matches no release"
+
+    remote_url = _pack_remote_url(pack_dir)
+    if remote_url is None:
+        return "could-not-check: rules pack has no origin remote to compare against"
+
+    try:
+        result = _run_ls_remote(remote_url)
+    except Exception as exc:  # noqa: BLE001 - telemetry only, never fatal; see module docstring
+        return f"could-not-check: unexpected error running git ls-remote on the pack ({exc})"
+
+    if result is None:
+        return "could-not-check: git is not available or the pack's remote check timed out"
+    if result.returncode != 0:
+        stderr_snippet = result.stderr.strip().splitlines()[0] if result.stderr.strip() else ""
+        suffix = f": {stderr_snippet}" if stderr_snippet else ""
+        return f"could-not-check: git ls-remote on the pack failed{suffix}"
+
+    try:
+        return _resolve_update_status(result.stdout, pack_commit, pack_version or "unknown")
+    except Exception as exc:  # noqa: BLE001 - telemetry only, never fatal; see module docstring
+        return f"could-not-check: unexpected error parsing the pack's remote refs ({exc})"
