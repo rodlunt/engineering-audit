@@ -346,6 +346,23 @@ class RunMeta(BaseModel):
     )
     assistant: str
     model: str
+    earlier_contributors: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Assistant/model pairs that worked on this run before the current one, "
+            "oldest first, each formatted 'assistant/model'. Populated only when a "
+            "resume is picked up by a different assistant or model from the one that "
+            "started the run. Empty for the normal case of a run finished by whoever "
+            "began it.\n\n"
+            "This exists because 'assistant' and 'model' name the CURRENT worker, and "
+            "a resumed run genuinely has more than one. Before this field, a resume "
+            "kept the original pair and silently discarded the caller's, so the "
+            "report's provenance header credited whichever model happened to start "
+            "the run rather than the one that produced the findings. Overwriting "
+            "without recording the earlier pair would have been the same bug pointing "
+            "the other way; the header needs to be able to name every contributor."
+        ),
+    )
     repo_name: str
     repo_commit: str
     started: str

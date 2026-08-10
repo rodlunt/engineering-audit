@@ -2232,6 +2232,45 @@ def test_resume_warns_when_the_repository_has_moved_on_a_commit(
     assert any("abc1234" in w and "9999999" in w for w in resumed["warnings"])
 
 
+def test_resume_by_a_different_model_records_both_and_warns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The saved pair produced the results already in the file; this call's pair
+    # will produce the rest. Both are true of the finished run, so the report
+    # has to be able to name both. Keeping only the saved pair was #93: the
+    # caller handed in the right answer on every resume and it was discarded
+    # silently, so the provenance header credited whoever started the run.
+    out_dir = tmp_path / "audit-output"
+    _interrupted_run(tmp_path, monkeypatch, out_dir)
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    resumed = _begin_run(mcp, out_dir, resume=True, assistant="codex", model="gpt-5.6-sol")
+
+    assert resumed["resumed"] is True
+    assert resumed["meta"]["assistant"] == "codex"
+    assert resumed["meta"]["model"] == "gpt-5.6-sol"
+    assert resumed["meta"]["earlier_contributors"] == ["claude-code/claude-sonnet-5"]
+    assert any(
+        "claude-code/claude-sonnet-5" in w and "codex/gpt-5.6-sol" in w
+        for w in resumed["warnings"]
+    )
+
+
+def test_resume_by_the_same_model_records_no_earlier_contributor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The ordinary case. Nothing changed hands, so the header must not sprout a
+    # contributors row implying it did.
+    out_dir = tmp_path / "audit-output"
+    _interrupted_run(tmp_path, monkeypatch, out_dir)
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    resumed = _begin_run(mcp, out_dir, resume=True)
+
+    assert resumed["meta"]["earlier_contributors"] == []
+    assert not any("previous contributor" in w for w in resumed["warnings"])
+
+
 def test_resume_refuses_when_the_rules_pack_no_longer_has_a_selected_domain(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
