@@ -95,6 +95,13 @@ repository's HEAD commit or the rules pack has changed since the run started, in
 run keeps the original commit, because that is what the recorded results were actually checked
 against.
 
+Pass your own `assistant` and `model` on a resume exactly as you would on a fresh run: your
+own, not the ones the saved run recorded. If they differ, the run keeps both, naming you as the
+assistant and model and listing the earlier pair under `earlier_contributors`, and `warnings`
+says so. Do not try to be helpful by echoing back the saved values to keep them stable. The
+report's header is a provenance record, and a resumed run genuinely had more than one
+contributor; claiming otherwise credits findings to a model that did not produce them.
+
 If any later tool response carries a `warnings` entry about crash-recovery state not being
 saved, pass it on to the user: the run itself is fine and its results are intact, but from that
 point it can no longer be resumed if the server stops.

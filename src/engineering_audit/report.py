@@ -155,6 +155,16 @@ def _render_meta_block(run_state: RunState) -> str:
         ("Rules commit", meta.rules_pack_commit or "unknown"),
         ("Assistant", meta.assistant),
         ("Model", meta.model),
+        # Only rendered for a resumed run picked up by a different assistant or
+        # model. Naming just the current pair would credit it with findings an
+        # earlier one recorded, which is the defect this row exists to close
+        # (#93): a provenance header that is confidently wrong is worse than one
+        # that is absent, because nothing prompts the reader to doubt it.
+        *(
+            [("Earlier contributors", ", ".join(meta.earlier_contributors))]
+            if meta.earlier_contributors
+            else []
+        ),
         ("Tool version", meta.tool_version),
         ("Tool commit", meta.tool_commit or "unknown"),
         ("Tool update", meta.update_check or "not checked"),

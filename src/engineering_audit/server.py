@@ -564,6 +564,8 @@ def _resume_run(
     repo_dir: Path | None,
     repo_name: str,
     repo_commit: str,
+    assistant: str,
+    model: str,
 ) -> dict[str, Any]:
     """Rebuild the tracker from a persisted run and install it as the run in
     progress.
@@ -615,6 +617,33 @@ def _resume_run(
             "from here on is against the newer working tree. Tell the user, and offer to start "
             "fresh (resume=False) if the repository has moved on materially."
         )
+    resumed_meta = progress.meta
+    if (progress.meta.assistant, progress.meta.model) != (assistant, model):
+        # The saved pair describes whoever recorded the results already in the
+        # file; this call's pair describes whoever will record the rest. Both
+        # are true of the finished run, so keep both rather than choosing.
+        #
+        # Keeping only the saved pair was the original bug (#93): the caller
+        # handed in the correct current values on every resume and they were
+        # discarded without a word, so the report's provenance header credited
+        # whichever assistant happened to start the run. Overwriting instead
+        # would be the same bug pointing the other way, erasing the model that
+        # produced the already-recorded findings.
+        earlier = f"{progress.meta.assistant}/{progress.meta.model}"
+        resumed_meta = progress.meta.model_copy(
+            update={
+                "assistant": assistant,
+                "model": model,
+                "earlier_contributors": [*progress.meta.earlier_contributors, earlier],
+            }
+        )
+        warnings.append(
+            f"The saved run was started by {earlier}, and this call is {assistant}/{model}. "
+            "The report will name the current pair as the assistant and model, and list the "
+            "earlier one as a previous contributor, because the recorded results were not all "
+            "produced by the same one. Tell the user."
+        )
+
     current_pack_commit = _git_commit(state.pack.root)
     if progress.meta.rules_pack_commit != current_pack_commit:
         warnings.append(
@@ -637,7 +666,7 @@ def _resume_run(
             )
 
     run = RunTracker(
-        meta=progress.meta,
+        meta=resumed_meta,
         output_dir=output_dir,
         repo_dir=resolved_repo_dir,
         config=config,
@@ -1034,7 +1063,14 @@ def _register_run_tools(mcp: MCPServer, state: AppState) -> None:
         if decision is True:
             assert prior is not None  # resume=True with no prior run raised above
             return _resume_run(
-                state, prior, output_dir_path, repo_dir_path, repo_name, repo_commit
+                state,
+                prior,
+                output_dir_path,
+                repo_dir_path,
+                repo_name,
+                repo_commit,
+                assistant,
+                model,
             )
 
         tool_version_value = tool_version or _default_tool_version()

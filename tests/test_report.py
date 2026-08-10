@@ -127,6 +127,28 @@ def test_render_report_contains_finding_titles_and_could_not_evaluate_entries() 
     assert "the garden bed ledger file could not be located in this repository" in rendered
 
 
+def test_header_names_earlier_contributors_on_a_handed_over_run() -> None:
+    # The header is where #93 actually bit: it named the model that started the
+    # run rather than the one that produced the findings, with nothing to
+    # prompt a reader to doubt it. A run worked on by two must say so.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.meta.earlier_contributors = ["codex/gpt-5.6-luna"]
+    rendered = render_report(run_state, pack)
+
+    assert "Earlier contributors" in rendered
+    assert "codex/gpt-5.6-luna" in rendered
+
+
+def test_header_has_no_contributors_row_for_an_ordinary_run() -> None:
+    # An empty list must render nothing at all, not an empty row: a blank
+    # "Earlier contributors" cell would imply a handover that never happened.
+    pack = _pack()
+    rendered = render_report(_base_run_state(pack), pack)
+
+    assert "Earlier contributors" not in rendered
+
+
 def test_rollup_counts_match_computed_sums() -> None:
     pack = _pack()
     run_state = _base_run_state(pack)
