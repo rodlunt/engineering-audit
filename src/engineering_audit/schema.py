@@ -344,6 +344,19 @@ class RunMeta(BaseModel):
             "reported as current."
         ),
     )
+    pack_update_check: str | None = Field(
+        default=None,
+        description=(
+            "Tri-state result of comparing the loaded rules pack against its own "
+            "remote's latest release tag, prefixed 'current', 'stale', or "
+            "'could-not-check'. Same contract and same discipline as update_check, "
+            "which does this for the tool itself: 'could-not-check' is distinct from "
+            "'current' and a check that could not run must never read as freshness. "
+            "None means the field predates this build, e.g. an older run-state file.\n\n"
+            "The tool checked itself for staleness and did not check its ruleset, which "
+            "is the thing that decides what actually gets audited."
+        ),
+    )
     assistant: str
     model: str
     earlier_contributors: list[str] = Field(

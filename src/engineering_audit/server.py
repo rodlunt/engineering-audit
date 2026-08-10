@@ -77,7 +77,7 @@ from engineering_audit.schema import (
     validate_consulted_sources,
     validate_environment,
 )
-from engineering_audit.update_check import check_for_update
+from engineering_audit.update_check import check_for_update, check_pack_for_update
 
 __all__ = ["AppState", "FinishedRun", "PriorRun", "RunTracker", "build_server", "main"]
 
@@ -183,6 +183,40 @@ def _git_commit(path: Path) -> str | None:
     if status is None or status.returncode != 0:
         return None
     return f"{sha}-dirty" if status.stdout.strip() else sha
+
+
+def _git_release_version(path: Path) -> str | None:
+    """Best-effort: the release version of the rules pack at ``path``, as the
+    most recent version tag reachable from HEAD, with a ``+`` suffix when HEAD
+    has moved past that tag.
+
+    A report identifies its rules by commit SHA, which is precise and tells a
+    reader nothing without a checkout of the pack to resolve it against. The
+    standard pack publishes semantic-version releases, so "audited against
+    rules pack v0.6.0" is the statement worth making, and a finding is a claim
+    measured against a specific version of a rule.
+
+    None means could-not-determine (git missing, not a repository, no version
+    tags, or the call failed), and renders as "unknown" downstream. It is never
+    inferred or fabricated: a third-party pack with no tags legitimately has no
+    version, and saying so is the honest answer rather than guessing one from
+    a commit date or a directory name.
+
+    The ``+`` suffix matters more than it looks. A pack sitting several commits
+    past v0.6.0 is not v0.6.0, and reporting it as such would attribute
+    findings to rule text that release does not contain. Same failure as
+    reporting a resumed run's original model: a precise-looking provenance
+    value that is quietly wrong.
+    """
+    describe = _run_git(["describe", "--tags", "--abbrev=0", "--match", "v*"], path)
+    if describe is None or describe.returncode != 0:
+        return None
+    tag = describe.stdout.strip()
+    if not tag:
+        return None
+    exact = _run_git(["describe", "--tags", "--exact-match", "--match", "v*"], path)
+    at_tag = exact is not None and exact.returncode == 0
+    return tag if at_tag else f"{tag}+"
 
 
 @dataclass
@@ -1075,12 +1109,18 @@ def _register_run_tools(mcp: MCPServer, state: AppState) -> None:
 
         tool_version_value = tool_version or _default_tool_version()
         tool_commit_value = _default_tool_commit()
+        pack_version_value = _git_release_version(state.pack.root)
+        pack_commit_value = _git_commit(state.pack.root)
         meta = RunMeta(
             tool_version=tool_version_value,
             tool_commit=tool_commit_value,
             rules_pack_name=state.pack.root.name,
-            rules_pack_commit=_git_commit(state.pack.root),
+            rules_pack_version=pack_version_value,
+            rules_pack_commit=pack_commit_value,
             update_check=check_for_update(tool_commit_value, tool_version_value),
+            pack_update_check=check_pack_for_update(
+                str(state.pack.root), pack_commit_value, pack_version_value
+            ),
             assistant=assistant,
             model=model,
             repo_name=repo_name,

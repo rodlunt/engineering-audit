@@ -12,6 +12,7 @@ from engineering_audit.update_check import (
     TOOL_REPO_URL,
     _resolve_update_status,
     check_for_update,
+    check_pack_for_update,
 )
 import engineering_audit.update_check as update_check_module
 
@@ -251,3 +252,31 @@ def test_report_meta_block_shows_stale_status_when_set() -> None:
         '<div class="meta-value">stale: latest release is v0.5.0 (aaaa1111), installed build '
         "is 0.4.0 @ bbbb2222</div>" in rendered
     )
+
+
+class TestCheckPackForUpdate:
+    """The pack staleness check must obey the same rule as the tool's: a check
+    that could not run is never evidence of freshness."""
+
+    def test_unknown_pack_commit_cannot_read_as_current(self, tmp_path):
+        result = check_pack_for_update(str(tmp_path), None, None)
+
+        assert result.startswith("could-not-check")
+        assert "current" != result
+
+    def test_a_dirty_pack_is_could_not_check_not_stale(self, tmp_path):
+        # A modified working tree may be ahead of the latest release, behind
+        # it, or neither. It corresponds to no released version, so no
+        # comparison is meaningful and "stale" would be a guess.
+        result = check_pack_for_update(str(tmp_path), "abc123-dirty", "v0.6.0")
+
+        assert result.startswith("could-not-check")
+        assert "uncommitted changes" in result
+
+    def test_a_pack_with_no_remote_is_could_not_check(self, tmp_path):
+        # A vendored or third-party pack with no origin is a legitimate way to
+        # run the tool, so this must not fail the run, and must not claim the
+        # pack is current either.
+        result = check_pack_for_update(str(tmp_path), "a" * 40, "v0.6.0")
+
+        assert result.startswith("could-not-check")
