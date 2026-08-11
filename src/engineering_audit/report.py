@@ -588,6 +588,118 @@ def _not_applicable_list(
     return "".join(parts)
 
 
+# The one sentence this block is allowed to claim, and the limit that comes
+# with it. Fetching rule text is not reading it: an agent can call get_domain
+# for every domain, discard every byte and bulk-mark anyway, and this block
+# shows a clean bill of health. Said on every rendering, including the clean
+# one, because a clean result is exactly where a reader is most likely to
+# upgrade "fetched" into "audited" on the tool's behalf (issue #110).
+_RULES_FETCHED_LIMIT = (
+    "<p>This says the rule text was fetched from the server, and nothing more. It is not "
+    "evidence that the rules were read, or applied, or that the verdicts below follow from "
+    "them: a run that fetched every domain and then guessed would look the same here. What "
+    "it can show is the opposite case, where the rules were never even asked for.</p>"
+)
+
+
+def _domain_ids_with_verdicts(selected: dict[str, DomainResult]) -> list[str]:
+    """The selected domains that recorded at least one rule verdict.
+
+    The fetch check is about verdicts reached without the rules, so a domain
+    that reached none is outside it. A could-not-run domain carries no verdicts
+    by construction (see DomainResult) and is already reported by the could not
+    evaluate block; naming it here as well would read as a second, separate
+    fault.
+    """
+    return [domain_id for domain_id, result in selected.items() if result.rule_verdicts]
+
+
+def _rules_fetched_list(
+    run_state: RunState,
+    selected: dict[str, DomainResult],
+    domain_titles: dict[str, str],
+) -> str:
+    """The 'Rules fetched' block: which domains recorded verdicts without their
+    rule text ever being requested from the server.
+
+    ``get_domain`` is the only thing in this package that returns rule body
+    text, so the set of domains it served is the one observable event that
+    could have supplied the rules a verdict rests on. Rendered next to the not
+    applicable block because it is the same class of problem: another way a
+    domain can look audited without being audited (issues #100 and #110).
+
+    Three outcomes per domain, never two. ``rules_fetched_domain_ids`` is None
+    for a run whose state predates the record, and every domain in it is
+    unknown; a domain in ``rules_fetch_unknown_domain_ids`` was carried into a
+    resumed run from such a record. Unknown is rendered as unknown, never
+    folded into either answer.
+    """
+    considered = _domain_ids_with_verdicts(selected)
+    if not considered:
+        return (
+            "<h3>Rules fetched</h3>"
+            "<p>No selected domain recorded a rule verdict, so there is nothing here to "
+            "check the fetched rule text against. See the could not evaluate block above "
+            "for what did happen.</p>"
+        )
+
+    recorded = run_state.rules_fetched_domain_ids
+    if recorded is None:
+        # Nothing in this run-state distinguishes a domain that was fetched
+        # from one that was not, because the build that wrote it recorded
+        # neither. Saying so is the whole answer.
+        return (
+            "<h3>Rules fetched: not recorded</h3>"
+            "<p>This run's saved state was written before the tool recorded which domains "
+            "had their rule text fetched, so for every domain here the answer is unknown. "
+            "Unknown is not a pass and not a failure: it means this report cannot tell you "
+            "whether the rules behind these verdicts were ever requested.</p>"
+        )
+
+    fetched_ids = set(recorded)
+    unknown_ids = set(run_state.rules_fetch_unknown_domain_ids) - fetched_ids
+    unknown = [d for d in considered if d in unknown_ids]
+    missing = [d for d in considered if d not in fetched_ids and d not in unknown_ids]
+
+    def _names(domain_ids: list[str]) -> str:
+        return ", ".join(
+            f"{_esc(domain_titles[domain_id])} ({_esc(domain_id)})" for domain_id in domain_ids
+        )
+
+    if not missing and not unknown:
+        return (
+            "<h3>Rules fetched</h3>"
+            f'<p class="ok">All {len(considered)} domain(s) that recorded verdicts had their '
+            "rule text fetched from this server first.</p>" + _RULES_FETCHED_LIMIT
+        )
+
+    heading = (
+        f"Rules fetched ({len(missing)} of {len(considered)} domain(s) never fetched)"
+        if missing
+        else f"Rules fetched (not recorded for {len(unknown)} domain(s))"
+    )
+    parts = [f"<h3>{heading}</h3>"]
+    if missing:
+        parts.append(
+            f"<p><strong>{len(missing)} domain(s) recorded rule verdicts without their rule "
+            f"text ever being fetched this run</strong>: {_names(missing)}.</p>"
+        )
+        parts.append(
+            "<p>The rules for a domain are served by one call, and no such call was recorded "
+            "for these. Unless their rules were read some other way, the verdicts in them "
+            "were reached without the rules they are supposed to be verdicts on. Treat them "
+            "as unsupported until they are redone.</p>"
+        )
+    if unknown:
+        parts.append(
+            f"<p>{len(unknown)} domain(s) were carried into this run from a saved record "
+            "written before the tool recorded any of this, so whether their rules were "
+            f"fetched is not recorded, which is neither answer: {_names(unknown)}.</p>"
+        )
+    parts.append(_RULES_FETCHED_LIMIT)
+    return "".join(parts)
+
+
 def _self_assessment_list(selected: dict[str, DomainResult], domain_titles: dict[str, str]) -> str:
     rows = []
     for domain_id, result in selected.items():
@@ -1057,6 +1169,8 @@ def render_report(run_state: RunState, pack: RulesPack) -> str:
         f"{_could_not_evaluate_list(selected, rule_index, domain_titles)}</div>"
         f'<div class="perf-block prominent">'
         f"{_not_applicable_list(selected, rule_index, domain_titles)}</div>"
+        f'<div class="perf-block prominent">'
+        f"{_rules_fetched_list(run_state, selected, domain_titles)}</div>"
         f'<div class="perf-block"><h3>Self-assessment by domain</h3>'
         f"{_self_assessment_list(selected, domain_titles)}</div>"
         f'<div class="perf-block"><h3>Environment</h3>{_environment_info(run_state)}</div>'

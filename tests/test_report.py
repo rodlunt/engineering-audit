@@ -405,6 +405,122 @@ def test_not_applicable_groups_rows_by_reason_sorted_by_descending_count() -> No
     assert rendered.index(common_reason) < rendered.index(rare_reason)
 
 
+# ---------------------------------------------------------------------------
+# Rules fetched (issue #110)
+# ---------------------------------------------------------------------------
+
+# The sentence the block must always carry, in every state that reports an
+# answer: fetching is not reading. Pinned as a constant so a rewording of the
+# block cannot quietly drop the limit and leave the claim behind.
+_LIMIT_SENTENCE = "This says the rule text was fetched from the server, and nothing more."
+
+
+def test_rules_fetched_names_a_domain_that_recorded_verdicts_without_them() -> None:
+    # The failure this exists for (issue #110): 260 verdicts recorded against
+    # rule text that was never requested, and a report that said nothing.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.rules_fetched_domain_ids = ["d01"]
+    rendered = render_report(run_state, pack)
+
+    assert "Rules fetched (1 of 2 domain(s) never fetched)" in rendered
+    assert (
+        "1 domain(s) recorded rule verdicts without their rule text ever being fetched "
+        "this run</strong>: Teacup Logistics Handling (d02)" in rendered
+    )
+    assert "Treat them as unsupported until they are redone." in rendered
+    assert _LIMIT_SENTENCE in rendered
+
+
+def test_rules_fetched_clean_result_states_what_it_cannot_show() -> None:
+    # The clean rendering is where a reader is most likely to upgrade
+    # "fetched" into "audited" on the tool's behalf, so the limit is loudest
+    # exactly here.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.rules_fetched_domain_ids = ["d01", "d02"]
+    rendered = render_report(run_state, pack)
+
+    assert (
+        "All 2 domain(s) that recorded verdicts had their rule text fetched from this "
+        "server first." in rendered
+    )
+    assert _LIMIT_SENTENCE in rendered
+    assert "a run that fetched every domain and then guessed would look the same here" in rendered
+    # Never the stronger claim. The block can say the rule text was fetched;
+    # it can never say the rules were read or applied, and it says so.
+    assert "It is not evidence that the rules were read, or applied" in rendered
+    assert "rules were applied" not in rendered
+
+
+def test_rules_fetched_reports_an_older_run_state_as_not_recorded() -> None:
+    # An older run-state never recorded this. Unknown renders as unknown: not
+    # as a clean bill of health, and not as an accusation either.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    assert run_state.rules_fetched_domain_ids is None
+    rendered = render_report(run_state, pack)
+
+    assert "Rules fetched: not recorded" in rendered
+    assert "Unknown is not a pass and not a failure" in rendered
+    assert "never being fetched this run" not in rendered
+    assert "had their rule text fetched from this server first" not in rendered
+
+
+def test_rules_fetched_keeps_a_resumed_legacy_domain_separate_from_a_skipped_one() -> None:
+    # A resumed run that carried d01 in from a record written before any of
+    # this was tracked, and then recorded d02 without fetching it. The two are
+    # different facts and the report keeps them apart.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.rules_fetched_domain_ids = []
+    run_state.rules_fetch_unknown_domain_ids = ["d01"]
+    rendered = render_report(run_state, pack)
+
+    assert "Rules fetched (1 of 2 domain(s) never fetched)" in rendered
+    assert "Teacup Logistics Handling (d02)" in rendered
+    assert (
+        "1 domain(s) were carried into this run from a saved record written before the "
+        "tool recorded any of this" in rendered
+    )
+    assert "Gnome Husbandry Record Keeping (d01)" in rendered
+
+
+def test_rules_fetched_says_a_domain_fetched_after_a_resume_is_simply_fetched() -> None:
+    # Positive evidence beats an absence of it: a domain listed as both
+    # carried-in and fetched was fetched, and is not reported as unknown.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.rules_fetched_domain_ids = ["d01", "d02"]
+    run_state.rules_fetch_unknown_domain_ids = ["d01"]
+    rendered = render_report(run_state, pack)
+
+    assert "All 2 domain(s) that recorded verdicts had their rule text fetched" in rendered
+    assert "carried into this run" not in rendered
+
+
+def test_rules_fetched_has_nothing_to_check_when_no_domain_reached_a_verdict() -> None:
+    # A could-not-run domain carries no verdicts, so there is nothing here for
+    # fetched rule text to have supported. The could-not-evaluate block is
+    # where that domain is reported, and saying it twice would read as two
+    # separate faults.
+    pack = _pack()
+    run_state = RunState(
+        meta=_meta(),
+        config=AuditConfig(selected_domain_ids=["d01"], issue_mode="report"),
+        domain_results={
+            "d01": DomainResult(
+                domain_id="d01", status="could-not-run", reason="no ledger file present"
+            )
+        },
+        rules_fetched_domain_ids=[],
+    )
+    rendered = render_report(run_state, pack)
+
+    assert "No selected domain recorded a rule verdict" in rendered
+    assert "never being fetched this run" not in rendered
+
+
 def test_not_applicable_verdict_for_unknown_rule_id_raises() -> None:
     # Same loudness the could-not-evaluate path already has: a verdict for a
     # rule id absent from the pack is a broken run, not a cosmetic gap.

@@ -66,7 +66,20 @@ def _all_pass_verdicts(domain) -> list[dict]:
     return [{"rule_id": rule.id, "verdict": "pass"} for rule in domain.rules]
 
 
+def _fetch_domain(mcp, domain_id: str) -> None:
+    """Fetch a domain's rule text through the tool, as an agent about to audit
+    it does.
+
+    The record helpers below call this first, because that is the honest order
+    and because the server records it (issue #110): a helper that recorded
+    verdicts for rules it never asked for would put every test that uses it on
+    the "verdicts without rules" path. The tests that mean to exercise that
+    path skip this deliberately, and say so."""
+    _call(mcp, "get_domain", {"domain_id": domain_id})
+
+
 def _record_d01_with_finding(mcp, replace: bool = False) -> dict:
+    _fetch_domain(mcp, "d01")
     verdicts = _all_pass_verdicts(_domain(mcp, "d01"))
     verdicts[1] = {"rule_id": "D01-R02", "verdict": "finding"}
     result = {
@@ -89,6 +102,7 @@ def _record_d01_with_finding(mcp, replace: bool = False) -> dict:
 
 
 def _record_d02_all_pass(mcp, replace: bool = False) -> dict:
+    _fetch_domain(mcp, "d02")
     result = {
         "domain_id": "d02",
         "status": "completed",
@@ -2626,3 +2640,242 @@ def test_an_interrupted_save_leaves_the_previous_saved_state_readable(
     saved = _saved(out_dir)
     assert list(saved.domain_results) == ["d01"]
     assert saved.domain_results["d01"].findings[0].rule_id == "D01-R02"
+
+
+# ---------------------------------------------------------------------------
+# Recording which domains had their rules fetched (issue #110)
+# ---------------------------------------------------------------------------
+
+
+def _record_d01_all_pass_without_fetching(mcp, replace: bool = False) -> dict:
+    """Record every rule in d01 as a pass WITHOUT calling get_domain first.
+
+    The rule ids come from the pack on disk, not from the tool, which is
+    exactly the shape of the failure this probe exists for: an agent that
+    produces a full set of verdicts for a domain whose rule text never passed
+    through the server."""
+    result = {
+        "domain_id": "d01",
+        "status": "completed",
+        "rule_verdicts": _all_pass_verdicts(_domain(mcp, "d01")),
+    }
+    return _call(mcp, "record_domain_result", {"result": result, "replace": replace})
+
+
+def test_get_domain_is_recorded_against_the_run_and_saved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mcp, _state = build_server(FIXTURE_PACK)
+    out_dir = tmp_path / "audit-output"
+    _configured_run(mcp, tmp_path, monkeypatch)
+
+    assert _saved(out_dir).rules_fetched_domain_ids == []
+
+    _fetch_domain(mcp, "d01")
+
+    # Saved at the fetch, not deferred to the next recorded result: a server
+    # killed in between must not come back saying the rules were never asked
+    # for.
+    assert _saved(out_dir).rules_fetched_domain_ids == ["d01"]
+
+
+def test_a_recorded_result_says_whether_its_rules_were_fetched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mcp, _state = build_server(FIXTURE_PACK)
+    _configured_run(mcp, tmp_path, monkeypatch)
+
+    fetched = _record_d01_with_finding(mcp)
+    assert fetched["rules_fetched"] is True
+    assert "warnings" not in fetched
+
+
+def test_verdicts_for_a_domain_that_was_never_fetched_are_recorded_and_named(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Recorded, not refused. Refusing is trivially satisfied by fetching the
+    # text and ignoring it, which would destroy the signal; recording keeps
+    # both the verdicts and the evidence that nothing supported them.
+    mcp, _state = build_server(FIXTURE_PACK)
+    out_dir = tmp_path / "audit-output"
+    _configured_run(mcp, tmp_path, monkeypatch)
+
+    response = _record_d01_all_pass_without_fetching(mcp)
+
+    assert response["status"] == "completed"
+    assert response["rules_fetched"] is False
+    assert len(response["warnings"]) == 1
+    warning = response["warnings"][0]
+    assert "get_domain('d01') was never called" in warning
+    assert "replace=True" in warning
+
+    # The result is on disk, and so is the fact that nothing was fetched.
+    saved = _saved(out_dir)
+    assert list(saved.domain_results) == ["d01"]
+    assert saved.rules_fetched_domain_ids == []
+
+
+def test_a_could_not_run_domain_is_not_warned_about(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A could-not-run result carries no verdicts by construction, so there is
+    # nothing it could have reached without the rules. Warning here would be
+    # noise, and noise is what teaches an agent to skip the field.
+    mcp, _state = build_server(FIXTURE_PACK)
+    _configured_run(mcp, tmp_path, monkeypatch)
+
+    response = _call(
+        mcp,
+        "record_domain_result",
+        {"result": {"domain_id": "d01", "status": "could-not-run", "reason": "no ledger file"}},
+    )
+
+    assert response["rules_fetched"] is False
+    assert "warnings" not in response
+
+
+def test_a_fetch_before_begin_run_belongs_to_no_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Documented in get_domain: a fetch made with no run in progress is not
+    # attributed to the next one. Attributing it would let one run's fetch
+    # vouch for another run's verdicts.
+    mcp, _state = build_server(FIXTURE_PACK)
+    _fetch_domain(mcp, "d01")
+    _configured_run(mcp, tmp_path, monkeypatch)
+
+    assert _record_d01_all_pass_without_fetching(mcp)["rules_fetched"] is False
+
+
+def test_the_finished_run_state_carries_the_fetched_domains(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Persisted into run-state.json, not just the recovery file: a report
+    # re-rendered from it months later still carries the signal.
+    mcp, _state = build_server(FIXTURE_PACK)
+    _configured_run(mcp, tmp_path, monkeypatch)
+    _record_d01_with_finding(mcp)
+    _record_d02_all_pass(mcp)
+
+    result = _call(mcp, "render_report", {"finished": "2026-08-09T10:00:00Z"})
+
+    saved_state = json.loads(Path(result["run_state_path"]).read_text(encoding="utf-8"))
+    assert saved_state["rules_fetched_domain_ids"] == ["d01", "d02"]
+    assert saved_state["rules_fetch_unknown_domain_ids"] == []
+    # No schema bump came with the field: an older reader can ignore it and
+    # still render every report it renders today.
+    assert saved_state["schema_version"] == 4
+
+
+def test_render_report_hands_back_the_domains_whose_rules_were_never_fetched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The report names them, but the report is a file the agent hands over;
+    # this response is what the agent reads. A signal that lives only in the
+    # HTML is one the user hears about only if they open it.
+    mcp, _state = build_server(FIXTURE_PACK)
+    _configured_run(mcp, tmp_path, monkeypatch)
+    _record_d01_all_pass_without_fetching(mcp)
+    _record_d02_all_pass(mcp)
+
+    result = _call(mcp, "render_report", {"finished": "2026-08-09T10:00:00Z"})
+
+    assert result["rules_fetched"] == {
+        "fetched_domain_ids": ["d02"],
+        "verdicts_without_rules_fetched_domain_ids": ["d01"],
+        "fetch_not_recorded_domain_ids": [],
+    }
+    assert any("without their rule text ever being fetched" in w for w in result["warnings"])
+
+
+def test_a_resumed_run_keeps_the_fetches_made_before_the_interruption(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The hard case. Which domains were fetched is a fact about the run, not
+    # about the process: an agent that fetched d01 before the crash and records
+    # it after must not be accused of skipping the rules it read, and must not
+    # be made to fetch them twice.
+    out_dir = tmp_path / "audit-output"
+    first, _state = build_server(FIXTURE_PACK)
+    _begin_run(first, out_dir)
+    _preset_config_env(monkeypatch, tmp_path)
+    _call(first, "start_config", {})
+    _call(first, "get_config", {"timeout_s": 1})
+    _fetch_domain(first, "d01")
+    # ...and the server dies here, before d01's result was ever recorded.
+
+    resumed, _state2 = build_server(FIXTURE_PACK)
+    _begin_run(resumed, out_dir, resume=True)
+
+    recorded = _record_d01_all_pass_without_fetching(resumed)
+    assert recorded["rules_fetched"] is True
+    assert "warnings" not in recorded
+
+    # A domain nobody ever fetched is still judged on its own evidence: the
+    # resume restores what happened, it does not vouch for the whole run.
+    d02 = {
+        "domain_id": "d02",
+        "status": "completed",
+        "rule_verdicts": _all_pass_verdicts(_domain(resumed, "d02")),
+    }
+    unfetched = _call(resumed, "record_domain_result", {"result": d02})
+    assert unfetched["rules_fetched"] is False
+
+
+def _strip_fetch_fields_from_progress(out_dir: Path) -> None:
+    """Rewrite the saved recovery file the way a build from before issue #110
+    wrote it: with no record of fetching at all."""
+    path = _progress_file(out_dir)
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    del saved["rules_fetched_domain_ids"]
+    del saved["rules_fetch_unknown_domain_ids"]
+    path.write_text(json.dumps(saved), encoding="utf-8")
+
+
+def test_resuming_a_record_written_before_this_existed_reports_unknown_not_a_verdict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An older record never recorded this, so its already-recorded domains are
+    # unknown. Unknown must not be laundered into "fetched" (which would clear
+    # a run nobody can vouch for) and must not be reported as "not fetched"
+    # (which would accuse a run that may well have done the work).
+    out_dir = tmp_path / "audit-output"
+    _interrupted_run(tmp_path, monkeypatch, out_dir)
+    _strip_fetch_fields_from_progress(out_dir)
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    resumed = _begin_run(mcp, out_dir, resume=True)
+
+    assert resumed["resumed"] is True
+    assert any("predates the record" in w for w in resumed["warnings"])
+
+    saved = _saved(out_dir)
+    assert saved.rules_fetched_domain_ids == []
+    assert saved.rules_fetch_unknown_domain_ids == ["d01", "d02"]
+
+    # Re-recording one of those carried-in domains reports unknown, not a
+    # verdict in either direction.
+    unknown = _record_d01_all_pass_without_fetching(mcp, replace=True)
+    assert unknown["rules_fetched"] is None
+    assert any("not recorded" in w for w in unknown["warnings"])
+
+
+def test_a_legacy_resume_still_judges_domains_audited_after_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Unknown is confined to what was carried in. Recording starts at the
+    # resume, so a domain audited afterwards cannot hide behind the old
+    # record's silence, and a fetch made afterwards settles the question for
+    # good.
+    out_dir = tmp_path / "audit-output"
+    _interrupted_run(tmp_path, monkeypatch, out_dir)
+    _strip_fetch_fields_from_progress(out_dir)
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    _begin_run(mcp, out_dir, resume=True)
+
+    fetched_now = _record_d01_with_finding(mcp, replace=True)
+    assert fetched_now["rules_fetched"] is True
+    saved = _saved(out_dir)
+    assert saved.rules_fetched_domain_ids == ["d01"]
+    assert saved.rules_fetch_unknown_domain_ids == ["d02"]

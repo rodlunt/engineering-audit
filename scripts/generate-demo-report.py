@@ -156,6 +156,12 @@ def build_demo_run_state(pack: RulesPack) -> RunState:
         config=config,
         domain_results={"d01": d01_result, "d02": d02_result},
         filed_issue_urls={"D01-R02#1": _DEMO_FILED_ISSUE_URL},
+        # The demo depicts a run that fetched the rules for both domains it
+        # verdicted, which is the ordinary case: the report's Rules fetched
+        # block then shows what a run with nothing to answer for looks like,
+        # including the limit it states about what "fetched" does and does not
+        # prove.
+        rules_fetched_domain_ids=["d01", "d02"],
         feedback_issue_url=None,
     )
 

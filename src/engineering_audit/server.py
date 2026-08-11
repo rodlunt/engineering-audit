@@ -272,6 +272,16 @@ class RunTracker:
     # keyed by rule id drops one of the two issue urls without saying so, and
     # makes the second finding look already-filed on a retry.
     filed_issues: dict[str, str] = field(default_factory=dict)
+    # Domain ids get_domain has served rule text for during this run, and the
+    # domain ids whose fetch status can never be known for it. See
+    # RULES_FETCHED_FIELD_DESCRIPTION and RULES_FETCH_UNKNOWN_FIELD_DESCRIPTION
+    # in schema.py: these two are that pair, held as sets while the run is live.
+    #
+    # A live tracker always records, so the first set is never None here; the
+    # None the schema allows belongs to a run-state written before any of this
+    # existed, and only reaches the models by being loaded from disk.
+    rules_fetched: set[str] = field(default_factory=set)
+    rules_fetch_unknown: set[str] = field(default_factory=set)
     feedback_issue_url: str | None = None
     resumed: bool = False
     # Persistence failures waiting to be reported, and the set of facts
@@ -366,6 +376,79 @@ def _pending_issues(run: RunTracker) -> list[PendingIssue]:
     return [issue for issue in _run_issues(run) if issue.key not in run.filed_issues]
 
 
+def _rules_fetched_state(run: RunTracker, domain_id: str) -> bool | None:
+    """Whether this run fetched ``domain_id``'s rule text: True, False, or None
+    for a domain whose fetch status was never recorded.
+
+    None is not a soft False. It is reachable only by resuming a run saved
+    before fetches were recorded at all, and it means the question cannot be
+    answered for that domain, in either direction.
+    """
+    if domain_id in run.rules_fetched:
+        return True
+    if domain_id in run.rules_fetch_unknown:
+        return None
+    return False
+
+
+def _rules_fetch_warning(run: RunTracker, result: DomainResult) -> str | None:
+    """The warning to hand back with a recorded result whose rules were never
+    fetched, or whose fetch status is unrecorded. None when there is nothing
+    to say.
+
+    Only for a result that carries verdicts. A could-not-run result carries
+    none by construction (see DomainResult), and telling an agent it reached
+    verdicts without the rules when it reached no verdicts at all is noise that
+    teaches it to ignore the field.
+    """
+    if not result.rule_verdicts:
+        return None
+    state = _rules_fetched_state(run, result.domain_id)
+    if state is True:
+        return None
+    verdict_count = len(result.rule_verdicts)
+    if state is None:
+        return (
+            f"Recorded {verdict_count} verdict(s) for domain '{result.domain_id}', which was "
+            "carried in from a saved run that predates the record of which domains had their "
+            "rule text fetched. Whether the rules were fetched for it is therefore not "
+            "recorded, and the report will say exactly that rather than treating it as either "
+            "answer. Tell the user."
+        )
+    return (
+        f"Recorded {verdict_count} verdict(s) for domain '{result.domain_id}', but "
+        f"get_domain('{result.domain_id}') was never called during this run, and it is the "
+        "only thing that serves this pack's rule text. The result is recorded as given, and "
+        "the report will name this domain as one that recorded verdicts without its rules "
+        "being fetched. If you reached those verdicts without reading the rules, fetch them, "
+        "redo the domain and re-record it with replace=True. Tell the user either way."
+    )
+
+
+def _rules_fetch_summary(run: RunTracker) -> dict[str, list[str]]:
+    """The run's fetch record, split the three ways the report splits it.
+
+    Handed back by render_report as well as written into the report, because
+    the report is a file the agent hands over and the response is what the
+    agent reads: a signal that lives only in the HTML is one the person driving
+    the audit hears about only if they open it.
+    """
+    with_verdicts = sorted(
+        domain_id for domain_id, result in run.domain_results.items() if result.rule_verdicts
+    )
+    return {
+        "fetched_domain_ids": sorted(run.rules_fetched),
+        "verdicts_without_rules_fetched_domain_ids": [
+            domain_id
+            for domain_id in with_verdicts
+            if _rules_fetched_state(run, domain_id) is False
+        ],
+        "fetch_not_recorded_domain_ids": [
+            domain_id for domain_id in with_verdicts if _rules_fetched_state(run, domain_id) is None
+        ],
+    }
+
+
 def _progress_path(output_dir: Path) -> Path:
     """The crash-recovery file for a run whose output directory is this.
 
@@ -388,6 +471,11 @@ def _run_progress(run: RunTracker, *, completed: bool = False) -> RunProgress:
         repo_dir=str(run.repo_dir) if run.repo_dir is not None else None,
         domain_results=run.domain_results,
         filed_issues=run.filed_issues,
+        # Sorted, not in fetch order: this record is compared between runs and
+        # diffed by hand, and set iteration order is not stable across
+        # processes.
+        rules_fetched_domain_ids=sorted(run.rules_fetched),
+        rules_fetch_unknown_domain_ids=sorted(run.rules_fetch_unknown),
         feedback_issue_url=run.feedback_issue_url,
         completed=completed,
     )
@@ -722,11 +810,38 @@ def _resume_run(
                 "explicitly, or repo_dir to this call."
             )
 
+    # Which domains had their rules fetched is a fact about the RUN, not about
+    # this process, so it is restored from the record rather than started over:
+    # an assistant that fetched d05 before the interruption and applies it after
+    # is not asked to fetch it twice, and the report does not accuse it of
+    # skipping the rules it read.
+    #
+    # A record written before this was tracked says nothing either way. Its
+    # already-recorded domains go to the unknown list rather than being assumed
+    # fetched (which would launder them clean) or assumed unfetched (which would
+    # accuse a run that may well have done the work). Recording starts from here,
+    # so any domain audited after the resume is judged on its own evidence.
+    saved_fetched = progress.rules_fetched_domain_ids
+    rules_fetched = set(saved_fetched or ())
+    rules_fetch_unknown = set(progress.rules_fetch_unknown_domain_ids)
+    if saved_fetched is None:
+        rules_fetch_unknown |= set(progress.domain_results)
+        if rules_fetch_unknown:
+            warnings.append(
+                "The saved run predates the record of which domains had their rule text "
+                f"fetched, so for its {len(rules_fetch_unknown)} already-recorded domain(s) "
+                "that is unknown, and the report will say so rather than reporting either "
+                "answer. Domains audited from here on are recorded normally."
+            )
+    rules_fetch_unknown -= rules_fetched
+
     run = RunTracker(
         meta=resumed_meta,
         output_dir=output_dir,
         repo_dir=resolved_repo_dir,
         config=config,
+        rules_fetched=rules_fetched,
+        rules_fetch_unknown=rules_fetch_unknown,
         # Only meaningful alongside a resolved config: a saved "interactive"
         # mode with no config describes a config page served by a process that
         # is gone, and restoring it would leave get_config waiting on a server
@@ -1025,11 +1140,35 @@ def _register_pack_tools(mcp: MCPServer, state: AppState) -> None:
         This tool serves the full rule text: it is meant for the local agent
         driving the audit, which needs the rules to apply them. Nothing else
         in this package returns rule body text.
+
+        Because of that, this call is recorded against the run in progress: it
+        is the one observable event that could have supplied the rules a
+        verdict is meant to rest on. record_domain_result says so when verdicts
+        arrive for a domain this was never called for, and the report names
+        that domain. The claim either way is only ever that the text was
+        fetched, never that it was read.
+
+        A fetch made when no run is in progress belongs to no run and is not
+        recorded: call begin_run first, then fetch each domain as you come to
+        it.
         """
         domain = state.pack.get_domain(domain_id)
         if domain is None:
             valid_ids = ", ".join(d.id for d in state.pack.domains) or "(no domains loaded)"
             raise ValueError(f"Unknown domain id '{domain_id}'. Valid ids: {valid_ids}")
+        run = state.run
+        if run is not None and domain_id not in run.rules_fetched:
+            run.rules_fetched.add(domain_id)
+            # Positive evidence beats an absence of it: a domain carried in
+            # from a record that never tracked fetching is unknown right up
+            # until it is fetched here, and then it is simply fetched.
+            run.rules_fetch_unknown.discard(domain_id)
+            # Persisted now rather than at the next record_domain_result: a
+            # server killed between the fetch and the verdict must not come
+            # back reporting that the rules for this domain were never
+            # requested. Only on the first fetch of each domain, so a re-read
+            # costs nothing.
+            _persist_run(run)
         return get_domain_text(domain)
 
 
@@ -1440,6 +1579,14 @@ def _register_result_tools(mcp: MCPServer, state: AppState) -> None:
         skipped rule silently passing or a citation silently pointing at
         nothing. Re-recording an already-recorded domain requires
         replace=True, to guard against an accidental overwrite.
+
+        Verdicts for a domain get_domain was never called for during this run
+        are recorded, not refused, and the response says "rules_fetched": false
+        and carries a warning naming what that means. The report names the
+        domain too. Recording rather than refusing is deliberate: refusing
+        would be trivially satisfied by fetching the text and ignoring it,
+        which destroys the signal, while the verdicts and the fact that they
+        were unsupported both survive this way. Tell the user when you see it.
         """
         run = _require_run(state)
         config = _require_config(run)
@@ -1479,14 +1626,16 @@ def _register_result_tools(mcp: MCPServer, state: AppState) -> None:
         # recorded. A save failure is reported in warnings, never raised: the
         # result is accepted either way.
         _persist_run(run)
-        return _with_warnings(
-            run,
-            {
-                "domain_id": domain_id,
-                "status": result.status,
-                "finding_count": len(result.findings),
-            },
-        )
+        response: dict[str, Any] = {
+            "domain_id": domain_id,
+            "status": result.status,
+            "finding_count": len(result.findings),
+            "rules_fetched": _rules_fetched_state(run, domain_id),
+        }
+        warning = _rules_fetch_warning(run, result)
+        if warning is not None:
+            response["warnings"] = [warning]
+        return _with_warnings(run, response)
 
     @mcp.tool()
     def run_status() -> dict[str, Any]:
@@ -1722,6 +1871,13 @@ def _register_report_tools(mcp: MCPServer, state: AppState) -> None:
         is removed once they are on disk: from here the run-state.json is the
         record, and a later begin_run on this output directory starts clean
         rather than offering to resume a run that is already finished.
+
+        The response also carries "rules_fetched": which domains had their
+        rule text fetched this run, which recorded verdicts without it, and
+        which were carried in from a saved run that never recorded it. Any
+        domain in the second list is named in the report and must be named to
+        the user as well: it says the verdicts for that domain were reached
+        without the rules they are verdicts on.
         """
         run = _require_run(state)
         config = _require_config(run)
@@ -1739,6 +1895,11 @@ def _register_report_tools(mcp: MCPServer, state: AppState) -> None:
             config=config,
             domain_results=run.domain_results,
             filed_issue_urls=dict(run.filed_issues),
+            # Carried into the finished record, not just the recovery file, so
+            # a report re-rendered from run-state.json months later still
+            # carries the signal rather than quietly losing it (issue #110).
+            rules_fetched_domain_ids=sorted(run.rules_fetched),
+            rules_fetch_unknown_domain_ids=sorted(run.rules_fetch_unknown),
             feedback_issue_url=run.feedback_issue_url,
         )
 
@@ -1775,14 +1936,22 @@ def _register_report_tools(mcp: MCPServer, state: AppState) -> None:
             run_state_path=run_state_path,
         )
 
-        return _with_warnings(
-            run,
-            {
-                "report_path": str(report_path),
-                "run_state_path": str(run_state_path),
-                "findings_summary": findings_summary,
-            },
-        )
+        rules_fetch_summary = _rules_fetch_summary(run)
+        response: dict[str, Any] = {
+            "report_path": str(report_path),
+            "run_state_path": str(run_state_path),
+            "findings_summary": findings_summary,
+            "rules_fetched": rules_fetch_summary,
+        }
+        unsupported = rules_fetch_summary["verdicts_without_rules_fetched_domain_ids"]
+        if unsupported:
+            response["warnings"] = [
+                f"{len(unsupported)} domain(s) recorded verdicts without their rule text ever "
+                f"being fetched this run: {', '.join(unsupported)}. The report names them under "
+                "'Rules fetched'. Say this to the user when you hand the report over; do not "
+                "describe the run as complete without it."
+            ]
+        return _with_warnings(run, response)
 
 
 class TelemetryStripError(RuntimeError):
