@@ -1312,6 +1312,57 @@ def test_no_gitignore_warning_when_none_is_given(domains) -> None:
         srv.shutdown()
 
 
+def test_existing_deliverables_warning_shown_when_default_location_already_has_a_report(
+    tmp_path, domains
+) -> None:
+    # Issue #133: the default output location is the common case for a
+    # collision (a second audit of the same repository), so it must warn the
+    # same way the custom path's validate_deliverables_dir refuses, but
+    # without refusing: the ordinary re-audit workflow must still work.
+    out_dir = tmp_path / "audit-output"
+    out_dir.mkdir()
+    (out_dir / "report.html").write_text("an earlier run", encoding="utf-8")
+    srv = ConfigServer(domains, output_dir=out_dir)
+    try:
+        url = srv.start()
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            page = resp.read().decode("utf-8")
+        assert 'class="output-location-warning"' in page
+        assert "report.html" in page
+        assert "already contains" in page
+    finally:
+        srv.shutdown()
+
+
+def test_no_existing_deliverables_warning_for_a_clean_default_location(
+    tmp_path, domains
+) -> None:
+    out_dir = tmp_path / "audit-output"
+    out_dir.mkdir()
+    srv = ConfigServer(domains, output_dir=out_dir)
+    try:
+        url = srv.start()
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            page = resp.read().decode("utf-8")
+        assert 'class="output-location-warning"' not in page
+    finally:
+        srv.shutdown()
+
+
+def test_no_existing_deliverables_warning_when_output_dir_is_none(domains) -> None:
+    # A ConfigServer with no output_dir behind it (the direct-construction
+    # tests elsewhere in this file) has nothing to check on disk; this must
+    # not raise or otherwise misbehave, just say nothing.
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            page = resp.read().decode("utf-8")
+        assert 'class="output-location-warning"' not in page
+    finally:
+        srv.shutdown()
+
+
 def test_the_second_inline_script_parses(domains) -> None:
     # The output-location preview lives in its own <script> tag (see
     # config-page.html) precisely so it cannot take the heartbeat down with

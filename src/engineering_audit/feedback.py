@@ -263,17 +263,28 @@ def build_feedback_sections(
     ]
     run_metadata = "Run metadata\n" + "\n".join(f"- {line}" for line in meta_lines)
 
-    inspected = sum(
-        r.coverage.files_inspected
-        for r in domain_results.values()
-        if r.coverage is not None
-    )
-    skipped = sum(
-        r.coverage.files_skipped
-        for r in domain_results.values()
-        if r.coverage is not None
-    )
-    coverage = f"Coverage\n- Files inspected: {inspected}\n- Files skipped: {skipped}"
+    # Per-domain counts only, never summed across domains: each domain audits
+    # the same repository from its own angle, so a file that sixteen domains
+    # each independently declined to open would be counted as sixteen
+    # separate skips, and the sum would inflate by roughly the domain count
+    # (issue #87, carried over from the report to this feedback path by
+    # issue #134). report.py's own _coverage_summary dropped the summed
+    # "Total files..." figures for the same reason; this mirrors that
+    # per-domain wording so the report a maintainer opens and the feedback
+    # they receive describe coverage the same way.
+    coverage_lines = []
+    for domain_id, result in domain_results.items():
+        if result.status == "could-not-run":
+            coverage_lines.append(f"- {domain_id}: did not run")
+        elif result.coverage is not None:
+            note = f" ({result.coverage.note})" if result.coverage.note else ""
+            coverage_lines.append(
+                f"- {domain_id}: {result.coverage.files_inspected} file(s) inspected, "
+                f"{result.coverage.files_skipped} skipped{note}"
+            )
+        else:
+            coverage_lines.append(f"- {domain_id}: no coverage reported")
+    coverage = "Coverage\n" + ("\n".join(coverage_lines) or "- No domains audited.")
 
     all_findings = [f for r in domain_results.values() for f in r.findings]
     severity_counts = Counter(f.severity.value for f in all_findings)

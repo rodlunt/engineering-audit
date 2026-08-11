@@ -382,6 +382,13 @@ class AppState:
     pack: RulesPack
     run: RunTracker | None = None
     finished: FinishedRun | None = None
+    # Whether begin_run should run its update checks at all: the flag and the
+    # environment variable, already reconciled together by build_server (see
+    # its docstring), carried here as a plain value rather than left for
+    # begin_run to re-derive from os.environ at call time. See
+    # _update_check_enabled_from_env below for the environment-variable half
+    # of that reconciliation.
+    update_check_enabled: bool = True
 
 
 @dataclass(frozen=True)
@@ -1139,11 +1146,15 @@ def _resolve_rules_dir(argv: list[str]) -> Path:
     return rules_dir
 
 
-# Read directly by begin_run's update-check call site (see
-# _update_check_enabled below) and set by main() when --no-update-check is
-# passed, so the CLI flag and the natural environment-variable form share one
-# check at call time rather than needing the flag threaded through
-# build_server and AppState.
+# The environment variable half of the update-check opt-out. Read by
+# _update_check_enabled_from_env below, and only there: the resolved setting
+# is carried explicitly on AppState (see AppState.update_check_enabled) and
+# read from there by begin_run, so this constant no longer doubles as an
+# internal message bus between main() and begin_run. It stays a supported
+# input for anyone starting the server without going through main() (an
+# embedder calling build_server directly), which is why build_server still
+# falls back to reading it when its own caller does not resolve the setting
+# itself.
 _NO_UPDATE_CHECK_ENV_VAR = "ENGINEERING_AUDIT_NO_UPDATE_CHECK"
 
 
@@ -1151,21 +1162,29 @@ def _update_check_disabled_by_flag(argv: list[str]) -> bool:
     """Whether --no-update-check was passed on the command line.
 
     Does not look at ENGINEERING_AUDIT_NO_UPDATE_CHECK itself; main() is the
-    one place that reconciles the flag and the environment variable (see
-    main() below), so begin_run's call site only ever has to check one
-    thing.
+    one place that reconciles the flag and the environment variable, by
+    passing build_server an explicit update_check_enabled value (see main()
+    below), so nothing downstream has to check the flag and the environment
+    variable separately.
     """
     return _server_arg_parser().parse_args(argv).no_update_check
 
 
-def _update_check_enabled() -> bool:
-    """Whether begin_run should run its update checks at all.
+def _update_check_enabled_from_env() -> bool:
+    """Whether ENGINEERING_AUDIT_NO_UPDATE_CHECK, taken alone, leaves the
+    update check enabled.
 
     Checked by value, not by presence: an empty string counts as unset, so
     a config-management tool that leaves the variable declared but blank
     does not silently disable the check. On by default, since the check
     exists to catch exactly the case where nobody is looking for a reason
     to turn it off (a stale, pinned install serving an old build forever).
+
+    This is only the environment-variable input on its own; it does not know
+    about --no-update-check. build_server calls this to resolve its default
+    when the caller does not pass update_check_enabled explicitly; main()
+    passes an explicit value instead, because it also has the flag to fold
+    in.
     """
     return not os.environ.get(_NO_UPDATE_CHECK_ENV_VAR)
 
@@ -1400,7 +1419,7 @@ def _register_run_tools(mcp: MCPServer, state: AppState) -> None:
         tool_commit_value = _default_tool_commit()
         pack_version_value = _git_release_version(state.pack.root)
         pack_commit_value = _git_commit(state.pack.root)
-        update_check_enabled = _update_check_enabled()
+        update_check_enabled = state.update_check_enabled
         meta = RunMeta(
             tool_version=tool_version_value,
             tool_commit=tool_commit_value,
@@ -2150,12 +2169,24 @@ def _strip_ambient_otel_middleware(mcp: MCPServer) -> None:
         )
 
 
-def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
+def build_server(
+    rules_dir: Path, *, update_check_enabled: bool | None = None
+) -> tuple[MCPServer, AppState]:
     """Load the rules pack and construct the MCPServer app.
 
     Tool registration is split per concern into the _register_*_tools
     functions above, which this calls in sequence; the call order is also the
     order the tools are advertised in, and the order AUDIT.md walks them in.
+
+    update_check_enabled carries the resolved update-check setting onto the
+    returned AppState, for begin_run to read (see AppState.update_check_enabled
+    and _register_run_tools). Passing True or False fixes the setting
+    explicitly: main() does this, having already folded --no-update-check
+    together with ENGINEERING_AUDIT_NO_UPDATE_CHECK into one value. The
+    default, None, resolves from the environment variable alone
+    (_update_check_enabled_from_env), which keeps that variable a supported
+    input for any caller of build_server, not only main(); a caller with no
+    CLI flag of its own to fold in never needs to pass this argument at all.
 
     Raises RulesPackError (or RulesPackParseError) if the pack cannot be
     loaded, or TelemetryStripError if the SDK's ambient OpenTelemetry
@@ -2164,7 +2195,15 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
     see it directly. main() is the one place that turns either into a clean
     CLI error.
     """
-    state = AppState(pack=load_pack(rules_dir))
+    resolved_update_check_enabled = (
+        _update_check_enabled_from_env()
+        if update_check_enabled is None
+        else update_check_enabled
+    )
+    state = AppState(
+        pack=load_pack(rules_dir),
+        update_check_enabled=resolved_update_check_enabled,
+    )
 
     mcp = MCPServer("engineering-audit")
     _strip_ambient_otel_middleware(mcp)
@@ -2183,14 +2222,18 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
 def main() -> None:
     argv = sys.argv[1:]
     rules_dir = _resolve_rules_dir(argv)
-    if _update_check_disabled_by_flag(argv):
-        # Folded into the environment variable rather than threaded through
-        # build_server/AppState: begin_run reads _NO_UPDATE_CHECK_ENV_VAR
-        # directly (see _update_check_enabled), so this is the one place
-        # that reconciles the CLI flag with that check.
-        os.environ[_NO_UPDATE_CHECK_ENV_VAR] = "1"
+    # The one place that reconciles --no-update-check with
+    # ENGINEERING_AUDIT_NO_UPDATE_CHECK: passed to build_server(s) as an
+    # explicit value rather than by setting the environment variable, so a
+    # `git`/`gh` subprocess this process spawns later never inherits a
+    # variable nobody asked it to carry. False when the flag was passed
+    # (the flag can only disable, matching the environment variable's own
+    # only-disables shape); None otherwise, so build_server falls back to
+    # reading the environment variable itself, which stays a supported input
+    # on its own.
+    update_check_enabled = False if _update_check_disabled_by_flag(argv) else None
     try:
-        mcp, _state = build_server(rules_dir)
+        mcp, _state = build_server(rules_dir, update_check_enabled=update_check_enabled)
     except RulesPackError as exc:
         raise SystemExit(
             f"engineering-audit-mcp: could not load rules pack: {exc}"
