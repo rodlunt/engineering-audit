@@ -204,7 +204,24 @@ def _render_meta_block(run_state: RunState) -> str:
         f'<div class="meta-label">{_esc(label)}</div><div class="meta-value">{_esc(value)}</div>'
         for label, value in rows
     )
-    return f'<div class="meta-grid">{rows_html}</div>'
+    # Collapsed behind a summary that is sufficient on its own (issue #124):
+    # which repository, at which commit, audited by what against which rules
+    # pack, and when it finished. Provenance a reader needs to trust the page
+    # is on the visible line; the remaining rows are the detail behind it.
+    # Every identifier in this summary is also in the footer, which never
+    # collapses, so nothing here depends on the <details> opening.
+    summary = (
+        f"Run details: {_esc(meta.repo_name)} at commit {_esc(meta.repo_commit)}, "
+        f"audited by {_esc(meta.assistant)} / {_esc(meta.model)} against rules pack "
+        f"{_esc(rules_pack_label(meta))}, finished "
+        f"{_esc(meta.finished or 'in progress')}. "
+        f"{len(rows)} recorded {_plural(len(rows), 'field')}."
+    )
+    return (
+        f'<details class="meta-details"><summary>{summary}</summary>'
+        f'<div class="meta-grid">{rows_html}</div>'
+        "</details>"
+    )
 
 
 def _verdict_counts(result: DomainResult) -> Counter[str]:
@@ -614,14 +631,23 @@ def _self_assessment_limits(
     if not rows:
         return (
             f"<p>None of the {len(selected)} selected "
-            f"{_plural(len(selected), 'domain')} reported a limit on its own "
+            f"{_plural(len(selected), 'domain')} reported a limit on their own "
             "assessment. Each domain's confidence is in the table above.</p>"
         )
+    # Collapsed behind its own count (issue #124). The limits are free text
+    # of arbitrary length and are the longest thing in this block; the count
+    # is the signal, and each domain named inside is also a row in the table
+    # above, which never collapses.
+    summary = (
+        f"{len(rows)} of {len(selected)} "
+        f"{_plural(len(selected), 'domain')} reported a limit on "
+        f"{_plural(len(rows), 'its', 'their')} own assessment"
+    )
     return (
-        f"<p>{len(rows)} of {len(selected)} "
-        f"{_plural(len(selected), 'domain')} reported a limit on its own assessment. "
-        "Each domain's confidence is in the table above.</p>"
+        "<p>Each domain's confidence is in the table above.</p>"
+        f"<details><summary>{_esc(summary)}</summary>"
         f"<ul>{''.join(rows)}</ul>"
+        "</details>"
     )
 
 
@@ -1148,6 +1174,13 @@ def _domains_without_findings(
     defect issues #100 and #122 both exist to close. The zeros are printed
     rather than dropped: a domain missing from this list is a domain that
     found something, not a domain nobody looked at.
+
+    Collapsed behind a summary that carries the split three ways (issue
+    #124), because "Domains with no findings: 5 of 16" on its own is exactly
+    the sentence that hid the difference in the first place. The summary is
+    the signal; the domain names and reasons behind it are the evidence, and
+    every domain id in there also appears in the per-domain table, which
+    never collapses.
     """
     counts = _not_applicable_counts(selected)
     fully_not_applicable = set(_fully_not_applicable_domain_ids(counts))
@@ -1158,6 +1191,10 @@ def _domains_without_findings(
     ]
     if not quiet:
         return ""
+
+    not_run = sum(1 for _, result in quiet if result.status == "could-not-run")
+    set_aside = sum(1 for domain_id, _ in quiet if domain_id in fully_not_applicable)
+    clean = len(quiet) - not_run - set_aside
 
     rows = []
     for domain_id, result in quiet:
@@ -1182,9 +1219,16 @@ def _domains_without_findings(
             f"({not_applicable} of them set aside as not applicable)</li>"
         )
 
+    summary = (
+        f"Domains with no findings: {len(quiet)} of {len(selected)}. "
+        f"{clean} audited and clean, {set_aside} with every rule set aside as not "
+        f"applicable, {not_run} that did not run at all."
+    )
     return (
         f"<h3>Domains with no findings: {len(quiet)} of {len(selected)}</h3>"
+        f"<details><summary>{_esc(summary)}</summary>"
         f'<ul class="quiet-domains">{"".join(rows)}</ul>'
+        "</details>"
     )
 
 

@@ -2441,7 +2441,7 @@ def test_self_assessment_limits_survive_the_move_into_the_table() -> None:
     pack = _pack()
     rendered = render_report(_base_run_state(pack), pack)
 
-    assert "1 of 2 domains reported a limit on its own assessment." in rendered
+    assert "1 of 2 domains reported a limit on its own assessment" in rendered
     assert "d02: Teacup Logistics Handling: did not check archived routes" in rendered
 
 
@@ -2454,6 +2454,133 @@ def test_self_assessment_limits_block_still_renders_when_nobody_reported_one() -
     rendered = render_report(run_state, pack)
 
     assert (
-        "None of the 2 selected domains reported a limit on its own assessment."
+        "None of the 2 selected domains reported a limit on their own assessment."
         in rendered
     )
+
+
+# ---------------------------------------------------------------------------
+# #124: collapse the evidence, never the signal.
+# ---------------------------------------------------------------------------
+
+
+def _summaries(rendered: str) -> list[str]:
+    return re.findall(r"<summary>(.*?)</summary>", rendered, re.DOTALL)
+
+
+def test_every_summary_carries_a_number() -> None:
+    # The rule that makes or breaks this issue. A summary reading "Not
+    # applicable", where the reader must click to learn anything, undoes the
+    # work of #100.
+    pack = _pack()
+    rendered = render_report(_base_run_state(pack), pack)
+    summaries = _summaries(rendered)
+
+    assert summaries, "nothing is collapsed, so nothing to check"
+    for summary in summaries:
+        assert re.search(r"\d", summary), (
+            f"summary carries no number and is not sufficient on its own: {summary!r}"
+        )
+
+
+def test_meta_grid_collapses_behind_a_summary_that_identifies_the_run() -> None:
+    pack = _pack()
+    rendered = render_report(_base_run_state(pack), pack)
+
+    match = re.search(
+        r'<details class="meta-details"><summary>(.*?)</summary>', rendered, re.DOTALL
+    )
+    assert match is not None, "the meta grid is not collapsed"
+    summary = match.group(1)
+    assert "widgets-app" in summary
+    assert "abc1234" in summary
+    assert "claude-sonnet-5" in summary
+    assert "13 recorded fields" in summary
+    # The grid itself is still there, behind it.
+    assert '<div class="meta-grid">' in rendered
+
+
+def test_domains_with_no_findings_summary_splits_the_three_kinds_of_zero() -> None:
+    # "Domains with no findings: 2 of 2" on its own is the sentence that hid
+    # the difference in the first place, so the split is on the summary line
+    # rather than behind it.
+    pack = _pack()
+    d01 = pack.get_domain("d01")
+    run_state = RunState(
+        meta=_meta(),
+        config=AuditConfig(selected_domain_ids=["d01", "d02"], issue_mode="report"),
+        domain_results={
+            "d01": DomainResult(
+                domain_id="d01",
+                status="completed",
+                rule_verdicts=_all_not_applicable_verdicts(d01, "no gnomes here"),
+            ),
+            "d02": DomainResult(
+                domain_id="d02",
+                status="could-not-run",
+                reason="ran out of context before reaching this domain",
+            ),
+        },
+    )
+    rendered = render_report(run_state, pack)
+
+    assert (
+        "<summary>Domains with no findings: 2 of 2. 0 audited and clean, 1 with every "
+        "rule set aside as not applicable, 1 that did not run at all.</summary>"
+        in rendered
+    )
+
+
+def test_rule_id_lists_are_never_put_behind_a_closed_details() -> None:
+    # #124's second trap. Find-in-page inside a closed <details> varies by
+    # browser, and a reader who cannot find a rule id with Ctrl+F concludes
+    # it is not in the report. Domain ids are safe to collapse because the
+    # per-domain table always carries them; rule ids have no such
+    # always-open home, so their lists stay expanded.
+    pack = _pack()
+    d01 = pack.get_domain("d01")
+    verdicts = _all_pass_verdicts(d01)
+    verdicts[0] = RuleVerdict(
+        rule_id="D01-R01",
+        verdict=Verdict.NOT_APPLICABLE,
+        note="this repository ships no gnome roster",
+    )
+    verdicts[1] = RuleVerdict(
+        rule_id="D01-R02",
+        verdict=Verdict.COULD_NOT_EVALUATE,
+        note="the ledger lives outside this repository",
+    )
+    run_state = RunState(
+        meta=_meta(),
+        config=AuditConfig(selected_domain_ids=["d01"], issue_mode="report"),
+        domain_results={
+            "d01": DomainResult(
+                domain_id="d01", status="completed", rule_verdicts=verdicts
+            )
+        },
+    )
+    rendered = render_report(run_state, pack)
+
+    # Control: both rule ids really are in the page, so an absence below
+    # would mean something.
+    assert "D01-R01 (1 rule)" in rendered
+    assert "D01-R02 (1 rule)" in rendered
+
+    # Searched over the document body only: the stylesheet above it cites
+    # d16 rule ids in its own comments, and "<details {" in a CSS selector
+    # is not an element.
+    body = rendered[rendered.index("</style>") :]
+    for match in re.finditer(
+        r'<details(?: class="[^"]*")?>(.*?)</details>', body, re.DOTALL
+    ):
+        assert not re.search(r"\bD\d{2}-R\d{2}\b", match.group(1)), (
+            f"a rule id was put behind a collapsed <details>: {match.group(1)[:200]!r}"
+        )
+
+
+def test_collapsed_blocks_are_closed_by_default() -> None:
+    # An always-open <details> would be a disclosure widget that discloses
+    # nothing, which is furniture.
+    pack = _pack()
+    rendered = render_report(_base_run_state(pack), pack)
+    assert "<details open" not in rendered

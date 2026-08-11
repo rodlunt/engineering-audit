@@ -103,6 +103,22 @@
   .headline p { margin: 0.35rem 0; }
   .headline-lead { font-weight: 600; }
   .headline-caveat { font-size: 1rem; color: var(--muted); }
+  /* Collapsed sections (issue #124). Only content whose signal is already
+     on the visible summary line, or repeated somewhere that never
+     collapses, is ever put behind one of these: the rule-id lists in the
+     could-not-evaluate and not-applicable blocks are deliberately left
+     expanded, because find-in-page behaviour inside a closed <details>
+     varies by browser and a reader who cannot find a rule id concludes it
+     is not in the report. */
+  details { margin: 0.35rem 0; }
+  summary { cursor: pointer; }
+  summary::marker { color: var(--muted); }
+  .meta-details > summary {
+    color: var(--muted);
+    font-size: 0.9rem;
+    padding: 0.2rem 0;
+  }
+  .meta-details .meta-grid { margin-top: 0.5rem; }
   .meta-label { color: var(--muted); }
   .meta-value { font-weight: 500; }
   .perf-block {
@@ -401,6 +417,25 @@
     }
     .finding { break-inside: avoid; page-break-inside: avoid; }
     a { color: #1a1a1a; }
+    /* A closed <details> does not print its contents, so it has to be
+       forced open here. Two mechanisms ship, because they target different
+       engine generations, and which one does the work was measured rather
+       than assumed: in Chrome 151 a closed <details> hides its content with
+       content-visibility, so the ::details-content rule is the one that
+       opens it (measured: 19px closed, 53px with that rule) and the
+       display override below changes nothing. The display override is kept
+       for engines that still implement the closed state the old way.
+
+       Neither could be checked against real printed output where this was
+       written, so nothing on this page depends on a <details> opening:
+       every collapsed summary carries its own numbers, and every
+       identifier inside one is repeated somewhere that never collapses
+       (the per-domain table, the headline, or the footer). If both rules
+       fail on some engine, a printed report loses detail and keeps its
+       signal, rather than losing a number nobody can see is missing. */
+    details > summary { display: list-item; }
+    details::details-content { content-visibility: visible; }
+    details:not([open]) > *:not(summary) { display: block !important; }
     /* The Issues section duplicates the Findings section above, reformatted
        for GitHub, and its interactive controls are already hidden by the
        rules above, so what would print is content with its function

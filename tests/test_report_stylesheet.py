@@ -456,6 +456,44 @@ def test_print_asks_for_the_bar_fills_to_be_kept() -> None:
     assert "print-color-adjust: exact" in match.group(1)
 
 
+# ---------------------------------------------------------------------------
+# #124: a closed <details> must still print its contents.
+# ---------------------------------------------------------------------------
+
+
+def test_print_forces_collapsed_sections_open_by_both_known_mechanisms() -> None:
+    # A closed <details> does not print its contents. Which declaration
+    # actually opens it depends on how the engine implements the closed
+    # state: modern Blink uses content-visibility on ::details-content
+    # (measured in Chrome 151: a closed details is 19px tall, and 53px with
+    # the ::details-content rule applied, while the display override alone
+    # leaves it at 19px), older engines used display: none on the children.
+    # Both ship, because neither covers every engine on its own.
+    print_block = _print_block(_style_block())
+
+    assert re.search(
+        r"details::details-content\s*\{[^}]*content-visibility:\s*visible", print_block
+    ), (
+        "@media print must reveal ::details-content, which is what actually "
+        "opens a closed <details> in current Blink"
+    )
+    assert re.search(
+        r"details:not\(\[open\]\)\s*>\s*\*:not\(summary\)\s*\{[^}]*display:\s*block\s*!important",
+        print_block,
+    ), (
+        "@media print must also carry the display override, for engines that "
+        "still implement the closed state that way"
+    )
+
+
+def test_summary_lines_are_not_hidden_from_print() -> None:
+    # The summary carries the numbers. If the print block ever hid it as
+    # interactive furniture, a printed report would lose the signal and keep
+    # the evidence, which is exactly backwards.
+    print_block = _print_block(_style_block())
+    assert not re.search(r"(^|[\s,])summary\s*\{[^}]*display:\s*none", print_block)
+
+
 def test_rendered_table_carries_the_bar_markup_and_its_numerals() -> None:
     rendered = _rendered_report()
     assert '<div class="domain-table-wrap">' in rendered
