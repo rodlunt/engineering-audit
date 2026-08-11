@@ -18,3 +18,10 @@ audit-output/
 
 # Session handoff notes
 next-session.md
+
+# Local scratch: extracted emails, tester reports (never commit)
+raw/
+
+# Agent worktrees: full repo copies, so leaving them untracked makes local
+# lint and test runs walk them and count every finding once per worktree.
+.claude/worktrees/
