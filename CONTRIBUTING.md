@@ -26,16 +26,27 @@ uv sync
 uv run pytest -q
 ```
 
-CI gates every pull request on three checks, so run them locally before pushing:
+CI gates every pull request on four checks, so run them locally before pushing:
 
 ```sh
 uv run --with ruff==0.15.16 ruff check .
+uv run --with ruff==0.15.16 ruff format --check .
 uv run --with mypy==2.3.0 mypy src
 uv run pytest -q
 ```
 
 The report page's JavaScript has its own executable tests, run through pytest via node;
 with node absent they skip visibly rather than passing silently.
+
+Set `git blame` to skip the one-off mechanical reformat that adopted `ruff format`
+(issue #106), since git does not read `.git-blame-ignore-revs` on its own:
+
+```sh
+git config blame.ignoreRevsFile .git-blame-ignore-revs
+```
+
+Without this, `git blame` on a file touched by that commit shows it as the last change
+to nearly every line, hiding whoever actually wrote them.
 
 ## Expectations for a pull request
 

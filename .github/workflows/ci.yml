@@ -43,6 +43,11 @@ jobs:
         # than declared dev dependencies, so these steps need no uv.lock
         # change.
         run: uv run --with ruff==0.15.16 ruff check .
+      - name: Format check (ruff)
+        # See issue #106: formatting was implied by the lint config but
+        # never enforced. .git-blame-ignore-revs keeps `git blame` useful
+        # across the one-off reformat commit that made this step pass.
+        run: uv run --with ruff==0.15.16 ruff format --check .
       - name: Type-check (mypy)
         # Inside the required job on purpose: mypy went clean once the two
         # pre-existing findings were fixed (PR #67), so a new type error now

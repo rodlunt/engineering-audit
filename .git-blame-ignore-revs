@@ -1,0 +1,9 @@
+# Revisions listed here are ignored by `git blame` when this repository's
+# blame.ignoreRevsFile config points at this file (see CONTRIBUTING.md for
+# the one-time setup). Each entry should be a mechanical, no-behaviour-change
+# commit, so skipping it in blame does not hide anything a reviewer needs.
+
+# style: adopt ruff format across the repository (issue #106). One-off
+# mechanical reformat of the whole tree with `ruff format .`, no other
+# change.
+2d85048d89440645d3922b15481d5062b60c8aad
