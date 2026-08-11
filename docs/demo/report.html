@@ -24,6 +24,16 @@
     --warn-bg: #fff4d6;
     --warn-border: #caa63d;
     --ok-bg: #e9f5ee;
+    /* The per-domain table's verdict bar (issue #123). Every pair of these
+       four differs by at least 1.8:1 in relative luminance, in this palette
+       and in the dark one, so the segments stay apart in greyscale, on a
+       photocopy and for a reader who cannot separate the hues. Colour is
+       never the only carrier here in any case: every value the bar draws is
+       written out in words in the same table cell. */
+    --seg-pass: #3d6f5f;
+    --seg-finding: #6b1215;
+    --seg-na: #ecece6;
+    --seg-cne: #a8a8a2;
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -40,6 +50,10 @@
       --warn-bg: #3a301a;
       --warn-border: #caa63d;
       --ok-bg: #16261e;
+      --seg-pass: #5fa48c;
+      --seg-finding: #ffbcc0;
+      --seg-na: #2a2e30;
+      --seg-cne: #575c60;
     }
   }
   * { box-sizing: border-box; }
@@ -71,6 +85,40 @@
     padding: 0.75rem 1rem;
     font-size: 0.9rem;
   }
+  /* The computed headline (issue #122). Prose in a panel, deliberately not a
+     row of stat tiles: this report is a written document with commentary,
+     and the one thing a reader should take from the first screen is a
+     sentence, not a grid of numerals. Sized above body text so it wins the
+     top of the page against the meta grid below it. */
+  .headline {
+    font-size: 1.15rem;
+    line-height: 1.5;
+    margin: 0.75rem 0 1rem;
+    padding: 0.9rem 1.1rem;
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-left: 6px solid var(--accent);
+    border-radius: 8px;
+  }
+  .headline p { margin: 0.35rem 0; }
+  .headline-lead { font-weight: 600; }
+  .headline-caveat { font-size: 1rem; color: var(--muted); }
+  /* Collapsed sections (issue #124). Only content whose signal is already
+     on the visible summary line, or repeated somewhere that never
+     collapses, is ever put behind one of these: the rule-id lists in the
+     could-not-evaluate and not-applicable blocks are deliberately left
+     expanded, because find-in-page behaviour inside a closed <details>
+     varies by browser and a reader who cannot find a rule id concludes it
+     is not in the report. */
+  details { margin: 0.35rem 0; }
+  summary { cursor: pointer; }
+  summary::marker { color: var(--muted); }
+  .meta-details > summary {
+    color: var(--muted);
+    font-size: 0.9rem;
+    padding: 0.2rem 0;
+  }
+  .meta-details .meta-grid { margin-top: 0.5rem; }
   .meta-label { color: var(--muted); }
   .meta-value { font-weight: 500; }
   .perf-block {
@@ -83,6 +131,76 @@
   .perf-block.prominent {
     background: var(--warn-bg);
     border: 1px solid var(--warn-border);
+  }
+  /* The per-domain table (issue #123): one row per domain, replacing five
+     one-column lists a reader used to join by domain title by eye. */
+  .domain-table-wrap { overflow-x: auto; }
+  .domain-table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 0.85rem;
+  }
+  .domain-table th, .domain-table td {
+    border-bottom: 1px solid var(--border);
+    padding: 0.45rem 0.5rem;
+    text-align: left;
+    vertical-align: top;
+  }
+  .domain-table thead th { border-bottom: 2px solid var(--border); }
+  .domain-table tfoot th, .domain-table tfoot td {
+    border-top: 2px solid var(--border);
+    border-bottom: none;
+  }
+  .domain-table tbody th { font-weight: 500; }
+  .domain-id { color: var(--muted); font-family: ui-monospace, monospace; }
+  /* Minimum widths, not fixed ones: without them the browser gives the
+     verdict cell almost everything and squeezes "0 critical, 0 high, 1
+     medium, 0 low" into four one-word lines, which triples the row height
+     for a row that is mostly zeros. */
+  .verdict-cell { min-width: 13rem; }
+  .findings-cell { min-width: 8.5rem; }
+  .files-cell { min-width: 7.5rem; }
+  /* The bar's track is the full width of the cell; the bar itself is drawn
+     to a share of it set by how many rules the domain verdicted against the
+     largest domain in the run, so length carries quantity (D16-R05) rather
+     than every row being stretched to the same size. */
+  .vbar-track { display: block; width: 100%; margin-bottom: 0.25rem; }
+  .vbar { display: flex; height: 0.65rem; border-radius: 2px; overflow: hidden; }
+  .vseg { display: block; height: 100%; }
+  /* A hairline in the page background between segments, so two adjacent
+     segments never merge into one block whatever the palette does. */
+  .vseg + .vseg { border-left: 1px solid var(--card-bg); }
+  .seg-pass { background: var(--seg-pass); }
+  .seg-finding { background: var(--seg-finding); }
+  /* The two "nothing was checked" segments also carry a texture, so the
+     checked/not-checked split survives greyscale without relying on the
+     luminance steps alone. */
+  .seg-na {
+    background: repeating-linear-gradient(
+      45deg, var(--seg-na), var(--seg-na) 3px, var(--border) 3px, var(--border) 4px);
+  }
+  .seg-cne {
+    background: repeating-linear-gradient(
+      -45deg, var(--seg-cne), var(--seg-cne) 2px, var(--card-bg) 2px, var(--card-bg) 3px);
+  }
+  .verdict-numerals { display: block; }
+  .vbar-legend {
+    list-style: none;
+    padding: 0;
+    margin: 0.4rem 0 0.6rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem 1rem;
+    font-size: 0.85rem;
+    color: var(--muted);
+  }
+  .vbar-legend li { display: flex; align-items: center; gap: 0.35rem; }
+  .vkey {
+    display: inline-block;
+    width: 1.1rem;
+    height: 0.65rem;
+    border: 1px solid var(--border);
+    border-radius: 2px;
   }
   .perf-block p.ok {
     background: var(--ok-bg);
@@ -99,6 +217,11 @@
   }
   .finding-head { display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
   .finding-rule { color: var(--muted); font-size: 0.85rem; }
+  /* Findings are ordered by severity, not grouped under a domain heading,
+     so each card names its own domain. */
+  .finding-domain { color: var(--muted); font-size: 0.85rem; }
+  .quiet-domains { font-size: 0.95rem; }
+  .quiet-domains li { margin-bottom: 0.3rem; }
   /* Both lines carry an unbroken token (a path:line-range or a long URL)
      with no spaces to wrap at. overflow-wrap: anywhere lets the browser
      break inside the token itself, rather than word-break: break-all,
@@ -246,8 +369,28 @@
       --warn-bg: #fff4d6;
       --warn-border: #caa63d;
       --ok-bg: #e9f5ee;
+      /* The verdict-bar segments belong in this override too. Without them a
+         reader printing on a dark-mode OS would get the light palette
+         everywhere except inside the bars, which would still be drawn in
+         dark-mode colours on white paper. */
+      --seg-pass: #3d6f5f;
+      --seg-finding: #6b1215;
+      --seg-na: #ecece6;
+      --seg-cne: #a8a8a2;
     }
     body { margin: 0; }
+    /* On screen the table scrolls sideways if it has to. On paper there is
+       nothing to scroll, and a clipped table loses its right-hand columns
+       with no marker, so the overflow container is switched off and the
+       table is allowed to set its own width. */
+    .domain-table-wrap { overflow-x: visible; }
+    .domain-table { font-size: 0.7rem; }
+    .domain-table tr { break-inside: avoid; page-break-inside: avoid; }
+    /* Background fills are dropped by default in most print settings, which
+       would leave every bar blank. This asks for them, and the numerals in
+       the same cell are what the reader falls back on when the setting says
+       no. */
+    .vseg, .vkey { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     /* The interactive filing UI makes no sense on paper: a tick box, a
        token input and buttons cannot be acted on once printed. */
     .print-button,
@@ -274,6 +417,25 @@
     }
     .finding { break-inside: avoid; page-break-inside: avoid; }
     a { color: #1a1a1a; }
+    /* A closed <details> does not print its contents, so it has to be
+       forced open here. Two mechanisms ship, because they target different
+       engine generations, and which one does the work was measured rather
+       than assumed: in Chrome 151 a closed <details> hides its content with
+       content-visibility, so the ::details-content rule is the one that
+       opens it (measured: 19px closed, 53px with that rule) and the
+       display override below changes nothing. The display override is kept
+       for engines that still implement the closed state the old way.
+
+       Neither could be checked against real printed output where this was
+       written, so nothing on this page depends on a <details> opening:
+       every collapsed summary carries its own numbers, and every
+       identifier inside one is repeated somewhere that never collapses
+       (the per-domain table, the headline, or the footer). If both rules
+       fail on some engine, a printed report loses detail and keeps its
+       signal, rather than losing a number nobody can see is missing. */
+    details > summary { display: list-item; }
+    details::details-content { content-visibility: visible; }
+    details:not([open]) > *:not(summary) { display: block !important; }
     /* The Issues section duplicates the Findings section above, reformatted
        for GitHub, and its interactive controls are already hidden by the
        rules above, so what would print is content with its function
@@ -291,28 +453,20 @@
 </head>
 <body>
 <header>
-  <h1>Engineering practice audit report</h1>
+  <h1>Engineering practice audit report: rodlunt/demo-widgets-app</h1>
+  <div class="headline"><p class="headline-lead">1 high finding needs attention first, out of 1 finding across 7 rules verdicted in 2 of 2 domains.</p><p class="headline-caveat">1 of 7 rules was set aside as not applicable and 1 of 7 rules could not be evaluated, so this is not a clean bill of health: read the Tool performance summary before treating the findings above as the whole picture.</p></div>
   <button type="button" class="print-button" onclick="window.print()">Print / Save as PDF</button>
-  <div class="meta-grid"><div class="meta-label">Repository</div><div class="meta-value">rodlunt/demo-widgets-app</div><div class="meta-label">Commit</div><div class="meta-value">abc1234def5678</div><div class="meta-label">Rules pack</div><div class="meta-value">fixture_pack</div><div class="meta-label">Rules commit</div><div class="meta-value">unknown</div><div class="meta-label">Assistant</div><div class="meta-value">claude-code</div><div class="meta-label">Model</div><div class="meta-value">claude-sonnet-5</div><div class="meta-label">Tool version</div><div class="meta-value">0.1.0</div><div class="meta-label">Tool commit</div><div class="meta-value">unknown</div><div class="meta-label">Tool update</div><div class="meta-value">not checked</div><div class="meta-label">Rules pack update</div><div class="meta-value">not checked</div><div class="meta-label">Started</div><div class="meta-value">2026-08-09T09:00:00+00:00</div><div class="meta-label">Finished</div><div class="meta-value">2026-08-09T09:12:00+00:00</div><div class="meta-label">Duration</div><div class="meta-value">12m0s as reported by the assistant; not measured by the server, so this could not be checked</div></div>
+  <details class="meta-details"><summary>Run details: rodlunt/demo-widgets-app at commit abc1234def5678, audited by claude-code / claude-sonnet-5 against rules pack fixture_pack, finished 2026-08-09T09:12:00+00:00. 13 recorded fields.</summary><div class="meta-grid"><div class="meta-label">Repository</div><div class="meta-value">rodlunt/demo-widgets-app</div><div class="meta-label">Commit</div><div class="meta-value">abc1234def5678</div><div class="meta-label">Rules pack</div><div class="meta-value">fixture_pack</div><div class="meta-label">Rules commit</div><div class="meta-value">unknown</div><div class="meta-label">Assistant</div><div class="meta-value">claude-code</div><div class="meta-label">Model</div><div class="meta-value">claude-sonnet-5</div><div class="meta-label">Tool version</div><div class="meta-value">0.1.0</div><div class="meta-label">Tool commit</div><div class="meta-value">unknown</div><div class="meta-label">Tool update</div><div class="meta-value">not checked</div><div class="meta-label">Rules pack update</div><div class="meta-value">not checked</div><div class="meta-label">Started</div><div class="meta-value">2026-08-09T09:00:00+00:00</div><div class="meta-label">Finished</div><div class="meta-value">2026-08-09T09:12:00+00:00</div><div class="meta-label">Duration</div><div class="meta-value">12m0s as reported by the assistant; not measured by the server, so this could not be checked</div></div></details>
 </header>
-
-<section id="performance-summary">
-  <h2>Tool performance summary</h2>
-  <p class="section-note">This section describes how the audit run itself went: coverage,
-  what could not be evaluated and why, what was set aside as not applicable and why, and the
-  assistant's own confidence. It says nothing about the audited codebase's qualities; see
-  Findings below for that.</p>
-  <div class="perf-block"><h3>Coverage</h3><ul><li>Gnome Husbandry Record Keeping: 14 file(s) inspected, 1 skipped (one binary hat-colour swatch skipped)</li><li>Teacup Logistics Handling: 6 file(s) inspected, 0 skipped</li></ul></div><div class="perf-block"><h3>Findings rollup</h3><p>Total findings: <strong>1</strong></p><h3>By severity</h3><ul><li>critical: 0</li><li>high: 1</li><li>medium: 0</li><li>low: 0</li></ul><h3>By domain</h3><ul><li>d01: Gnome Husbandry Record Keeping: 1</li><li>d02: Teacup Logistics Handling: 0</li></ul></div><div class="perf-block prominent"><h3>Could not evaluate (1)</h3><p>These are rules the audit could not reach a verdict on, usually because the evidence lives outside the repository. They are not findings.</p><ul><li><strong>the garden bed ledger file could not be located in this demo repository</strong><br>D01-R03 (1 rule)</li></ul></div><div class="perf-block prominent"><h3>Not applicable (1)</h3><p>These are rules the audit set aside because the thing they are about is not present in this repository. They were not checked against it, and they are not findings: a rule set aside is a claim about the repository, so each one carries the reason it was set aside.</p><ul><li>d01: Gnome Husbandry Record Keeping: 1 of 4 rule(s) not applicable</li><li>d02: Teacup Logistics Handling: 0 of 3 rule(s) not applicable</li></ul><ul><li><strong>this demo repository stores no beard-length average to recalculate: the roster summary computes it on read</strong><br>D01-R04 (1 rule)</li></ul></div><div class="perf-block prominent"><h3>Rules fetched</h3><p class="ok">All 2 domain(s) that recorded verdicts had their rule text fetched from this server first.</p><p>This says the rule text was fetched from the server, and nothing more. It is not evidence that the rules were read, or applied, or that the verdicts below follow from them: a run that fetched every domain and then guessed would look the same here. What it can show is the opposite case, where the rules were never even asked for.</p></div><div class="perf-block"><h3>Self-assessment by domain</h3><ul><li>Gnome Husbandry Record Keeping: confidence high. Limits: did not check gnome beds outside the main garden plot.</li><li>Teacup Logistics Handling: confidence medium. Limits: did not check archived shipment routes.</li></ul></div><div class="perf-block"><h3>Environment</h3><p>No environment information reported for this run.</p></div><div class="perf-block"><h3>Sources consulted this run</h3><h4>D01-R01 (Record every gnome&#x27;s hat colour before assigning a garden bed.)</h4><ul><li><a href="https://example.invalid/garden-bed-standards">Garden Bed Allocation Standard, section 3</a>: checked the shared-bed flag&#x27;s documented meaning before verdicting this rule <span class="muted">(accessed 2026-08-09T09:02:00+00:00)</span></li></ul></div>
-</section>
 
 <section id="findings">
   <h2>Findings</h2>
-  <h3>Gnome Husbandry Record Keeping</h3><div class="finding sev-high"><div class="finding-head"><span class="severity-badge severity-high">high</span> <strong>Two gnomes share bed-14 without the shared-bed flag</strong> <span class="finding-rule">(D01-R02)</span></div><div class="finding-location">ledger/beds.py:42</div><div class="finding-body"><p>bed-14 holds two gnomes, gnome-07 and gnome-19, and neither record carries the shared-bed flag.</p><p>The nightly census only counts the first occupant of an unflagged bed, so gnome-19 is invisible to every maintenance round until the flag is set: its next scheduled hat-colour check will simply never fire.</p><p>Set shared_bed=True on both gnome-07 and gnome-19&#x27;s ledger entries for bed-14, then re-run the nightly census once to confirm both now appear.</p></div><div class="finding-reference">Reference: D01-R02: invented for test fixtures only, no external source</div></div><h3>Teacup Logistics Handling</h3><p>No findings.</p>
+  <h3>High: 1 of 1 finding</h3><div class="finding sev-high"><div class="finding-head"><span class="severity-badge severity-high">high</span> <strong>Two gnomes share bed-14 without the shared-bed flag</strong> <span class="finding-rule">(D01-R02)</span> <span class="finding-domain">Gnome Husbandry Record Keeping</span></div><div class="finding-location">ledger/beds.py:42</div><div class="finding-body"><p>bed-14 holds two gnomes, gnome-07 and gnome-19, and neither record carries the shared-bed flag.</p><p>The nightly census only counts the first occupant of an unflagged bed, so gnome-19 is invisible to every maintenance round until the flag is set: its next scheduled hat-colour check will simply never fire.</p><p>Set shared_bed=True on both gnome-07 and gnome-19&#x27;s ledger entries for bed-14, then re-run the nightly census once to confirm both now appear.</p></div><div class="finding-reference">Reference: D01-R02: invented for test fixtures only, no external source</div></div><h3>Domains with no findings: 1 of 2</h3><details><summary>Domains with no findings: 1 of 2. 1 audited and clean, 0 with every rule set aside as not applicable, 0 that did not run at all.</summary><ul class="quiet-domains"><li>d02: Teacup Logistics Handling: no findings, from 3 rule(s) verdicted (0 of them set aside as not applicable)</li></ul></details>
 </section>
 
 <section id="issues">
   <h2>Issues</h2>
-  <div class="issue-actions"><button type="button" onclick="revealGithubFileForm()">Add selected issues to GitHub (requires GitHub PAT)</button> <button type="button" onclick="copySelectedIssues(this)">Copy selected issues (for pasting into an LLM or editor)</button></div><div id="github-file-form" class="github-file-form" style="display:none"><p class="muted">Files each selected issue directly from your browser to api.github.com over HTTPS, using the REST API. The token is used only in memory on this page: it is never stored (no localStorage, sessionStorage or cookies). A fine-grained personal access token with Issues read and write access on the one target repository is enough.</p><label>Repository (owner/name)<br><input type="text" id="gh-repo" value="rodlunt/demo-widgets-app" placeholder="owner/name"></label><br><label>Personal access token<br><input type="password" id="gh-pat" autocomplete="off"></label><br><button type="button" id="gh-file-button" onclick="fileSelectedIssues()">File 0 selected issues</button> <button type="button" id="gh-stop-button" onclick="stopFilingIssues()" style="display:none">Stop</button><p id="github-file-summary" class="muted"></p></div><div class="issue-block"><label class="issue-select"><input type="checkbox" id="issue-check-0" disabled> <a href="https://github.com/rodlunt/engineering-audit/issues/3">already filed</a></label><p><strong>Set shared-bed flag for bed-14</strong></p><textarea id="issue-text-0" readonly rows="6">Set shared-bed flag for bed-14
+  <p class="muted">1 of 1 issue is ticked: the critical and high findings. The medium and low ones are listed unticked, not hidden. Tick any you also want to file, or untick one you do not. An issue already filed this run is shown unticked with a link to it.</p><div class="issue-actions"><button type="button" onclick="revealGithubFileForm()">Add selected issues to GitHub (requires GitHub PAT)</button> <button type="button" onclick="copySelectedIssues(this)">Copy selected issues (for pasting into an LLM or editor)</button></div><div id="github-file-form" class="github-file-form" style="display:none"><p class="muted">Files each selected issue directly from your browser to api.github.com over HTTPS, using the REST API. The token is used only in memory on this page: it is never stored (no localStorage, sessionStorage or cookies). A fine-grained personal access token with Issues read and write access on the one target repository is enough.</p><label>Repository (owner/name)<br><input type="text" id="gh-repo" value="rodlunt/demo-widgets-app" placeholder="owner/name"></label><br><label>Personal access token<br><input type="password" id="gh-pat" autocomplete="off"></label><br><button type="button" id="gh-file-button" onclick="fileSelectedIssues()">File 0 selected issues</button> <button type="button" id="gh-stop-button" onclick="stopFilingIssues()" style="display:none">Stop</button><p id="github-file-summary" class="muted"></p></div><div class="issue-block"><label class="issue-select"><input type="checkbox" id="issue-check-0" disabled> <a href="https://github.com/rodlunt/engineering-audit/issues/3">already filed</a></label><p><strong>Set shared-bed flag for bed-14</strong></p><textarea id="issue-text-0" readonly rows="6">Set shared-bed flag for bed-14
 
 bed-14 has two occupants (gnome-07, gnome-19) and neither carries the shared-bed flag. See ledger/beds.py:42.
 
@@ -321,6 +475,19 @@ Found by an engineering-practice audit (rule D01-R02, severity high, at ledger/b
 
 <p class="print-only-note">Issues section omitted from print: the issue-filing text for
 every finding is available in the on-screen version of this report.</p>
+
+<!-- Below Findings and Issues, not above them (issue #122). This section is
+     about how the run went, not about the repository, and it used to occupy
+     the first six screens: the first finding began on printed page 7 of 26.
+     It stays in full, in the same order, one scroll further down. -->
+<section id="performance-summary">
+  <h2>Tool performance summary</h2>
+  <p class="section-note">This section describes how the audit run itself went: coverage,
+  what could not be evaluated and why, what was set aside as not applicable and why, and the
+  assistant's own confidence. It says nothing about the audited codebase's qualities; see
+  Findings above for that.</p>
+  <div class="perf-block"><h3>Every domain, side by side</h3><p>One row per selected domain. The bar in the verdicts column is drawn to the same scale in every row, so a domain with fewer rules draws a shorter bar, and every value it draws is written out beside it.</p><ul class="vbar-legend"><li><span class="vkey seg-pass" aria-hidden="true"></span>pass</li><li><span class="vkey seg-finding" aria-hidden="true"></span>finding</li><li><span class="vkey seg-na" aria-hidden="true"></span>not applicable</li><li><span class="vkey seg-cne" aria-hidden="true"></span>could not evaluate</li></ul><div class="domain-table-wrap"><table class="domain-table"><thead><tr><th scope="col">Domain</th><th scope="col">Rule verdicts</th><th scope="col">Findings</th><th scope="col">Files</th><th scope="col">Confidence</th><th scope="col">Rules fetched</th></tr></thead><tbody><tr><th scope="row"><span class="domain-id">d01</span> Gnome Husbandry Record Keeping</th><td class="verdict-cell"><span class="vbar-track" aria-hidden="true"><span class="vbar" style="width:100.0000%"><span class="vseg seg-pass" style="width:25.0000%"></span><span class="vseg seg-finding" style="width:25.0000%"></span><span class="vseg seg-na" style="width:25.0000%"></span><span class="vseg seg-cne" style="width:25.0000%"></span></span></span><span class="verdict-numerals">pass: 1, finding: 1, not applicable: 1, could not evaluate: 1, of 4 rules verdicted</span></td><td class="findings-cell">1 of 1<br><span class="muted">0 critical, <strong>1 high</strong>, 0 medium, 0 low</span></td><td class="files-cell">14 inspected, 1 skipped <span class="muted">(one binary hat-colour swatch skipped)</span></td><td>high</td><td>yes</td></tr><tr><th scope="row"><span class="domain-id">d02</span> Teacup Logistics Handling</th><td class="verdict-cell"><span class="vbar-track" aria-hidden="true"><span class="vbar" style="width:75.0000%"><span class="vseg seg-pass" style="width:100.0000%"></span></span></span><span class="verdict-numerals">pass: 3, finding: 0, not applicable: 0, could not evaluate: 0, of 3 rules verdicted</span></td><td class="findings-cell">0 of 1<br><span class="muted">0 critical, 0 high, 0 medium, 0 low</span></td><td class="files-cell">6 inspected, 0 skipped</td><td>medium</td><td>yes</td></tr></tbody><tfoot><tr><th scope="row">All 2 selected domains</th><td class="verdict-cell"><span class="verdict-numerals">pass: 4, finding: 1, not applicable: 1, could not evaluate: 1, of 7 rules verdicted</span></td><td>1 of 1</td><td class="muted">not summed: a file two domains both opened would count twice</td><td class="muted">per domain</td><td class="muted">per domain</td></tr></tfoot></table></div></div><div class="perf-block"><h3>Run totals</h3><p><strong>1</strong> finding across 7 rules verdicted in 2 of 2 domains.</p><h3>Findings by severity</h3><ul><li>critical: 0 of 1</li><li>high: 1 of 1</li><li>medium: 0 of 1</li><li>low: 0 of 1</li></ul><h3>Rule verdicts</h3><ul><li>pass: 4 of 7</li><li>finding: 1 of 7</li><li>not applicable: 1 of 7</li><li>could not evaluate: 1 of 7</li></ul></div><div class="perf-block prominent"><h3>Could not evaluate: 1 of 7 rules verdicted</h3><p>These are rules the audit could not reach a verdict on, usually because the evidence lives outside the repository. They are not findings.</p><ul><li><strong>the garden bed ledger file could not be located in this demo repository</strong><br>D01-R03 (1 rule)</li></ul></div><div class="perf-block prominent"><h3>Not applicable: 1 of 7 rules verdicted</h3><p>These are rules the audit set aside because the thing they are about is not present in this repository. They were not checked against it, and they are not findings: a rule set aside is a claim about the repository, so each one carries the reason it was set aside. The per-domain counts are in the table at the top of this section.</p><ul><li><strong>this demo repository stores no beard-length average to recalculate: the roster summary computes it on read</strong><br>D01-R04 (1 rule)</li></ul></div><div class="perf-block prominent"><h3>Rules fetched</h3><p class="ok">All 2 domain(s) that recorded verdicts had their rule text fetched from this server first.</p><p>This says the rule text was fetched from the server, and nothing more. It is not evidence that the rules were read, or applied, or that the verdicts below follow from them: a run that fetched every domain and then guessed would look the same here. What it can show is the opposite case, where the rules were never even asked for.</p></div><div class="perf-block"><h3>Self-assessment limits</h3><p>Each domain's confidence is in the table above.</p><details><summary>2 of 2 domains reported a limit on their own assessment</summary><ul><li>d01: Gnome Husbandry Record Keeping: did not check gnome beds outside the main garden plot</li><li>d02: Teacup Logistics Handling: did not check archived shipment routes</li></ul></details></div><div class="perf-block"><h3>Environment</h3><p>No environment information reported for this run.</p></div><div class="perf-block"><h3>Sources consulted this run</h3><h4>D01-R01 (Record every gnome&#x27;s hat colour before assigning a garden bed.)</h4><ul><li><a href="https://example.invalid/garden-bed-standards">Garden Bed Allocation Standard, section 3</a>: checked the shared-bed flag&#x27;s documented meaning before verdicting this rule <span class="muted">(accessed 2026-08-09T09:02:00+00:00)</span></li></ul></div>
+</section>
 
 <section id="feedback">
   <h2>Feedback</h2>

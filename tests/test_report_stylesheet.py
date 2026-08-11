@@ -343,3 +343,163 @@ def test_card_stripe_width_gives_a_non_hue_severity_cue() -> None:
     assert widths["critical"] > widths["high"] > widths["medium"] > widths["low"], (
         f"stripe widths are not strictly monotonic with severity: {widths}"
     )
+
+
+# ---------------------------------------------------------------------------
+# #123: the per-domain table's verdict bar survives greyscale and print.
+# ---------------------------------------------------------------------------
+
+_SEGMENTS = ("seg-pass", "seg-finding", "seg-na", "seg-cne")
+_SEGMENT_VARS = ("pass", "finding", "na", "cne")
+
+# The bar encodes quantity as length, and colour only reinforces a category
+# the numerals in the same cell already name. That still leaves the four
+# segments needing to be told apart in greyscale, so every pair of them is
+# held to this much separation in relative luminance, in both palettes. Any
+# pair can end up adjacent, because any segment can be zero and drop out.
+_MIN_SEGMENT_SEPARATION = 1.8
+
+
+def _print_block(style: str) -> str:
+    """Everything from '@media print {' to the end of the stylesheet.
+
+    The print block is the last thing in the <style> element, so taking the
+    tail is enough and does not need brace matching. _style_block() returns
+    the style element's contents without its closing tag, which is why this
+    cannot anchor on </style>.
+    """
+    match = re.search(r"@media print\s*\{(.*)", style, re.DOTALL)
+    assert match is not None, "no @media print block found"
+    return match.group(1)
+
+
+def test_every_pair_of_verdict_bar_segments_is_separable_in_greyscale() -> None:
+    style = _style_block()
+
+    root_match = re.search(r":root\s*\{(.*?)\n  \}", style, re.DOTALL)
+    assert root_match is not None
+    light_vars = _extract_root_vars(root_match.group(1))
+
+    dark_root_match = re.search(
+        r"@media \(prefers-color-scheme:\s*dark\)\s*\{\s*:root\s*\{(.*?)\n    \}",
+        style,
+        re.DOTALL,
+    )
+    assert dark_root_match is not None
+    dark_vars = _extract_root_vars(dark_root_match.group(1))
+
+    failures = []
+    for palette_name, variables in (("light", light_vars), ("dark", dark_vars)):
+        for index, first in enumerate(_SEGMENT_VARS):
+            for second in _SEGMENT_VARS[index + 1 :]:
+                key_a, key_b = f"seg-{first}", f"seg-{second}"
+                assert key_a in variables, (
+                    f"--{key_a} missing from the {palette_name} palette"
+                )
+                assert key_b in variables, (
+                    f"--{key_b} missing from the {palette_name} palette"
+                )
+                ratio = _contrast_ratio(variables[key_a], variables[key_b])
+                if ratio < _MIN_SEGMENT_SEPARATION:
+                    failures.append(
+                        f"{palette_name} {first} vs {second}: {ratio:.2f}:1"
+                    )
+
+    assert not failures, (
+        "verdict bar segments too close to tell apart in greyscale:\n"
+        + "\n".join(failures)
+    )
+
+
+def test_print_palette_redefines_the_verdict_bar_segments_too() -> None:
+    # The print block forces the light palette back on. A segment variable
+    # left out of it would be drawn in dark-mode colours on white paper for
+    # anyone printing from a dark-mode OS.
+    print_block = _print_block(_style_block())
+    for variable in _SEGMENT_VARS:
+        assert re.search(rf"--seg-{variable}:\s*#[0-9a-fA-F]{{6}};", print_block), (
+            f"--seg-{variable} is not redefined inside @media print"
+        )
+
+
+def test_the_two_not_checked_segments_carry_a_texture_not_only_a_colour() -> None:
+    # Not applicable and could not evaluate are the "nothing was checked"
+    # half of the bar, and on a bulk-set-aside run they are most of it. A
+    # texture keeps that half distinguishable when the hues are gone.
+    style = _style_block()
+    for segment in ("seg-na", "seg-cne"):
+        rule_match = re.search(rf"\.{segment}\s*\{{([^}}]*)\}}", style, re.DOTALL)
+        assert rule_match is not None, f".{segment} rule not found"
+        assert "repeating-linear-gradient" in rule_match.group(1)
+
+
+def test_table_scrolls_sideways_on_screen_but_not_on_paper() -> None:
+    # overflow-x: auto is right on a phone and wrong on paper, where a
+    # clipped table silently loses its right-hand columns.
+    style = _style_block()
+    wrap_match = re.search(r"\.domain-table-wrap\s*\{([^}]*)\}", style)
+    assert wrap_match is not None
+    assert "overflow-x: auto" in wrap_match.group(1)
+
+    print_block = _print_block(style)
+    print_wrap_match = re.search(r"\.domain-table-wrap\s*\{([^}]*)\}", print_block)
+    assert print_wrap_match is not None, (
+        "@media print must override the table's overflow container"
+    )
+    assert "overflow-x: visible" in print_wrap_match.group(1)
+
+
+def test_print_asks_for_the_bar_fills_to_be_kept() -> None:
+    print_block = _print_block(_style_block())
+    match = re.search(r"\.vseg,\s*\.vkey\s*\{([^}]*)\}", print_block)
+    assert match is not None, "no print-color-adjust rule for the bar segments"
+    assert "print-color-adjust: exact" in match.group(1)
+
+
+# ---------------------------------------------------------------------------
+# #124: a closed <details> must still print its contents.
+# ---------------------------------------------------------------------------
+
+
+def test_print_forces_collapsed_sections_open_by_both_known_mechanisms() -> None:
+    # A closed <details> does not print its contents. Which declaration
+    # actually opens it depends on how the engine implements the closed
+    # state: modern Blink uses content-visibility on ::details-content
+    # (measured in Chrome 151: a closed details is 19px tall, and 53px with
+    # the ::details-content rule applied, while the display override alone
+    # leaves it at 19px), older engines used display: none on the children.
+    # Both ship, because neither covers every engine on its own.
+    print_block = _print_block(_style_block())
+
+    assert re.search(
+        r"details::details-content\s*\{[^}]*content-visibility:\s*visible", print_block
+    ), (
+        "@media print must reveal ::details-content, which is what actually "
+        "opens a closed <details> in current Blink"
+    )
+    assert re.search(
+        r"details:not\(\[open\]\)\s*>\s*\*:not\(summary\)\s*\{[^}]*display:\s*block\s*!important",
+        print_block,
+    ), (
+        "@media print must also carry the display override, for engines that "
+        "still implement the closed state that way"
+    )
+
+
+def test_summary_lines_are_not_hidden_from_print() -> None:
+    # The summary carries the numbers. If the print block ever hid it as
+    # interactive furniture, a printed report would lose the signal and keep
+    # the evidence, which is exactly backwards.
+    print_block = _print_block(_style_block())
+    assert not re.search(r"(^|[\s,])summary\s*\{[^}]*display:\s*none", print_block)
+
+
+def test_rendered_table_carries_the_bar_markup_and_its_numerals() -> None:
+    rendered = _rendered_report()
+    assert '<div class="domain-table-wrap">' in rendered
+    assert '<span class="vbar-track" aria-hidden="true">' in rendered
+    for segment in _SEGMENTS:
+        # seg-na does not appear in this fixture run (nothing was set aside),
+        # so only the legend swatch is guaranteed for every segment.
+        assert f'class="vkey {segment}"' in rendered
+    assert '<span class="verdict-numerals">' in rendered

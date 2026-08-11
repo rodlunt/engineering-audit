@@ -61,6 +61,10 @@ _REPO_SLUG_RE = re.compile(r"^[\w.-]+/[\w.-]+$")
 
 _SEVERITY_ORDER = ("critical", "high", "medium", "low")
 
+# The severities whose issue checkbox is ticked when the report loads. See
+# _issues_section for why this is not all four.
+_PRETICKED_SEVERITIES = ("critical", "high")
+
 
 class ReportError(Exception):
     """Raised when a RunState cannot be rendered into a trustworthy report:
@@ -73,6 +77,24 @@ class ReportError(Exception):
 
 def _esc(value: object) -> str:
     return html.escape(str(value))
+
+
+def _plural(count: int, singular: str, plural: str | None = None) -> str:
+    """ "1 finding" / "2 findings", for the few places whose whole job is to
+    read like written English.
+
+    The rest of this file uses the "rule(s)" form, which is fine inside a
+    dense list. The headline block is the one paragraph a reader is most
+    likely to quote, so it gets real grammar.
+    """
+    return singular if count == 1 else (plural or f"{singular}s")
+
+
+def _join_clauses(clauses: list[str]) -> str:
+    """Join clauses as English: "a", "a and b", "a, b and c"."""
+    if len(clauses) <= 1:
+        return "".join(clauses)
+    return f"{', '.join(clauses[:-1])} and {clauses[-1]}"
 
 
 def _short_commit(value: str | None) -> str:
@@ -182,80 +204,491 @@ def _render_meta_block(run_state: RunState) -> str:
         f'<div class="meta-label">{_esc(label)}</div><div class="meta-value">{_esc(value)}</div>'
         for label, value in rows
     )
-    return f'<div class="meta-grid">{rows_html}</div>'
+    # Collapsed behind a summary that is sufficient on its own (issue #124):
+    # which repository, at which commit, audited by what against which rules
+    # pack, and when it finished. Provenance a reader needs to trust the page
+    # is on the visible line; the remaining rows are the detail behind it.
+    # Every identifier in this summary is also in the footer, which never
+    # collapses, so nothing here depends on the <details> opening.
+    summary = (
+        f"Run details: {_esc(meta.repo_name)} at commit {_esc(meta.repo_commit)}, "
+        f"audited by {_esc(meta.assistant)} / {_esc(meta.model)} against rules pack "
+        f"{_esc(rules_pack_label(meta))}, finished "
+        f"{_esc(meta.finished or 'in progress')}. "
+        f"{len(rows)} recorded {_plural(len(rows), 'field')}."
+    )
+    return (
+        f'<details class="meta-details"><summary>{summary}</summary>'
+        f'<div class="meta-grid">{rows_html}</div>'
+        "</details>"
+    )
 
 
-def _coverage_summary(
-    selected: dict[str, DomainResult], domain_titles: dict[str, str]
-) -> str:
-    """Render the per-domain coverage list.
+def _verdict_counts(result: DomainResult) -> Counter[str]:
+    """One domain's rule verdicts, counted by verdict value.
 
-    This used to also sum inspected/skipped file counts across every
-    selected domain and publish two "Total files..." figures. Each domain
-    audits the same repository from its own angle, so a file that sixteen
-    domains each independently declined to open was counted as sixteen
-    separate skips: the totals inflated by roughly the domain count and had
-    no honest reading (a 344-file repository rendered "5320 skipped", see
-    issue #87). The per-domain list below is already correct and
-    unambiguous on its own, so the totals are dropped rather than fixed:
-    nothing a reader needs is lost.
+    Every one of the four verdicts is present, at zero where nothing
+    carried it, so a caller can index the result without deciding for
+    itself what a missing key means. A could-not-run domain has no
+    verdicts at all (DomainResult enforces that), so it comes back as four
+    zeros, which is exactly the shape it should have: nothing was checked.
     """
+    counts: Counter[str] = Counter(rv.verdict.value for rv in result.rule_verdicts)
+    for verdict in Verdict:
+        counts.setdefault(verdict.value, 0)
+    return counts
+
+
+def _run_totals(selected: dict[str, DomainResult]) -> Counter[str]:
+    """The whole run's rule verdicts, counted by verdict value."""
+    totals: Counter[str] = Counter()
+    for result in selected.values():
+        totals.update(_verdict_counts(result))
+    return totals
+
+
+def _headline_block(
+    all_findings: list[tuple[str, Finding]],
+    selected: dict[str, DomainResult],
+) -> str:
+    """The computed sentence that opens the report (issue #122).
+
+    Everything here is summed from the run state, the same as every other
+    number on the page. Two sentences: what needs attention first, then
+    what this run did not check. The second one exists because the first
+    one, read alone, invites the reader to treat the finding count as the
+    whole story, and on a run that set most of its rules aside it is not.
+
+    Every figure ships with its base (D16-R03): "30 findings" is
+    meaningless without "across 244 rules verdicted in 15 of 16 domains".
+    No figure is expressed as a percentage, so no share ever appears
+    without the count it was taken from.
+
+    The lead sentence is conditional, and where no severity threshold is
+    met it falls back to a descriptive line rather than manufacturing
+    urgency the counts do not support (D16-R10).
+    """
+    severity_counts: Counter[str] = Counter(f.severity.value for _, f in all_findings)
+    critical = severity_counts.get("critical", 0)
+    high = severity_counts.get("high", 0)
+    total_findings = len(all_findings)
+
+    totals = _run_totals(selected)
+    verdicted = sum(totals.values())
+    domains_with_verdicts = len(_domain_ids_with_verdicts(selected))
+    domain_count = len(selected)
+
+    base = (
+        f"{verdicted} {_plural(verdicted, 'rule')} verdicted in "
+        f"{domains_with_verdicts} of {domain_count} "
+        f"{_plural(domain_count, 'domain')}"
+    )
+
+    if critical or high:
+        urgent = _join_clauses(
+            [
+                f"{count} {label}"
+                for count, label in ((critical, "critical"), (high, "high"))
+                if count
+            ]
+        )
+        urgent_total = critical + high
+        lead = (
+            f"{urgent} {_plural(urgent_total, 'finding')} "
+            f"{_plural(urgent_total, 'needs', 'need')} attention first, out of "
+            f"{total_findings} {_plural(total_findings, 'finding')} across {base}."
+        )
+    elif total_findings:
+        lead = (
+            f"No critical or high findings. {total_findings} "
+            f"{_plural(total_findings, 'finding')} of medium or low severity "
+            f"{_plural(total_findings, 'was', 'were')} recorded, across {base}."
+        )
+    else:
+        lead = f"No findings were recorded, across {base}."
+
+    not_applicable = totals["not-applicable"]
+    could_not_evaluate = totals["could-not-evaluate"]
+    not_run = [
+        domain_id
+        for domain_id, result in selected.items()
+        if result.status == "could-not-run"
+    ]
+
+    # Each clause carries the base its count came out of, which is the whole
+    # point of the sentence: "155 rules were set aside" invites the reader to
+    # supply their own denominator, and "155 of 244" does not.
+    caveats = []
+    if not_applicable:
+        caveats.append(
+            f"{not_applicable} of {verdicted} rules "
+            f"{_plural(not_applicable, 'was', 'were')} set aside as not applicable"
+        )
+    if could_not_evaluate:
+        caveats.append(
+            f"{could_not_evaluate} of {verdicted} rules could not be evaluated"
+        )
+    if not_run:
+        caveats.append(
+            f"{len(not_run)} of {domain_count} "
+            f"{_plural(domain_count, 'domain')} did not run at all"
+        )
+
+    if caveats:
+        caveat = (
+            f"{_join_clauses(caveats)}, so this is not a clean bill of health: "
+            "read the Tool performance summary before treating the findings above "
+            "as the whole picture."
+        )
+    else:
+        caveat = (
+            "No rule was set aside as not applicable, none was left could not "
+            f"evaluate, and all {domain_count} selected "
+            f"{_plural(domain_count, 'domain')} ran."
+        )
+
+    return (
+        '<div class="headline">'
+        f'<p class="headline-lead">{_esc(lead)}</p>'
+        f'<p class="headline-caveat">{_esc(caveat)}</p>'
+        "</div>"
+    )
+
+
+# The bar's segment order, left to right, and the words that name each
+# segment in the numerals beside it. Checked first (pass, finding), then not
+# checked (not applicable, could not evaluate), so the split a reader most
+# wants (how much of this domain was actually looked at) falls where the
+# colours change rather than being scattered across the bar.
+_VERDICT_BAR_ORDER: tuple[tuple[str, str, str], ...] = (
+    (Verdict.pass_.value, "pass", "seg-pass"),
+    (Verdict.FINDING.value, "finding", "seg-finding"),
+    (Verdict.NOT_APPLICABLE.value, "not applicable", "seg-na"),
+    (Verdict.COULD_NOT_EVALUATE.value, "could not evaluate", "seg-cne"),
+)
+
+
+def _verdict_bar(counts: Counter[str], verdicted: int, scale_max: int) -> str:
+    """One domain's verdict mix as an inline stacked bar.
+
+    Length, not colour intensity, carries the quantity (D16-R05): a
+    heat-shaded cell would encode a number in the one visual channel people
+    read least reliably. The bar is scaled against the largest domain in the
+    run rather than being stretched to full width in every row, so a
+    twelve-rule domain draws a visibly shorter bar than a twenty-rule one.
+    Stretching each bar to full width would have made every row the same
+    size and turned the only length cue in the table into a proportion.
+
+    The bar is aria-hidden and carries no data of its own: every number it
+    draws is written out in words in the same cell, immediately after it.
+    That is what makes it decoration in the good sense (redundant
+    reinforcement, D16-R16) rather than the only place a value lives, and it
+    satisfies D16-R17's text-alternative requirement without a second
+    element to keep in sync.
+    """
+    if verdicted <= 0 or scale_max <= 0:
+        return ""
+    segments = "".join(
+        f'<span class="vseg {css_class}" style="width:{counts[key] / verdicted * 100:.4f}%"></span>'
+        for key, _label, css_class in _VERDICT_BAR_ORDER
+        if counts[key]
+    )
+    return (
+        '<span class="vbar-track" aria-hidden="true">'
+        f'<span class="vbar" style="width:{verdicted / scale_max * 100:.4f}%">'
+        f"{segments}</span></span>"
+    )
+
+
+def _verdict_numerals(counts: Counter[str], verdicted: int) -> str:
+    """The bar's values in words, in the bar's own segment order.
+
+    Every count ships with the base it came out of, which is the whole
+    reason this reads "6 not applicable" followed by "of 15 rules verdicted"
+    rather than a bare 6, and the reason none of it is a percentage: a share
+    with no base is exactly the figure a reader fills in wrongly.
+    """
+    # Label first, count second. "2 finding" and "2 pass" both read like
+    # typos, and pluralising a verdict's own name ("2 findings") would make
+    # the finding verdict look like the findings count, which it is not: two
+    # findings can be recorded against one rule.
+    parts = ", ".join(
+        f"{label}: {counts[key]}" for key, label, _css in _VERDICT_BAR_ORDER
+    )
+    return (
+        f'<span class="verdict-numerals">{_esc(parts)}, of {verdicted} '
+        f"{_plural(verdicted, 'rule')} verdicted</span>"
+    )
+
+
+def _rules_fetched_status(
+    run_state: RunState, selected: dict[str, DomainResult]
+) -> dict[str, str]:
+    """Domain id -> the fetch answer for that domain, in three states plus one.
+
+    Shared by the per-domain table and the Rules fetched block below it, so
+    the two cannot disagree about the same domain. "not recorded" is a third
+    answer, never folded into either of the other two, and a domain that
+    reached no verdict at all is outside the question rather than a failure
+    of it.
+    """
+    considered = set(_domain_ids_with_verdicts(selected))
+    recorded = run_state.rules_fetched_domain_ids
+    fetched_ids = set(recorded or ())
+    unknown_ids = set(run_state.rules_fetch_unknown_domain_ids) - fetched_ids
+
+    status: dict[str, str] = {}
+    for domain_id in selected:
+        if domain_id not in considered:
+            status[domain_id] = "no verdicts to check"
+        elif recorded is None or domain_id in unknown_ids:
+            status[domain_id] = "not recorded"
+        elif domain_id in fetched_ids:
+            status[domain_id] = "yes"
+        else:
+            status[domain_id] = "no"
+    return status
+
+
+def _files_cell(result: DomainResult) -> str:
+    if result.coverage is None:
+        return "no coverage reported"
+    note = (
+        f' <span class="muted">({_esc(result.coverage.note)})</span>'
+        if result.coverage.note
+        else ""
+    )
+    return (
+        f"{result.coverage.files_inspected} inspected, "
+        f"{result.coverage.files_skipped} skipped{note}"
+    )
+
+
+def _severity_cell(domain_findings: Counter[str], total_findings: int) -> str:
+    """A domain's findings, as a count out of the run's total plus the four
+    severities including the zeros.
+
+    Nonzero critical and high counts are bolded rather than coloured. Weight
+    is a channel that survives greyscale, a photocopy and the print
+    palette; a colour that carries meaning nothing else carries would fail
+    D16-R16, and a colour that carries meaning the word beside it already
+    carries would be furniture (D16-R06).
+    """
+    domain_total = sum(domain_findings.values())
+    parts = []
+    for severity in _SEVERITY_ORDER:
+        count = domain_findings.get(severity, 0)
+        text = f"{count} {_esc(severity)}"
+        if count and severity in _PRETICKED_SEVERITIES:
+            text = f"<strong>{text}</strong>"
+        parts.append(text)
+    return (
+        f"{domain_total} of {total_findings}<br>"
+        f'<span class="muted">{", ".join(parts)}</span>'
+    )
+
+
+def _domain_table(
+    run_state: RunState,
+    selected: dict[str, DomainResult],
+    domain_titles: dict[str, str],
+    all_findings: list[tuple[str, Finding]],
+) -> str:
+    """One row per domain, replacing five separate per-domain lists.
+
+    The report used to hold five facts about each domain and render each as
+    its own list, in five blocks spread over roughly 4,000 vertical pixels:
+    coverage, findings rollup, not applicable, self-assessment and rules
+    fetched. That is a 16-row, 5-column table shredded into five
+    one-column lists, and answering "which domain should I worry about"
+    meant joining them by domain title by eye (issue #123).
+
+    Every cell carries its own base. A domain that produced nothing is a row
+    of zeros, not a missing row, and the three ways of producing nothing
+    (swept clean, set aside in full, never ran) each read differently.
+    """
+    if not selected:
+        return "<p>No domains selected.</p>"
+
+    findings_by_domain: dict[str, Counter[str]] = {
+        domain_id: Counter() for domain_id in selected
+    }
+    for domain_id, finding in all_findings:
+        findings_by_domain[domain_id][finding.severity.value] += 1
+    total_findings = len(all_findings)
+
+    verdict_counts = {
+        domain_id: _verdict_counts(result) for domain_id, result in selected.items()
+    }
+    verdicted_totals = {
+        domain_id: sum(counts.values()) for domain_id, counts in verdict_counts.items()
+    }
+    scale_max = max(verdicted_totals.values(), default=0)
+    fetch_status = _rules_fetched_status(run_state, selected)
+
     rows = []
     for domain_id, result in selected.items():
-        title = domain_titles[domain_id]
-        if result.coverage is not None:
-            note = f" ({_esc(result.coverage.note)})" if result.coverage.note else ""
-            rows.append(
-                f"<li>{_esc(title)}: {result.coverage.files_inspected} file(s) inspected, "
-                f"{result.coverage.files_skipped} skipped{note}</li>"
-            )
+        label = (
+            f'<th scope="row"><span class="domain-id">{_esc(domain_id)}</span> '
+            f"{_esc(domain_titles[domain_id])}</th>"
+        )
+        confidence = (
+            _esc(result.self_assessment.confidence)
+            if result.self_assessment is not None
+            else "not reported"
+        )
+        if result.status == "could-not-run":
+            # No verdicts by construction, so there is no mix to draw and no
+            # denominator any numeral here could be a count out of. Saying
+            # "did not run, nothing checked" is the whole content of the row.
+            verdict_cell = "<strong>did not run, nothing checked</strong>"
+            severity_cell = "did not run"
         else:
-            rows.append(f"<li>{_esc(title)}: no coverage reported</li>")
-    return f"<ul>{''.join(rows)}</ul>"
+            counts = verdict_counts[domain_id]
+            verdicted = verdicted_totals[domain_id]
+            verdict_cell = _verdict_bar(
+                counts, verdicted, scale_max
+            ) + _verdict_numerals(counts, verdicted)
+            severity_cell = _severity_cell(
+                findings_by_domain[domain_id], total_findings
+            )
+        rows.append(
+            "<tr>"
+            f"{label}"
+            f'<td class="verdict-cell">{verdict_cell}</td>'
+            f'<td class="findings-cell">{severity_cell}</td>'
+            f'<td class="files-cell">{_files_cell(result)}</td>'
+            f"<td>{confidence}</td>"
+            f"<td>{_esc(fetch_status[domain_id])}</td>"
+            "</tr>"
+        )
+
+    totals = _run_totals(selected)
+    verdicted_total = sum(totals.values())
+    totals_cells = (
+        '<th scope="row">All '
+        f"{len(selected)} selected {_plural(len(selected), 'domain')}</th>"
+        f'<td class="verdict-cell">{_verdict_numerals(totals, verdicted_total)}</td>'
+        f"<td>{total_findings} of {total_findings}</td>"
+        # Deliberately not summed. Each domain audits the same repository
+        # from its own angle, so a file that sixteen domains each declined to
+        # open is sixteen skips in a naive total: a 344-file repository
+        # rendered "5320 skipped" before issue #87 removed the figure. The
+        # cell says why rather than going blank, which would read as missing
+        # data.
+        '<td class="muted">not summed: a file two domains both opened would '
+        "count twice</td>"
+        '<td class="muted">per domain</td>'
+        '<td class="muted">per domain</td>'
+    )
+
+    legend = "".join(
+        f'<li><span class="vkey {css_class}" aria-hidden="true"></span>{_esc(label)}</li>'
+        for _key, label, css_class in _VERDICT_BAR_ORDER
+    )
+
+    return (
+        "<p>One row per selected domain. The bar in the verdicts column is drawn to the "
+        "same scale in every row, so a domain with fewer rules draws a shorter bar, and "
+        "every value it draws is written out beside it.</p>"
+        f'<ul class="vbar-legend">{legend}</ul>'
+        '<div class="domain-table-wrap">'
+        '<table class="domain-table">'
+        "<thead><tr>"
+        '<th scope="col">Domain</th>'
+        '<th scope="col">Rule verdicts</th>'
+        '<th scope="col">Findings</th>'
+        '<th scope="col">Files</th>'
+        '<th scope="col">Confidence</th>'
+        '<th scope="col">Rules fetched</th>'
+        "</tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody>"
+        f"<tfoot><tr>{totals_cells}</tr></tfoot>"
+        "</table>"
+        "</div>"
+    )
+
+
+def _self_assessment_limits(
+    selected: dict[str, DomainResult], domain_titles: dict[str, str]
+) -> str:
+    """The limits each domain reported on its own assessment.
+
+    The confidence word itself is a table column now. The limits are free
+    text of arbitrary length and would wreck the table, so they stay here,
+    and they stay at all because a self-reported limit is the one part of a
+    self-assessment that can contradict the confidence beside it.
+
+    Rendered even when nothing was reported: a vanished block and a run
+    where every domain claimed no limits look identical otherwise.
+    """
+    rows = [
+        f"<li>{_esc(domain_id)}: {_esc(domain_titles[domain_id])}: "
+        f"{_esc(result.self_assessment.limits)}</li>"
+        for domain_id, result in selected.items()
+        if result.self_assessment is not None and result.self_assessment.limits
+    ]
+    if not rows:
+        return (
+            f"<p>None of the {len(selected)} selected "
+            f"{_plural(len(selected), 'domain')} reported a limit on their own "
+            "assessment. Each domain's confidence is in the table above.</p>"
+        )
+    # Collapsed behind its own count (issue #124). The limits are free text
+    # of arbitrary length and are the longest thing in this block; the count
+    # is the signal, and each domain named inside is also a row in the table
+    # above, which never collapses.
+    summary = (
+        f"{len(rows)} of {len(selected)} "
+        f"{_plural(len(selected), 'domain')} reported a limit on "
+        f"{_plural(len(rows), 'its', 'their')} own assessment"
+    )
+    return (
+        "<p>Each domain's confidence is in the table above.</p>"
+        f"<details><summary>{_esc(summary)}</summary>"
+        f"<ul>{''.join(rows)}</ul>"
+        "</details>"
+    )
 
 
 def _findings_rollup(
     all_findings: list[tuple[str, Finding]],
     selected: dict[str, DomainResult],
-    domain_titles: dict[str, str],
 ) -> str:
+    """The run's totals: findings by severity, and every rule verdict by
+    verdict.
+
+    The by-domain list that used to live here is the table above, keyed by
+    domain id so two domains sharing a title cannot merge into one row.
+
+    Two things changed with issue #123. Every count now carries the base it
+    came out of, because "Total findings: 30" and "critical: 2" both shipped
+    without one, and thirty findings against 37 passes is a very different
+    report from thirty against 244 rules mostly set aside. And the pass
+    count appears, which it never did anywhere in the visible report despite
+    being computed for the feedback payload all along.
+    """
     severity_counts: Counter[str] = Counter(f.severity.value for _, f in all_findings)
-    # Keyed by domain id, not title: two domains with identical titles (from
-    # different rules-pack files) must not merge into one rollup row.
-    domain_counts: Counter[str] = Counter(domain_id for domain_id, _ in all_findings)
     total = len(all_findings)
+    totals = _run_totals(selected)
+    verdicted = sum(totals.values())
+    domains_with_verdicts = len(_domain_ids_with_verdicts(selected))
 
     sev_items = "".join(
-        f"<li>{_esc(sev)}: {severity_counts.get(sev, 0)}</li>"
+        f"<li>{_esc(sev)}: {severity_counts.get(sev, 0)} of {total}</li>"
         for sev in _SEVERITY_ORDER
     )
-    # Built from every selected domain, defaulting to zero, the same way the
-    # by-severity breakdown above always shows all four severities including
-    # zero counts: a domain that was audited and came back clean must still
-    # appear here, not be indistinguishable from one that was never run.
-    #
-    # A domain whose every rule was set aside as not applicable is marked as
-    # such on its own row, because "0" is exactly what a domain that was
-    # swept clean also shows and the two are not the same result (issue
-    # #100). The full counts and reasons are in the Not applicable block.
-    fully_not_applicable = set(
-        _fully_not_applicable_domain_ids(_not_applicable_counts(selected))
-    )
-    set_aside_note = " (every rule not applicable, nothing checked)"
-    domain_items = (
-        "".join(
-            f"<li>{_esc(domain_id)}: {_esc(domain_titles[domain_id])}: "
-            f"{domain_counts.get(domain_id, 0)}"
-            f"{set_aside_note if domain_id in fully_not_applicable else ''}"
-            "</li>"
-            for domain_id in selected
-        )
-        or "<li>No domains selected.</li>"
+    verdict_items = "".join(
+        f"<li>{_esc(label)}: {totals[key]} of {verdicted}</li>"
+        for key, label, _css in _VERDICT_BAR_ORDER
     )
     return (
-        f"<p>Total findings: <strong>{total}</strong></p>"
-        f"<h3>By severity</h3><ul>{sev_items}</ul>"
-        f"<h3>By domain</h3><ul>{domain_items}</ul>"
+        f"<p><strong>{total}</strong> {_plural(total, 'finding')} across "
+        f"{verdicted} {_plural(verdicted, 'rule')} verdicted in "
+        f"{domains_with_verdicts} of {len(selected)} "
+        f"{_plural(len(selected), 'domain')}.</p>"
+        f"<h3>Findings by severity</h3><ul>{sev_items}</ul>"
+        f"<h3>Rule verdicts</h3><ul>{verdict_items}</ul>"
     )
 
 
@@ -362,7 +795,11 @@ def _could_not_evaluate_list(
             "not applicable. Nothing was left could-not-evaluate.</p>"
         )
 
-    parts = [f"<h3>Could not evaluate ({total})</h3>"]
+    verdicted = sum(_run_totals(selected).values())
+    parts = [
+        f"<h3>Could not evaluate: {total} of {verdicted} "
+        f"{_plural(verdicted, 'rule')} verdicted</h3>"
+    ]
     if reason_to_rule_ids:
         parts.append(
             "<p>These are rules the audit could not reach a verdict on, usually because "
@@ -444,27 +881,20 @@ def _not_applicable_list(
             "verdicted was verdicted against this repository.</p>"
         )
 
-    rows = []
-    for domain_id, result in selected.items():
-        title = domain_titles[domain_id]
-        if result.status == "could-not-run":
-            rows.append(
-                f"<li>{_esc(domain_id)}: {_esc(title)}: did not run at all</li>"
-            )
-            continue
-        not_applicable, verdicted = counts[domain_id]
-        rows.append(
-            f"<li>{_esc(domain_id)}: {_esc(title)}: {not_applicable} of {verdicted} "
-            "rule(s) not applicable</li>"
-        )
-
+    # The per-domain "N of M rule(s) not applicable" list that used to sit
+    # here is the table at the top of this section now (issue #123): it was
+    # one of five one-column lists a reader had to join by domain title by
+    # eye. Its denominators went with it into the table's verdicts column,
+    # rather than being dropped on the way.
+    verdicted_total = sum(_run_totals(selected).values())
     parts = [
-        f"<h3>Not applicable ({total})</h3>",
+        f"<h3>Not applicable: {total} of {verdicted_total} "
+        f"{_plural(verdicted_total, 'rule')} verdicted</h3>",
         "<p>These are rules the audit set aside because the thing they are about is not "
         "present in this repository. They were not checked against it, and they are not "
         "findings: a rule set aside is a claim about the repository, so each one carries "
-        "the reason it was set aside.</p>",
-        f"<ul>{''.join(rows)}</ul>",
+        "the reason it was set aside. The per-domain counts are in the table at the top "
+        "of this section.</p>",
     ]
 
     fully_not_applicable = _fully_not_applicable_domain_ids(counts)
@@ -557,10 +987,12 @@ def _rules_fetched_list(
             "whether the rules behind these verdicts were ever requested.</p>"
         )
 
-    fetched_ids = set(recorded)
-    unknown_ids = set(run_state.rules_fetch_unknown_domain_ids) - fetched_ids
-    unknown = [d for d in considered if d in unknown_ids]
-    missing = [d for d in considered if d not in fetched_ids and d not in unknown_ids]
+    # Derived from the same map the table's Rules fetched column is built
+    # from, so a domain cannot read "no" in the table and be absent from the
+    # callout below, or the reverse (issue #123).
+    status = _rules_fetched_status(run_state, selected)
+    unknown = [d for d in considered if status[d] == "not recorded"]
+    missing = [d for d in considered if status[d] == "no"]
 
     def _names(domain_ids: list[str]) -> str:
         return ", ".join(
@@ -600,25 +1032,6 @@ def _rules_fetched_list(
         )
     parts.append(_RULES_FETCHED_LIMIT)
     return "".join(parts)
-
-
-def _self_assessment_list(
-    selected: dict[str, DomainResult], domain_titles: dict[str, str]
-) -> str:
-    rows = []
-    for domain_id, result in selected.items():
-        title = domain_titles[domain_id]
-        if result.status == "could-not-run":
-            rows.append(f"<li>{_esc(title)}: could not run, {_esc(result.reason)}</li>")
-        elif result.self_assessment is not None:
-            sa = result.self_assessment
-            limits = f" Limits: {_esc(sa.limits)}." if sa.limits else ""
-            rows.append(
-                f"<li>{_esc(title)}: confidence {_esc(sa.confidence)}.{limits}</li>"
-            )
-        else:
-            rows.append(f"<li>{_esc(title)}: no self-assessment reported</li>")
-    return f"<ul>{''.join(rows)}</ul>"
 
 
 def _consulted_source_link(source: ConsultedSource) -> str:
@@ -726,57 +1139,147 @@ def _reference_line(rule: Rule, pack_is_v2: bool) -> str:
     return f"Reference: {rule.id}: {cited}"
 
 
+def _finding_card(
+    domain_title: str,
+    finding: Finding,
+    rule_index: dict[str, Rule],
+    pack_is_v2: bool,
+) -> str:
+    severity = finding.severity.value
+    badge = f'<span class="severity-badge severity-{_esc(severity)}">{_esc(severity)}</span>'
+    # render_report has already confirmed every finding's rule_id is in the
+    # pack, so this lookup cannot miss.
+    rule = rule_index[finding.rule_id]
+    return (
+        f'<div class="finding sev-{_esc(severity)}">'
+        f'<div class="finding-head">{badge} <strong>{_esc(finding.title)}</strong> '
+        f'<span class="finding-rule">({_esc(finding.rule_id)})</span> '
+        f'<span class="finding-domain">{_esc(domain_title)}</span></div>'
+        f'<div class="finding-location">{_esc(finding.location)}</div>'
+        f'<div class="finding-body">{_markdownish(finding.body_md)}</div>'
+        f'<div class="finding-reference">{_esc(_reference_line(rule, pack_is_v2))}</div>'
+        "</div>"
+    )
+
+
+def _domains_without_findings(
+    selected: dict[str, DomainResult], domain_titles: dict[str, str]
+) -> str:
+    """The closing list of every selected domain that produced no findings,
+    saying for each one which kind of "none" it was.
+
+    Three outcomes, never one. A domain swept clean, a domain whose every
+    rule was set aside as not applicable, and a domain that never ran all
+    produce zero findings, and reporting them with the same sentence is the
+    defect issues #100 and #122 both exist to close. The zeros are printed
+    rather than dropped: a domain missing from this list is a domain that
+    found something, not a domain nobody looked at.
+
+    Collapsed behind a summary that carries the split three ways (issue
+    #124), because "Domains with no findings: 5 of 16" on its own is exactly
+    the sentence that hid the difference in the first place. The summary is
+    the signal; the domain names and reasons behind it are the evidence, and
+    every domain id in there also appears in the per-domain table, which
+    never collapses.
+    """
+    counts = _not_applicable_counts(selected)
+    fully_not_applicable = set(_fully_not_applicable_domain_ids(counts))
+    quiet = [
+        (domain_id, result)
+        for domain_id, result in selected.items()
+        if not result.findings
+    ]
+    if not quiet:
+        return ""
+
+    not_run = sum(1 for _, result in quiet if result.status == "could-not-run")
+    set_aside = sum(1 for domain_id, _ in quiet if domain_id in fully_not_applicable)
+    clean = len(quiet) - not_run - set_aside
+
+    rows = []
+    for domain_id, result in quiet:
+        label = f"{_esc(domain_id)}: {_esc(domain_titles[domain_id])}"
+        if result.status == "could-not-run":
+            rows.append(
+                f"<li>{label}: <strong>did not run, nothing checked</strong>: "
+                f"{_esc(result.reason)}</li>"
+            )
+            continue
+        not_applicable, verdicted = counts[domain_id]
+        if domain_id in fully_not_applicable:
+            rows.append(
+                f"<li>{label}: <strong>no findings, and nothing checked</strong>: "
+                f"all {not_applicable} of {verdicted} rule(s) in this domain were set "
+                "aside as not applicable. The reasons are in the Not applicable block "
+                "of the Tool performance summary below.</li>"
+            )
+            continue
+        rows.append(
+            f"<li>{label}: no findings, from {verdicted} rule(s) verdicted "
+            f"({not_applicable} of them set aside as not applicable)</li>"
+        )
+
+    summary = (
+        f"Domains with no findings: {len(quiet)} of {len(selected)}. "
+        f"{clean} audited and clean, {set_aside} with every rule set aside as not "
+        f"applicable, {not_run} that did not run at all."
+    )
+    return (
+        f"<h3>Domains with no findings: {len(quiet)} of {len(selected)}</h3>"
+        f"<details><summary>{_esc(summary)}</summary>"
+        f'<ul class="quiet-domains">{"".join(rows)}</ul>'
+        "</details>"
+    )
+
+
 def _findings_section(
     selected: dict[str, DomainResult],
     domain_titles: dict[str, str],
     rule_index: dict[str, Rule],
     pack_is_v2: bool,
 ) -> str:
+    """Every finding in the run, ordered by severity rather than by the order
+    the rules pack happens to list domains in (issue #122, point 3).
+
+    The old order was rules-pack id order, then recorded order inside each
+    domain, which put nothing in particular first: on a real 16-domain run
+    the two critical findings sat about 4,000 pixels apart with eight
+    lower-severity findings between them. Sorting is stable, so within one
+    severity the old domain-then-recorded order is exactly preserved.
+
+    The domain moves onto the card rather than becoming a subheading inside
+    each severity group. It is one short string per finding either way, and
+    a subheading level that often holds a single card is furniture
+    (D16-R06).
+    """
+    if not selected:
+        return "<p>No domains selected.</p>"
+
+    all_findings = [
+        (domain_id, finding)
+        for domain_id, result in selected.items()
+        for finding in result.findings
+    ]
+    total = len(all_findings)
+
     blocks = []
-    counts = _not_applicable_counts(selected)
-    fully_not_applicable = set(_fully_not_applicable_domain_ids(counts))
-    for domain_id, result in selected.items():
-        title = domain_titles[domain_id]
-        if result.status == "could-not-run":
-            blocks.append(
-                f"<h3>{_esc(title)}</h3><p class='muted'>This domain could not be run: "
-                f"{_esc(result.reason)}</p>"
-            )
+    for severity in _SEVERITY_ORDER:
+        group = [pair for pair in all_findings if pair[1].severity.value == severity]
+        if not group:
             continue
-        if not result.findings:
-            # "No findings" is the same sentence whether the sweep found
-            # nothing wrong or never happened, so a domain set aside in full
-            # says so here rather than borrowing the clean result's wording
-            # (issue #100).
-            if domain_id in fully_not_applicable:
-                not_applicable, _ = counts[domain_id]
-                blocks.append(
-                    f"<h3>{_esc(title)}</h3><p class='muted'>No findings, and nothing "
-                    f"checked: all {not_applicable} rule(s) in this domain were set aside "
-                    "as not applicable. See the Not applicable block above for the "
-                    "reasons given.</p>"
-                )
-                continue
-            blocks.append(f"<h3>{_esc(title)}</h3><p>No findings.</p>")
-            continue
-        items = []
-        for finding in result.findings:
-            severity = finding.severity.value
-            badge = f'<span class="severity-badge severity-{_esc(severity)}">{_esc(severity)}</span>'
-            # render_report has already confirmed every finding's rule_id is
-            # in the pack, so this lookup cannot miss.
-            rule = rule_index[finding.rule_id]
-            items.append(
-                f'<div class="finding sev-{_esc(severity)}">'
-                f'<div class="finding-head">{badge} <strong>{_esc(finding.title)}</strong> '
-                f'<span class="finding-rule">({_esc(finding.rule_id)})</span></div>'
-                f'<div class="finding-location">{_esc(finding.location)}</div>'
-                f'<div class="finding-body">{_markdownish(finding.body_md)}</div>'
-                f'<div class="finding-reference">{_esc(_reference_line(rule, pack_is_v2))}</div>'
-                "</div>"
-            )
-        blocks.append(f"<h3>{_esc(title)}</h3>{''.join(items)}")
-    return "".join(blocks) or "<p>No domains selected.</p>"
+        cards = "".join(
+            _finding_card(domain_titles[domain_id], finding, rule_index, pack_is_v2)
+            for domain_id, finding in group
+        )
+        blocks.append(
+            f"<h3>{_esc(severity.capitalize())}: {len(group)} of {total} "
+            f"{_plural(total, 'finding')}</h3>{cards}"
+        )
+
+    if not blocks:
+        blocks.append("<p>No findings were recorded in any selected domain.</p>")
+    blocks.append(_domains_without_findings(selected, domain_titles))
+    return "".join(blocks)
 
 
 def _issue_button_row() -> str:
@@ -872,8 +1375,17 @@ def _issues_section(
                 f'<a href="{_esc(filed_url)}">already filed</a>'
             )
         else:
+            # Only critical and high are ticked on load (issue #122, point
+            # 4). Ticking all of them made the default action treat a leaked
+            # credential and a missing docstring as the same work, which is
+            # the opposite of the ordering the report now leads with. The
+            # rest are one click away, and the note above the list says so:
+            # nothing is hidden, only unticked.
+            checked = (
+                " checked" if finding.severity.value in _PRETICKED_SEVERITIES else ""
+            )
             checkbox_html = (
-                f'<input type="checkbox" id="issue-check-{index}" checked '
+                f'<input type="checkbox" id="issue-check-{index}"{checked} '
                 'onchange="updateGithubFileButtonLabel()">'
             )
 
@@ -888,6 +1400,18 @@ def _issues_section(
             "</div>"
         )
 
+    preticked = sum(
+        1 for f in all_findings if f.severity.value in _PRETICKED_SEVERITIES
+    )
+    selection_note = (
+        f'<p class="muted">{preticked} of {len(all_findings)} '
+        f"{_plural(len(all_findings), 'issue')} "
+        f"{_plural(preticked, 'is', 'are')} ticked: the critical and high findings. "
+        "The medium and low ones are listed unticked, not hidden. Tick any you also "
+        "want to file, or untick one you do not. An issue already filed this run is "
+        "shown unticked with a link to it.</p>"
+    )
+
     button_row = _issue_button_row()
     data_script = (
         '<script type="application/json" id="issues-data">'
@@ -896,6 +1420,7 @@ def _issues_section(
     )
 
     return (
+        f"{selection_note}"
         f"{button_row}"
         f"{_github_file_form(repo_prefill)}"
         f"{''.join(blocks)}"
@@ -1106,17 +1631,18 @@ def render_report(run_state: RunState, pack: RulesPack) -> str:
     ]
 
     performance_summary = (
-        f'<div class="perf-block"><h3>Coverage</h3>{_coverage_summary(selected, domain_titles)}</div>'
-        f'<div class="perf-block"><h3>Findings rollup</h3>'
-        f"{_findings_rollup(all_findings, selected, domain_titles)}</div>"
+        f'<div class="perf-block"><h3>Every domain, side by side</h3>'
+        f"{_domain_table(run_state, selected, domain_titles, all_findings)}</div>"
+        f'<div class="perf-block"><h3>Run totals</h3>'
+        f"{_findings_rollup(all_findings, selected)}</div>"
         f'<div class="perf-block prominent">'
         f"{_could_not_evaluate_list(selected, rule_index, domain_titles)}</div>"
         f'<div class="perf-block prominent">'
         f"{_not_applicable_list(selected, rule_index, domain_titles)}</div>"
         f'<div class="perf-block prominent">'
         f"{_rules_fetched_list(run_state, selected, domain_titles)}</div>"
-        f'<div class="perf-block"><h3>Self-assessment by domain</h3>'
-        f"{_self_assessment_list(selected, domain_titles)}</div>"
+        f'<div class="perf-block"><h3>Self-assessment limits</h3>'
+        f"{_self_assessment_limits(selected, domain_titles)}</div>"
         f'<div class="perf-block"><h3>Environment</h3>{_environment_info(run_state)}</div>'
         f'<div class="perf-block"><h3>Sources consulted this run</h3>'
         f"{_consulted_sources_section(selected, rule_index)}</div>"
@@ -1128,6 +1654,8 @@ def render_report(run_state: RunState, pack: RulesPack) -> str:
     template = string.Template(_TEMPLATE_PATH.read_text(encoding="utf-8"))
     return template.substitute(
         page_title=f"Engineering practice audit report: {_esc(run_state.meta.repo_name)}",
+        repo_heading=_esc(run_state.meta.repo_name),
+        headline_block=_headline_block(all_findings, selected),
         meta_block=_render_meta_block(run_state),
         performance_summary=performance_summary,
         findings_section=_findings_section(
