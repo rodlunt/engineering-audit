@@ -380,6 +380,28 @@ class RunMeta(BaseModel):
     repo_commit: str
     started: str
     finished: str | None = None
+    server_started: str | None = Field(
+        default=None,
+        description=(
+            "UTC timestamp the server itself stamped when begin_run first created this "
+            "run, independent of the assistant-supplied 'started' value above. Kept "
+            "unchanged across a resume, the same way 'started' is: it names when this "
+            "run's story began, not when a resumed session picked it back up, so a "
+            "resume's legitimate wall-clock gap lands in both durations equally rather "
+            "than in only one of them.\n\n"
+            "None means this run predates the field, or was resumed from a run-state "
+            "file that did: an unmeasured span is unknown, and unknown must never render "
+            "as zero or as agreement with the assistant-supplied figure."
+        ),
+    )
+    server_finished: str | None = Field(
+        default=None,
+        description=(
+            "UTC timestamp the server itself stamped when render_report was called, "
+            "independent of the assistant-supplied 'finished' value above. Same None "
+            "contract as server_started: absent means unmeasured, never zero."
+        ),
+    )
     environment: dict[str, str] | None = Field(
         default=None,
         description=(
@@ -392,7 +414,7 @@ class RunMeta(BaseModel):
         ),
     )
 
-    @field_validator("started", "finished")
+    @field_validator("started", "finished", "server_started", "server_finished")
     @classmethod
     def _valid_iso_timestamp(cls, value: str | None) -> str | None:
         if value is None:

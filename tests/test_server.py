@@ -336,6 +336,21 @@ def test_begin_run_defaults_tool_version_when_omitted(tmp_path: Path) -> None:
     assert result["meta"]["tool_version"]  # non-empty, package version or dev placeholder
 
 
+def test_begin_run_stamps_server_started_independently_of_the_assistant_supplied_started(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Issue #102: 'started' is the assistant's own claim, taken on trust like
+    # everything else it asserts. The server must stamp its own clock too,
+    # rather than only ever recording what it was told, so the report has
+    # something to check the claim against.
+    monkeypatch.setattr(server_module, "_now_utc_iso", lambda: "2026-08-11T00:00:00Z")
+    mcp, _state = build_server(FIXTURE_PACK)
+    result = _begin_run(mcp, tmp_path / "audit-output", started="2020-01-01T00:00:00Z")
+
+    assert result["meta"]["started"] == "2020-01-01T00:00:00Z"
+    assert result["meta"]["server_started"] == "2026-08-11T00:00:00Z"
+
+
 def _init_git_repo(path: Path) -> None:
     """Initialise path as a git repo with one commit covering whatever is
     already on disk (--allow-empty so this also works on an empty
@@ -1037,6 +1052,28 @@ def test_render_report_succeeds_once_every_selected_domain_is_recorded(
 
     assert result["findings_summary"]["total_findings"] == 1
     assert result["findings_summary"]["by_severity"]["high"] == 1
+
+
+def test_render_report_stamps_server_finished_independently_of_the_assistant_supplied_finished(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mcp, _state = build_server(FIXTURE_PACK)
+    out_dir = tmp_path / "audit-output"
+    monkeypatch.setattr(server_module, "_now_utc_iso", lambda: "2026-08-11T00:00:03Z")
+    _begin_run(mcp, out_dir)
+    _preset_config_env(monkeypatch, tmp_path)
+    _call(mcp, "start_config", {})
+    _call(mcp, "get_config", {"timeout_s": 1})
+    _record_d01_with_finding(mcp)
+    _record_d02_all_pass(mcp)
+
+    monkeypatch.setattr(server_module, "_now_utc_iso", lambda: "2026-08-11T00:10:00Z")
+    result = _call(mcp, "render_report", {"finished": "2020-01-01T00:00:00Z"})
+    restored = RunState.from_json(Path(result["run_state_path"]).read_text(encoding="utf-8"))
+
+    assert restored.meta.finished == "2020-01-01T00:00:00Z"
+    assert restored.meta.server_started == "2026-08-11T00:00:03Z"
+    assert restored.meta.server_finished == "2026-08-11T00:10:00Z"
 
 
 def test_render_report_frees_the_run_so_begin_run_does_not_need_replace(
@@ -2269,6 +2306,56 @@ def test_resume_by_the_same_model_records_no_earlier_contributor(
 
     assert resumed["meta"]["earlier_contributors"] == []
     assert not any("previous contributor" in w for w in resumed["warnings"])
+
+
+def test_resume_keeps_the_original_server_started_rather_than_restamping_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # server_started names when this run's story began, the same way
+    # 'started' does (and 'started' is already kept unchanged across a
+    # resume; see _resume_run). Restamping it to the moment of the resume
+    # would make the server-measured duration only ever cover the resumed
+    # portion, silently disagreeing with an assistant that honestly reports
+    # the whole run's span from the original start.
+    out_dir = tmp_path / "audit-output"
+    monkeypatch.setattr(server_module, "_now_utc_iso", lambda: "2026-08-09T09:00:01Z")
+    _interrupted_run(tmp_path, monkeypatch, out_dir)
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    monkeypatch.setattr(server_module, "_now_utc_iso", lambda: "2026-08-09T11:30:00Z")
+    resumed = _begin_run(mcp, out_dir, resume=True)
+    assert resumed["meta"]["server_started"] == "2026-08-09T09:00:01Z"
+
+    monkeypatch.setattr(server_module, "_now_utc_iso", lambda: "2026-08-09T11:45:00Z")
+    result = _call(mcp, "render_report", {"finished": "2026-08-09T11:45:00Z"})
+    restored = RunState.from_json(Path(result["run_state_path"]).read_text(encoding="utf-8"))
+
+    # Kept from the original begin_run, not the resume, and not the render.
+    assert restored.meta.server_started == "2026-08-09T09:00:01Z"
+    assert restored.meta.server_finished == "2026-08-09T11:45:00Z"
+
+
+def test_resume_of_a_run_that_predates_server_timestamps_leaves_server_started_unset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A run-progress file saved before this fix has no server_started at
+    # all. Resuming it must not backfill one from "now": that would only
+    # measure the resumed portion, not the whole run, and comparing it
+    # against the assistant's full-span duration would manufacture a false
+    # disagreement out of nothing but the resume itself. Leaving it unset
+    # forever for this run is the honest answer: it really was never measured.
+    out_dir = tmp_path / "audit-output"
+    _interrupted_run(tmp_path, monkeypatch, out_dir)
+    progress_path = out_dir / PROGRESS_FILENAME
+    raw = json.loads(progress_path.read_text(encoding="utf-8"))
+    raw["meta"]["server_started"] = None
+    progress_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    monkeypatch.setattr(server_module, "_now_utc_iso", lambda: "2026-08-09T11:30:00Z")
+    resumed = _begin_run(mcp, out_dir, resume=True)
+
+    assert resumed["meta"]["server_started"] is None
 
 
 def test_resume_refuses_when_the_rules_pack_no_longer_has_a_selected_domain(
