@@ -71,6 +71,24 @@
     padding: 0.75rem 1rem;
     font-size: 0.9rem;
   }
+  /* The computed headline (issue #122). Prose in a panel, deliberately not a
+     row of stat tiles: this report is a written document with commentary,
+     and the one thing a reader should take from the first screen is a
+     sentence, not a grid of numerals. Sized above body text so it wins the
+     top of the page against the meta grid below it. */
+  .headline {
+    font-size: 1.15rem;
+    line-height: 1.5;
+    margin: 0.75rem 0 1rem;
+    padding: 0.9rem 1.1rem;
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-left: 6px solid var(--accent);
+    border-radius: 8px;
+  }
+  .headline p { margin: 0.35rem 0; }
+  .headline-lead { font-weight: 600; }
+  .headline-caveat { font-size: 1rem; color: var(--muted); }
   .meta-label { color: var(--muted); }
   .meta-value { font-weight: 500; }
   .perf-block {
@@ -99,6 +117,11 @@
   }
   .finding-head { display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
   .finding-rule { color: var(--muted); font-size: 0.85rem; }
+  /* Findings are ordered by severity, not grouped under a domain heading,
+     so each card names its own domain. */
+  .finding-domain { color: var(--muted); font-size: 0.85rem; }
+  .quiet-domains { font-size: 0.95rem; }
+  .quiet-domains li { margin-bottom: 0.3rem; }
   /* Both lines carry an unbroken token (a path:line-range or a long URL)
      with no spaces to wrap at. overflow-wrap: anywhere lets the browser
      break inside the token itself, rather than word-break: break-all,
@@ -291,19 +314,11 @@
 </head>
 <body>
 <header>
-  <h1>Engineering practice audit report</h1>
+  <h1>Engineering practice audit report: $repo_heading</h1>
+  $headline_block
   <button type="button" class="print-button" onclick="window.print()">Print / Save as PDF</button>
   $meta_block
 </header>
-
-<section id="performance-summary">
-  <h2>Tool performance summary</h2>
-  <p class="section-note">This section describes how the audit run itself went: coverage,
-  what could not be evaluated and why, what was set aside as not applicable and why, and the
-  assistant's own confidence. It says nothing about the audited codebase's qualities; see
-  Findings below for that.</p>
-  $performance_summary
-</section>
 
 <section id="findings">
   <h2>Findings</h2>
@@ -317,6 +332,19 @@
 
 <p class="print-only-note">Issues section omitted from print: the issue-filing text for
 every finding is available in the on-screen version of this report.</p>
+
+<!-- Below Findings and Issues, not above them (issue #122). This section is
+     about how the run went, not about the repository, and it used to occupy
+     the first six screens: the first finding began on printed page 7 of 26.
+     It stays in full, in the same order, one scroll further down. -->
+<section id="performance-summary">
+  <h2>Tool performance summary</h2>
+  <p class="section-note">This section describes how the audit run itself went: coverage,
+  what could not be evaluated and why, what was set aside as not applicable and why, and the
+  assistant's own confidence. It says nothing about the audited codebase's qualities; see
+  Findings above for that.</p>
+  $performance_summary
+</section>
 
 <section id="feedback">
   <h2>Feedback</h2>

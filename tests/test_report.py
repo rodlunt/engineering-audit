@@ -408,8 +408,16 @@ def test_a_wholly_not_applicable_domain_is_distinguishable_from_one_swept_clean(
     # The domain is named as set aside in full, and the findings section says
     # so too rather than reusing the clean result's "No findings."
     assert "1 selected domain(s) had every rule set aside as not applicable" in rendered
-    assert "all 4 rule(s) in this domain were set aside as not applicable" in rendered
+    assert (
+        "all 4 of 4 rule(s) in this domain were set aside as not applicable" in rendered
+    )
     assert reason in rendered
+    # ...and the swept-clean domain in the same list still says how many rules
+    # it was swept over, so the two rows cannot be read as the same result.
+    assert (
+        "d02: Teacup Logistics Handling: no findings, from 3 rule(s) verdicted"
+        in rendered
+    )
 
 
 def test_not_applicable_all_clear_message_when_nothing_was_set_aside() -> None:
@@ -1916,3 +1924,301 @@ def test_js_stop_flag_checked_before_each_fetch_and_resets_on_every_run() -> Non
     assert "_fileStopRequested = false;" in _INLINE_SCRIPT
     assert "if (_fileStopRequested) {" in _INLINE_SCRIPT
     assert "Filing stopped early." in _INLINE_SCRIPT
+
+
+# ---------------------------------------------------------------------------
+# #122: computed headline, page order, severity sorting, pre-tick policy, and
+# a could-not-run domain that no longer renders as a bare zero.
+# ---------------------------------------------------------------------------
+
+
+def _mixed_severity_run_state(pack) -> RunState:
+    """A run where the *later* domain in rules-pack order holds the *higher*
+    severity finding, which is the case the old rendering ordered wrongly."""
+    d01 = pack.get_domain("d01")
+    d02 = pack.get_domain("d02")
+
+    d01_verdicts = _all_pass_verdicts(d01)
+    d01_verdicts[1] = RuleVerdict(rule_id="D01-R02", verdict=Verdict.FINDING)
+    d02_verdicts = _all_pass_verdicts(d02)
+    d02_verdicts[0] = RuleVerdict(rule_id="D02-R01", verdict=Verdict.FINDING)
+
+    return RunState(
+        meta=_meta(),
+        config=AuditConfig(selected_domain_ids=["d01", "d02"], issue_mode="github"),
+        domain_results={
+            "d01": DomainResult(
+                domain_id="d01",
+                status="completed",
+                rule_verdicts=d01_verdicts,
+                findings=[
+                    Finding(
+                        rule_id="D01-R02",
+                        severity=Severity.LOW,
+                        title="A low-severity gnome problem",
+                        location="ledger/beds.py:42",
+                        body_md="Minor.",
+                        issue_title="Low gnome issue",
+                        issue_body="Minor gnome issue.",
+                    )
+                ],
+                self_assessment=SelfAssessment(confidence="high", limits=""),
+                coverage=Coverage(files_inspected=12, files_skipped=1),
+            ),
+            "d02": DomainResult(
+                domain_id="d02",
+                status="completed",
+                rule_verdicts=d02_verdicts,
+                findings=[
+                    Finding(
+                        rule_id="D02-R01",
+                        severity=Severity.CRITICAL,
+                        title="A critical teacup problem",
+                        location="routes/teacups.py:9",
+                        body_md="Serious.",
+                        issue_title="Critical teacup issue",
+                        issue_body="Serious teacup issue.",
+                    )
+                ],
+                self_assessment=SelfAssessment(confidence="medium", limits=""),
+                coverage=Coverage(files_inspected=5, files_skipped=0),
+            ),
+        },
+    )
+
+
+def test_headline_leads_with_critical_and_high_and_carries_every_base() -> None:
+    # The sentence the report now opens with. Every figure in it ships with
+    # the base it came out of: "1 finding" alone would invite the reader to
+    # supply their own denominator (D16-R03).
+    pack = _pack()
+    rendered = render_report(_base_run_state(pack), pack)
+
+    assert (
+        "1 high finding needs attention first, out of 1 finding across "
+        "7 rules verdicted in 2 of 2 domains." in rendered
+    )
+
+
+def test_headline_block_comes_before_the_meta_grid_and_the_findings_section() -> None:
+    pack = _pack()
+    rendered = render_report(_base_run_state(pack), pack)
+
+    headline_pos = rendered.index('<div class="headline">')
+    assert headline_pos < rendered.index('<div class="meta-grid">')
+    assert headline_pos < rendered.index('<section id="findings">')
+
+
+def test_headline_falls_back_to_a_descriptive_line_with_no_critical_or_high() -> None:
+    # D16-R10: a generated sentence must not manufacture urgency the counts
+    # do not support. With only a low finding there is no "attention first".
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.domain_results["d01"].findings[0].severity = Severity.LOW
+    rendered = render_report(run_state, pack)
+
+    assert "needs attention first" not in rendered
+    assert (
+        "No critical or high findings. 1 finding of medium or low severity was "
+        "recorded, across 7 rules verdicted in 2 of 2 domains." in rendered
+    )
+
+
+def test_headline_says_so_when_nothing_was_found_at_all() -> None:
+    pack = _pack()
+    d01 = pack.get_domain("d01")
+    d02 = pack.get_domain("d02")
+    run_state = RunState(
+        meta=_meta(),
+        config=AuditConfig(selected_domain_ids=["d01", "d02"], issue_mode="report"),
+        domain_results={
+            "d01": DomainResult(
+                domain_id="d01",
+                status="completed",
+                rule_verdicts=_all_pass_verdicts(d01),
+            ),
+            "d02": DomainResult(
+                domain_id="d02",
+                status="completed",
+                rule_verdicts=_all_pass_verdicts(d02),
+            ),
+        },
+    )
+    rendered = render_report(run_state, pack)
+
+    assert (
+        "No findings were recorded, across 7 rules verdicted in 2 of 2 domains."
+        in rendered
+    )
+    # A clean run still says what it did not have to set aside, rather than
+    # leaving the reader to assume it.
+    assert (
+        "No rule was set aside as not applicable, none was left could not "
+        "evaluate, and all 2 selected domains ran." in rendered
+    )
+
+
+def test_headline_caveat_names_the_coverage_gaps_with_their_bases() -> None:
+    pack = _pack()
+    d01 = pack.get_domain("d01")
+    reason = "this repository houses no gnomes"
+    run_state = RunState(
+        meta=_meta(),
+        config=AuditConfig(selected_domain_ids=["d01", "d02"], issue_mode="report"),
+        domain_results={
+            "d01": DomainResult(
+                domain_id="d01",
+                status="completed",
+                rule_verdicts=_all_not_applicable_verdicts(d01, reason),
+            ),
+            "d02": DomainResult(
+                domain_id="d02",
+                status="could-not-run",
+                reason="ran out of context before reaching this domain",
+            ),
+        },
+    )
+    rendered = render_report(run_state, pack)
+
+    assert (
+        "4 of 4 rules were set aside as not applicable and 1 of 2 domains did not "
+        "run at all, so this is not a clean bill of health" in rendered
+    )
+
+
+def test_headline_contains_no_percentage() -> None:
+    # Preserved from before the restructure: no share ships without its base,
+    # and the simplest way to keep that true is to ship no shares at all.
+    pack = _pack()
+    rendered = render_report(_base_run_state(pack), pack)
+    headline = rendered[
+        rendered.index('<div class="headline">') : rendered.index(
+            'class="print-button"'
+        )
+    ]
+    assert "%" not in headline
+    assert "percent" not in headline.lower()
+
+
+def test_tool_performance_summary_now_sits_below_findings_and_issues() -> None:
+    # It used to be the first six screens of the report, with the first
+    # finding on printed page 7 of 26.
+    pack = _pack()
+    rendered = render_report(_base_run_state(pack), pack)
+
+    perf_pos = rendered.index('<section id="performance-summary">')
+    assert perf_pos > rendered.index('<section id="findings">')
+    assert perf_pos > rendered.index('<section id="issues">')
+    assert perf_pos < rendered.index('<section id="feedback">')
+
+
+def test_findings_are_ordered_by_severity_not_by_rules_pack_domain_order() -> None:
+    pack = _pack()
+    rendered = render_report(_mixed_severity_run_state(pack), pack)
+
+    findings_html = rendered[
+        rendered.index('<section id="findings">') : rendered.index(
+            '<section id="issues">'
+        )
+    ]
+    critical_pos = findings_html.index("A critical teacup problem")
+    low_pos = findings_html.index("A low-severity gnome problem")
+    assert critical_pos < low_pos, (
+        "the critical finding is in the second domain in rules-pack order and "
+        "must still be rendered first"
+    )
+    # The severity group heading carries its base, like every other count.
+    assert "<h3>Critical: 1 of 2 findings</h3>" in findings_html
+    assert "<h3>Low: 1 of 2 findings</h3>" in findings_html
+
+
+def test_each_finding_card_names_its_own_domain() -> None:
+    # Severity-first ordering removes the per-domain heading that used to
+    # carry this, so the domain moves onto the card rather than being lost.
+    pack = _pack()
+    rendered = render_report(_mixed_severity_run_state(pack), pack)
+
+    assert '<span class="finding-domain">Teacup Logistics Handling</span>' in rendered
+    assert (
+        '<span class="finding-domain">Gnome Husbandry Record Keeping</span>' in rendered
+    )
+
+
+def test_only_critical_and_high_issues_are_ticked_on_load() -> None:
+    pack = _pack()
+    rendered = render_report(_mixed_severity_run_state(pack), pack)
+
+    issues_html = rendered[rendered.index('<section id="issues">') :]
+    # The critical finding is index 1 in recorded order (d01's low finding is
+    # index 0), and the issues list keeps recorded order so the already-filed
+    # keying stays in step with server.py.
+    assert '<input type="checkbox" id="issue-check-0" onchange=' in issues_html
+    assert '<input type="checkbox" id="issue-check-1" checked onchange=' in issues_html
+    assert "1 of 2 issues is ticked: the critical and high findings." in issues_html
+    assert "not hidden" in issues_html
+
+
+def test_a_could_not_run_domain_is_not_a_bare_zero_in_the_rollup() -> None:
+    # #122 point 5. _fully_not_applicable_domain_ids deliberately excludes a
+    # domain with no verdicts, so the could-not-run branch used to fall
+    # through and render "d02: Teacup Logistics Handling: 0", the exact
+    # string a domain swept clean renders.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.domain_results["d02"] = DomainResult(
+        domain_id="d02",
+        status="could-not-run",
+        reason="ran out of context before reaching this domain",
+    )
+    rendered = render_report(run_state, pack)
+
+    assert (
+        "<li>d02: Teacup Logistics Handling: did not run, nothing checked</li>"
+        in rendered
+    )
+    assert "d02: Teacup Logistics Handling: 0" not in rendered
+
+
+def test_domains_with_no_findings_separates_set_aside_from_never_ran() -> None:
+    # Three domains produce zero findings for three different reasons, and
+    # the report must not tell them apart only by their absence. The
+    # swept-clean row is asserted in
+    # test_a_wholly_not_applicable_domain_is_distinguishable_from_one_swept_clean
+    # above; the fixture pack has only two loadable domains, so the two
+    # nothing-was-checked cases are pinned here.
+    pack = _pack()
+    d01 = pack.get_domain("d01")
+    reason = "this repository houses no gnomes"
+    run_state = RunState(
+        meta=_meta(),
+        config=AuditConfig(selected_domain_ids=["d01", "d02"], issue_mode="report"),
+        domain_results={
+            "d01": DomainResult(
+                domain_id="d01",
+                status="completed",
+                rule_verdicts=_all_not_applicable_verdicts(d01, reason),
+            ),
+            "d02": DomainResult(
+                domain_id="d02",
+                status="could-not-run",
+                reason="ran out of context before reaching this domain",
+            ),
+        },
+    )
+    rendered = render_report(run_state, pack)
+    findings_html = rendered[
+        rendered.index('<section id="findings">') : rendered.index(
+            '<section id="issues">'
+        )
+    ]
+
+    assert "<h3>Domains with no findings: 2 of 2</h3>" in findings_html
+    assert (
+        "d01: Gnome Husbandry Record Keeping: <strong>no findings, and nothing "
+        "checked</strong>: all 4 of 4 rule(s) in this domain were set aside as not "
+        "applicable." in findings_html
+    )
+    assert (
+        "d02: Teacup Logistics Handling: <strong>did not run, nothing "
+        "checked</strong>: ran out of context" in findings_html
+    )
