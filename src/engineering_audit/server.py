@@ -40,6 +40,13 @@ from pydantic import ValidationError
 # consent model forbids ambient telemetry, so it is stripped out in
 # build_server() below. If this import breaks on an SDK upgrade, that is the
 # loud ImportError we want rather than a silent no-op strip.
+#
+# An import that keeps working is not proof the strip still works: a future
+# mcp 2.x could rename or relocate this class while the module stays put, in
+# which case the isinstance filter below would silently match nothing. See
+# issue #107. _strip_ambient_otel_middleware asserts the postcondition
+# instead of assuming it, with a name-based backstop that does not depend on
+# this same symbol.
 from mcp.server._otel import OpenTelemetryMiddleware
 
 from engineering_audit.config_page import ConfigServer, ConfigTimeoutError
@@ -1722,6 +1729,70 @@ def _register_report_tools(mcp: MCPServer, state: AppState) -> None:
         )
 
 
+class TelemetryStripError(RuntimeError):
+    """Raised when _strip_ambient_otel_middleware cannot confirm the SDK's
+    ambient OpenTelemetry middleware was actually removed.
+
+    This project's design requires explicit consent for any telemetry, so a
+    server that might still be carrying ambient OpenTelemetry middleware
+    must not be handed back to a caller. Two conditions raise this, both
+    covering the same failure described in issue #107: a future mcp 2.x
+    renaming or relocating OpenTelemetryMiddleware while mcp.server._otel
+    still exists, so the isinstance-based strip below silently matches
+    nothing.
+
+    - Nothing matched OpenTelemetryMiddleware to strip in the first place:
+      the SDK's default middleware shape has changed underneath us, which is
+      not the same thing as there being nothing to clean up.
+    - Something matched by name after the strip ran: the private symbol no
+      longer identifies the SDK's real telemetry middleware, so isinstance()
+      let it through.
+    """
+
+
+def _looks_like_otel_middleware(middleware: object) -> bool:
+    """Name-based backstop for the isinstance() strip in
+    _strip_ambient_otel_middleware, deliberately independent of the
+    OpenTelemetryMiddleware import so a rename of that class does not blind
+    both checks at once."""
+    name = type(middleware).__name__.lower()
+    return "opentelemetry" in name or "otel" in name
+
+
+def _strip_ambient_otel_middleware(mcp: MCPServer) -> None:
+    """Strip the SDK's default OpenTelemetry middleware from mcp in place,
+    then assert the postcondition rather than assuming the strip worked.
+
+    The SDK installs OpenTelemetry span middleware on every server by
+    default. This project's design requires explicit consent for any
+    telemetry, so it is stripped here rather than left ambient.
+
+    Raises TelemetryStripError, refusing to hand back a server that might
+    still be emitting telemetry, if either check fails: no
+    OpenTelemetryMiddleware instance was found to remove, or a middleware
+    that still looks like OpenTelemetry by name survives the strip. See
+    issue #107.
+    """
+    before = list(mcp.middleware)
+    stripped = [m for m in before if isinstance(m, OpenTelemetryMiddleware)]
+    mcp.middleware[:] = [m for m in before if not isinstance(m, OpenTelemetryMiddleware)]
+
+    if not stripped:
+        raise TelemetryStripError(
+            "no OpenTelemetryMiddleware instance was found on the SDK's default "
+            "middleware to strip; the SDK's default middleware shape has changed "
+            "and this tool can no longer confirm ambient telemetry is disabled"
+        )
+
+    survivors = [type(m).__name__ for m in mcp.middleware if _looks_like_otel_middleware(m)]
+    if survivors:
+        raise TelemetryStripError(
+            "telemetry middleware still present after stripping "
+            f"OpenTelemetryMiddleware: {survivors}; the private import no longer "
+            "identifies the SDK's real telemetry middleware"
+        )
+
+
 def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
     """Load the rules pack and construct the MCPServer app.
 
@@ -1730,19 +1801,16 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
     order the tools are advertised in, and the order AUDIT.md walks them in.
 
     Raises RulesPackError (or RulesPackParseError) if the pack cannot be
-    loaded; this is intentionally not caught here so callers that want the
-    exception (tests, alternative entry points) can see it directly. main()
-    is the one place that turns it into a clean CLI error.
+    loaded, or TelemetryStripError if the SDK's ambient OpenTelemetry
+    middleware could not be confirmed removed; neither is caught here so
+    callers that want the exception (tests, alternative entry points) can
+    see it directly. main() is the one place that turns either into a clean
+    CLI error.
     """
     state = AppState(pack=load_pack(rules_dir))
 
     mcp = MCPServer("engineering-audit")
-    # The SDK installs OpenTelemetry span middleware on every server by
-    # default. This project's design requires explicit consent for any
-    # telemetry, so it is stripped here rather than left ambient.
-    mcp.middleware[:] = [
-        m for m in mcp.middleware if not isinstance(m, OpenTelemetryMiddleware)
-    ]
+    _strip_ambient_otel_middleware(mcp)
 
     _register_pack_tools(mcp, state)
     _register_run_tools(mcp, state)
@@ -1761,6 +1829,11 @@ def main() -> None:
         mcp, _state = build_server(rules_dir)
     except RulesPackError as exc:
         raise SystemExit(f"engineering-audit-mcp: could not load rules pack: {exc}") from exc
+    except TelemetryStripError as exc:
+        raise SystemExit(
+            f"engineering-audit-mcp: refusing to start, ambient telemetry could not "
+            f"be confirmed disabled: {exc}"
+        ) from exc
     mcp.run()
 
 

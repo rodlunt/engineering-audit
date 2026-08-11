@@ -20,6 +20,7 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 import pytest
+from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
 from mcp.server._otel import OpenTelemetryMiddleware
@@ -32,9 +33,11 @@ from engineering_audit.run_state_io import PROGRESS_FILENAME, load_run_progress_
 from engineering_audit.schema import RunMeta, RunState
 from engineering_audit.server import (
     AppState,
+    TelemetryStripError,
     _git_commit,
     _parse_direct_url_commit,
     _resolve_rules_dir,
+    _strip_ambient_otel_middleware,
     build_server,
 )
 
@@ -196,6 +199,41 @@ def test_build_server_strips_opentelemetry_middleware_but_tools_still_work() -> 
 
     result = _call(mcp, "list_domains", {})
     assert [d["id"] for d in result["domains"]] == ["d01", "d02"]
+
+
+def test_strip_otel_middleware_raises_if_nothing_matched_to_strip() -> None:
+    # Simulates the SDK no longer installing anything the private isinstance
+    # check recognises: build_server must treat "nothing to remove" as a
+    # loud failure, not as evidence the server is already clean (issue #107).
+    mcp = MCPServer("otel-strip-nothing-to-find")
+    mcp.middleware[:] = [m for m in mcp.middleware if not isinstance(m, OpenTelemetryMiddleware)]
+    assert not any(isinstance(m, OpenTelemetryMiddleware) for m in mcp.middleware)
+
+    with pytest.raises(TelemetryStripError, match="no OpenTelemetryMiddleware"):
+        _strip_ambient_otel_middleware(mcp)
+
+
+def test_strip_otel_middleware_raises_if_a_lookalike_survives_the_isinstance_filter() -> None:
+    # Simulates a future SDK renaming or relocating OpenTelemetryMiddleware
+    # while mcp.server._otel still exists: the isinstance-based strip would
+    # silently match nothing, so this exercises the name-based backstop
+    # instead (issue #107). The real OpenTelemetryMiddleware the SDK installs
+    # by default is left in place so the "nothing found to strip" check
+    # passes cleanly, isolating this test to the survivor check.
+    class OtelRenamedMiddleware:
+        """Stands in for a telemetry middleware class the SDK renamed to
+        something isinstance() no longer recognises against the pinned
+        private import, but whose name still says what it is."""
+
+    mcp = MCPServer("otel-strip-lookalike-survives")
+    mcp.middleware.append(OtelRenamedMiddleware())
+
+    with pytest.raises(TelemetryStripError, match="OtelRenamedMiddleware"):
+        _strip_ambient_otel_middleware(mcp)
+
+    # The strip itself still ran: the real middleware it does recognise is
+    # gone, only the lookalike survived to trip the postcondition.
+    assert not any(isinstance(m, OpenTelemetryMiddleware) for m in mcp.middleware)
 
 
 def test_tool_surface_is_the_ten_tools_with_their_documented_parameters() -> None:
