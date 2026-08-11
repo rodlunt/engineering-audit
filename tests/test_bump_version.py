@@ -149,16 +149,17 @@ def test_bump_refuses_various_invalid_shapes(tmp_path: Path, bad: str) -> None:
     assert 'version = "1.2.3"' in (repo / "pyproject.toml").read_text()
 
 
-def test_bump_against_a_real_repository_copy_then_check_passes(tmp_path: Path) -> None:
-    """Copies this actual repository's tracked files into a scratch git
-    repo, bumps it for real to the next minor version, and runs the real
-    check against the result. Proves the bump covers everything the check
-    covers on the repository's actual, full-sized pin set, not just a
-    minimal synthetic fixture. The real repository is only ever read from;
-    nothing under REPO_ROOT is written."""
+def _copy_real_repo(tmp_path: Path) -> Path:
+    """Copy this actual repository's tracked files into a fresh scratch git
+    repo under tmp_path, using plain file copies rather than `git clone` or
+    `git worktree` (a worktree's .git is a pointer back at this repo's own
+    private git-dir, and a naive copy of it would let a commit made in the
+    "scratch" copy land on this repo's real branch history, which is
+    exactly the mistake this helper exists to make impossible: the copy
+    below never touches REPO_ROOT's .git at all, only its tracked file
+    contents, and gets its own independent `git init`)."""
     copy = tmp_path / "repo-copy"
     copy.mkdir()
-
     tracked = subprocess.run(
         ["git", "-C", str(REPO_ROOT), "ls-files"],
         capture_output=True,
@@ -173,6 +174,16 @@ def test_bump_against_a_real_repository_copy_then_check_passes(tmp_path: Path) -
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dst)
     _init_git_repo(copy)
+    return copy
+
+
+def test_bump_against_a_real_repository_copy_then_check_passes(tmp_path: Path) -> None:
+    """Bumps a copy of this actual repository to the next minor version and
+    runs the real check against the result. Proves the bump covers
+    everything the check covers on the repository's actual, full-sized pin
+    set, not just a minimal synthetic fixture. The real repository is only
+    ever read from; nothing under REPO_ROOT is written."""
+    copy = _copy_real_repo(tmp_path)
 
     current_text = (copy / "pyproject.toml").read_text()
     match = re.search(r'version = "(\d+)\.(\d+)\.(\d+)"', current_text)
@@ -191,3 +202,28 @@ def test_bump_against_a_real_repository_copy_then_check_passes(tmp_path: Path) -
 
     # The real repository's own pyproject.toml is untouched by any of this.
     assert f'version = "{old_version}"' in (REPO_ROOT / "pyproject.toml").read_text()
+
+
+def test_bump_does_not_rewrite_this_historical_line(tmp_path: Path) -> None:
+    """scripts/check-version-pins.py's own module docstring narrates the
+    issue #101 incident. An earlier draft named the exact release tag a
+    real tester typed, and because that happened to use one of
+    PROSE_LEAD_INS's shapes, bump-version.py rewrote it on every release,
+    quietly turning a true incident report into a false one (see
+    scripts/version_pins.py's docstring, "A pin is a claim..."). The fix
+    was rewording the sentence so it names no second version at all, not a
+    scanner exception: this proves that reworded sentence has nothing left
+    for either PROSE_PIN_RE or AT_PIN_RE to find, so a real bump leaves the
+    whole file byte-for-byte unchanged, not just the one sentence."""
+    copy = _copy_real_repo(tmp_path)
+
+    check_script_in_copy = copy / "scripts" / "check-version-pins.py"
+    before = check_script_in_copy.read_text(encoding="utf-8")
+    assert "the release tag current at the time" in before
+
+    bump_module = _load_module("bump_version", BUMP_SCRIPT)
+    exit_code = bump_module.main(["9.9.9"], repo_root=copy)
+    assert exit_code == 0
+
+    after = check_script_in_copy.read_text(encoding="utf-8")
+    assert after == before

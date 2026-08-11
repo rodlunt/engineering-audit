@@ -33,13 +33,22 @@ Three kinds of pin are discovered:
    PROSE_LEAD_INS rather than broadening the pattern to "any vX.Y.Z",
    which would reopen that hole.
 
-   This category also catches check-version-pins.py's own module
-   docstring, which narrates the issue #101 incident using the tag that
-   was current when it was written (`--ref vX.Y.Z`, currently matching
-   this repository's real version by coincidence of when it was last
-   edited). Deliberately not excluded: an illustrative example that
-   silently goes stale is exactly the failure this module exists to
-   catch, so a bump rewrites that sentence's tag too.
+   A pin is a claim about the current release. A historical incident
+   report is a claim about what happened at a past release, and those are
+   not the same sentence even when both mention a version number: an
+   earlier draft of check-version-pins.py's own module docstring named the
+   exact tag a real tester typed during the issue #101 incident, in one of
+   these lead-in shapes, and bump-version.py duly rewrote that tag on
+   every release, silently turning a true incident report into a false
+   one (nobody ever typed the rewritten tag). The fix was not a scanner
+   exception, it was to stop writing history in a form the scanner (or a
+   human skimming for "the current version") would read as a live pin:
+   see that file's docstring for how it now describes the same incident
+   without naming the second tag at all. When writing narrative text
+   anywhere in this tree that must cite a specific past release, prefer
+   words like "the release tag current at the time" over spelling the tag
+   out in one of PROSE_LEAD_INS's shapes, precisely because this module
+   cannot tell a citation from a pin; only phrasing can.
 """
 
 from __future__ import annotations

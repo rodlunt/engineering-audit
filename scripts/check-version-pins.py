@@ -3,12 +3,24 @@
 
 Issue #101: the Gemini extension manifest's `version` field and its uvx
 `args` git ref both stayed at v0.5.1 through two subsequent releases, so a
-tester who installed with `--ref v0.7.0` silently got a two-release-old
-build running the taster rules pack instead of the full one. The release
-checklist already named this file and it was still missed twice, because a
-checklist a human has to honour on every release is not a control. This
-script is the control: it runs in CI on every push and pull request, so a
-forgotten pin fails the build instead of shipping.
+tester who installed with the release tag current at the time silently got
+a two-release-old build running the taster rules pack instead of the full
+one. The release checklist already named this file and it was still missed
+twice, because a checklist a human has to honour on every release is not a
+control. This script is the control: it runs in CI on every push and pull
+request, so a forgotten pin fails the build instead of shipping.
+
+The sentence above deliberately names no second version: "the release tag
+current at the time" records what happened (a tester's install tag was
+newer than the manifest's stuck v0.5.1) without literally typing that
+tag. Issue #108's follow-up found that check-version-pins.py used to name
+that tag outright, using the same install-flag-plus-tag shape
+PROSE_PIN_RE watches for, so bump-version.py dutifully rewrote it on
+every release: a factual incident report quietly became a false one,
+since no tester ever typed the rewritten tag, and the incident happened
+with the one specific tag a later bump has no business changing. See
+tests/test_bump_version.py::test_bump_does_not_rewrite_this_historical_line
+for the regression test.
 
 Issue #108: detecting drift after the fact still left a human making the
 edits by hand. scripts/bump-version.py now makes them instead. Both scripts
