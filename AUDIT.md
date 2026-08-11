@@ -181,6 +181,13 @@ For each domain id in `selected_domain_ids`, in order:
 1. Call `get_domain(domain_id)` to fetch the full rule text for that domain. Read it properly;
    do not skim. Each rule carries a stable `Rule id: ...` identifier you must use verbatim when
    recording verdicts and findings.
+
+   The server records which domains you called this for, because it is the only tool that
+   serves rule text. If you record verdicts for a domain you never fetched, they are still
+   recorded, but the response says `"rules_fetched": false` with a warning, and the report
+   names that domain as one whose verdicts were reached without its rules. Fetching is not the
+   point and satisfying the check is not the point: reading the rules is. Do not call
+   `get_domain` to clear the flag on a domain you then bulk-mark from memory.
 2. Sweep the repository, applying every rule in the domain. For each rule, reach one of four
    honest verdicts:
    - `pass`: you checked, and the repository satisfies the rule.

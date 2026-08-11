@@ -656,6 +656,41 @@ def test_run_state_defaults_to_current_schema_version_when_freshly_built() -> No
     assert state.feedback_issue_url is None
 
 
+def test_rules_fetched_defaults_are_unknown_rather_than_empty() -> None:
+    # None, not []: a model nobody told what was fetched knows nothing, and
+    # "nothing was fetched" is a different and much louder claim (issue #110).
+    # The unknown list defaults to empty, because a run with no carried-in
+    # domains genuinely has none of them.
+    state = RunState(meta=_meta(), config=_config())
+    assert state.rules_fetched_domain_ids is None
+    assert state.rules_fetch_unknown_domain_ids == []
+    progress = RunProgress(meta=_meta())
+    assert progress.rules_fetched_domain_ids is None
+    assert progress.rules_fetch_unknown_domain_ids == []
+
+
+def test_run_state_written_before_the_fetch_record_loads_as_unknown() -> None:
+    # A run-state.json from before issue #110 has neither key. It must load,
+    # at its own schema_version, with the fetch record unknown: the report
+    # renders that as "not recorded", never as fetched and never as skipped.
+    #
+    # Both fields arrived without a schema_version bump, deliberately: an
+    # older reader ignoring them still renders everything it renders today,
+    # and the None above already says "never recorded", so the version number
+    # has nothing left to carry. This test is what pins that the older
+    # document still loads.
+    state = RunState(meta=_meta(), config=_config(), rules_fetched_domain_ids=["d01"])
+    raw = json.loads(state.to_json())
+    del raw["rules_fetched_domain_ids"]
+    del raw["rules_fetch_unknown_domain_ids"]
+
+    restored = RunState.from_json(json.dumps(raw))
+
+    assert restored.schema_version == RUN_STATE_SCHEMA_VERSION
+    assert restored.rules_fetched_domain_ids is None
+    assert restored.rules_fetch_unknown_domain_ids == []
+
+
 def test_run_state_serialised_json_carries_schema_version_4() -> None:
     state = RunState(meta=_meta(), config=_config())
     dumped = json.loads(state.to_json())
