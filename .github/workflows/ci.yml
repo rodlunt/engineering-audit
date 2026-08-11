@@ -33,6 +33,11 @@ jobs:
           enable-cache: true
       - name: Sync dependencies
         run: uv sync --frozen
+      - name: Version pins match pyproject.toml
+        # See issue #101: the Gemini extension manifest's own version pin
+        # was missed across two releases. This is the control that replaces
+        # the release checklist entry a human kept forgetting to honour.
+        run: uv run python scripts/check-version-pins.py
       - name: Lint (ruff)
         # ruff and mypy run via pinned, ephemeral `--with` overlays rather
         # than declared dev dependencies, so these steps need no uv.lock
