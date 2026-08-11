@@ -81,6 +81,12 @@ and left to be verified when Gemini CLI is actually available: set
 `ENGINEERING_AUDIT_RULES_DIR` in your shell before running `gemini`, and confirm
 with a tool listing that the server picked it up.
 
+Every run also checks this repository's tags for a newer release, on by default. On an
+air-gapped or network-restricted machine, set `ENGINEERING_AUDIT_NO_UPDATE_CHECK` the same way as
+`ENGINEERING_AUDIT_RULES_DIR` above (via the manifest's `settings` array, or directly in the
+`env` map for the manual MCP entry). See the root [SECURITY.md](../../SECURITY.md) for exactly
+what the check discloses when it runs.
+
 ## Inline mode: GEMINI.md hierarchy
 
 Gemini CLI concatenates context files from three tiers before every prompt:

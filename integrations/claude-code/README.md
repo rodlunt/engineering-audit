@@ -92,6 +92,11 @@ An `AuditConfig` JSON file looks like:
 `start_config` refuses the file with a clear error rather than falling back to a default
 selection. See `src/engineering_audit/schema.py`'s `AuditConfig` model for the full field list.
 
+Every run also checks this repository's tags for a newer release, on by default. On an
+air-gapped or network-restricted CI runner, add `--no-update-check` to the `claude mcp add`
+command above, or set `ENGINEERING_AUDIT_NO_UPDATE_CHECK` in the environment `claude` runs in.
+See the root [SECURITY.md](../../SECURITY.md) for exactly what the check discloses when it runs.
+
 ## Current status
 
 GitHub issue filing (`issue_mode: "github"`) is implemented, not a stub: the `file_issues` tool

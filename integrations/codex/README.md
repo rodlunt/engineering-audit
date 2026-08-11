@@ -143,6 +143,12 @@ This section exists because its absence caused
 integration README documented the preset path and this one did not, so a headless
 Codex run went down the interactive path and stalled.
 
+Every run also checks this repository's tags for a newer release, on by default. On an
+air-gapped or network-restricted CI runner, add `--env ENGINEERING_AUDIT_NO_UPDATE_CHECK=1` to
+the `codex mcp add` command above (or `--no-update-check` on the `engineering-audit-mcp` command
+line if you are running it directly rather than via `codex mcp add`). See the root
+[SECURITY.md](../../SECURITY.md) for exactly what the check discloses when it runs.
+
 ### `tool_timeout_sec` and the configuration wait
 
 Codex applies a per-server MCP tool timeout, `mcp_servers.<name>.tool_timeout_sec`

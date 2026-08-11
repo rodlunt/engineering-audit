@@ -397,25 +397,28 @@ class RunMeta(BaseModel):
     update_check: str | None = Field(
         default=None,
         description=(
-            "Tri-state result of comparing the installed tool build against the "
-            "tool's latest GitHub release tag, prefixed 'current', 'stale', or "
-            "'could-not-check'. None means the check was not performed at all (e.g. "
-            "an older run-state file predating this field). 'could-not-check' is "
+            "Result of comparing the installed tool build against the tool's latest "
+            "GitHub release tag, prefixed 'current', 'stale', 'could-not-check' or "
+            "'not-checked'. None means the check was not performed at all (e.g. an "
+            "older run-state file predating this field). 'could-not-check' is "
             "deliberately distinct from 'current': it means the comparison could not "
             "be made (no network, git missing, no version tags found), not that the "
-            "installed build was confirmed up to date. A failed check must never be "
-            "reported as current."
+            "installed build was confirmed up to date. 'not-checked' is distinct again: "
+            "the check was turned off deliberately (--no-update-check or "
+            "ENGINEERING_AUDIT_NO_UPDATE_CHECK), not attempted and failed. A failed or "
+            "skipped check must never be reported as current."
         ),
     )
     pack_update_check: str | None = Field(
         default=None,
         description=(
-            "Tri-state result of comparing the loaded rules pack against its own "
-            "remote's latest release tag, prefixed 'current', 'stale', or "
-            "'could-not-check'. Same contract and same discipline as update_check, "
-            "which does this for the tool itself: 'could-not-check' is distinct from "
-            "'current' and a check that could not run must never read as freshness. "
-            "None means the field predates this build, e.g. an older run-state file.\n\n"
+            "Result of comparing the loaded rules pack against its own remote's "
+            "latest release tag, prefixed 'current', 'stale', 'could-not-check' or "
+            "'not-checked'. Same contract and same discipline as update_check, which "
+            "does this for the tool itself: 'could-not-check' and 'not-checked' are "
+            "both distinct from 'current', and neither a failed nor a skipped check "
+            "may read as freshness. None means the field predates this build, e.g. an "
+            "older run-state file.\n\n"
             "The tool checked itself for staleness and did not check its ruleset, which "
             "is the thing that decides what actually gets audited."
         ),

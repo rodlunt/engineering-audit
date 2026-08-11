@@ -337,6 +337,84 @@ def test_resolve_rules_dir_raises_on_trailing_flag_with_no_value(
     assert excinfo.value.code == 2
 
 
+def test_resolve_rules_dir_tolerates_no_update_check_flag(tmp_path: Path) -> None:
+    # _resolve_rules_dir and _update_check_disabled_by_flag share one parser
+    # (_server_arg_parser) precisely so neither chokes on a flag only the
+    # other defines; this is the regression test for that.
+    resolved = _resolve_rules_dir(["--rules-dir", str(tmp_path), "--no-update-check"])
+    assert resolved == tmp_path
+
+
+# ---------------------------------------------------------------------------
+# --no-update-check / ENGINEERING_AUDIT_NO_UPDATE_CHECK
+# ---------------------------------------------------------------------------
+
+
+def test_update_check_disabled_by_flag_true_when_passed() -> None:
+    assert server_module._update_check_disabled_by_flag(["--no-update-check"]) is True
+
+
+def test_update_check_disabled_by_flag_false_by_default() -> None:
+    assert server_module._update_check_disabled_by_flag([]) is False
+
+
+def test_update_check_disabled_by_flag_alongside_rules_dir(tmp_path: Path) -> None:
+    disabled = server_module._update_check_disabled_by_flag(
+        ["--rules-dir", str(tmp_path), "--no-update-check"]
+    )
+    assert disabled is True
+
+
+def test_update_check_enabled_true_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ENGINEERING_AUDIT_NO_UPDATE_CHECK", raising=False)
+    assert server_module._update_check_enabled() is True
+
+
+def test_update_check_enabled_false_when_env_var_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ENGINEERING_AUDIT_NO_UPDATE_CHECK", "1")
+    assert server_module._update_check_enabled() is False
+
+
+def test_update_check_enabled_true_when_env_var_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    # An empty string counts as unset, not as an explicit "off": a
+    # config-management tool that leaves the variable declared but blank
+    # must not silently disable the check.
+    monkeypatch.setenv("ENGINEERING_AUDIT_NO_UPDATE_CHECK", "")
+    assert server_module._update_check_enabled() is True
+
+
+def test_main_folds_no_update_check_flag_into_the_env_var(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # main() is the one place that reconciles --no-update-check with
+    # ENGINEERING_AUDIT_NO_UPDATE_CHECK; this proves the flag actually
+    # reaches the environment variable begin_run reads at call time,
+    # without needing to run the real (blocking) mcp.run().
+    monkeypatch.delenv("ENGINEERING_AUDIT_NO_UPDATE_CHECK", raising=False)
+    monkeypatch.setattr(
+        server_module.sys,
+        "argv",
+        ["engineering-audit-mcp", "--rules-dir", str(tmp_path), "--no-update-check"],
+    )
+    seen_env_value = {}
+
+    class _FakeMCP:
+        def run(self) -> None:
+            pass
+
+    def _fake_build_server(rules_dir: Path):
+        seen_env_value["value"] = server_module.os.environ.get(
+            "ENGINEERING_AUDIT_NO_UPDATE_CHECK"
+        )
+        return _FakeMCP(), None
+
+    monkeypatch.setattr(server_module, "build_server", _fake_build_server)
+
+    server_module.main()
+
+    assert seen_env_value["value"] == "1"
+
+
 # ---------------------------------------------------------------------------
 # begin_run
 # ---------------------------------------------------------------------------
@@ -351,6 +429,66 @@ def test_begin_run_creates_the_output_directory_and_returns_meta(tmp_path: Path)
     assert result["meta"]["rules_pack_name"] == FIXTURE_PACK.name
     assert result["meta"]["finished"] is None
     assert out_dir.is_dir()
+
+
+def test_begin_run_update_checks_run_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Real check_for_update/check_pack_for_update are replaced here purely to
+    # avoid a real network call in the test suite; what is asserted is the
+    # enabled= value begin_run passes them, which must be True unless
+    # something has explicitly turned the check off.
+    monkeypatch.delenv("ENGINEERING_AUDIT_NO_UPDATE_CHECK", raising=False)
+    seen: dict[str, bool] = {}
+
+    def _fake_check_for_update(tool_commit, tool_version, enabled=True):
+        seen["tool"] = enabled
+        return "current (v1.0.0)"
+
+    def _fake_check_pack_for_update(pack_dir, pack_commit, pack_version, enabled=True):
+        seen["pack"] = enabled
+        return "current (v1.0.0)"
+
+    monkeypatch.setattr(server_module, "check_for_update", _fake_check_for_update)
+    monkeypatch.setattr(server_module, "check_pack_for_update", _fake_check_pack_for_update)
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    _begin_run(mcp, tmp_path / "audit-output")
+
+    assert seen == {"tool": True, "pack": True}
+
+
+def test_begin_run_update_checks_disabled_via_env_var(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # No mocking of check_for_update/check_pack_for_update here: enabled=False
+    # short-circuits before either function touches git or the network, so
+    # this exercises the real functions and asserts the real status strings.
+    monkeypatch.setenv("ENGINEERING_AUDIT_NO_UPDATE_CHECK", "1")
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    result = _begin_run(mcp, tmp_path / "audit-output")
+
+    assert result["meta"]["update_check"] == "not-checked: update check disabled by configuration"
+    assert (
+        result["meta"]["pack_update_check"]
+        == "not-checked: rules pack update check disabled by configuration"
+    )
+
+
+def test_begin_run_update_check_disabled_status_is_distinct_from_current(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ENGINEERING_AUDIT_NO_UPDATE_CHECK", "1")
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    result = _begin_run(mcp, tmp_path / "audit-output")
+
+    for field in ("update_check", "pack_update_check"):
+        value = result["meta"][field]
+        assert not value.startswith("current")
+        assert not value.startswith("could-not-check")
+        assert value.startswith("not-checked")
 
 
 def test_begin_run_twice_without_finishing_is_rejected(tmp_path: Path) -> None:

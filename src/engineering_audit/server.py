@@ -915,6 +915,19 @@ def _file_pending_issues(
     }
 
 
+def _server_arg_parser() -> argparse.ArgumentParser:
+    """The engineering-audit-mcp CLI's argument parser, shared so every
+    resolver below recognises the full flag set. Two resolvers each parsing
+    the same argv with a parser that only knows its own flag would make
+    each choke on a flag the other defines, as argparse errors loudly
+    (SystemExit code 2) on anything unrecognised rather than ignoring it.
+    """
+    parser = argparse.ArgumentParser(prog="engineering-audit-mcp", add_help=False)
+    parser.add_argument("--rules-dir", default=None)
+    parser.add_argument("--no-update-check", action="store_true", default=False)
+    return parser
+
+
 def _resolve_rules_dir(argv: list[str]) -> Path:
     """Resolve the rules pack directory from --rules-dir or the environment.
 
@@ -927,9 +940,7 @@ def _resolve_rules_dir(argv: list[str]) -> Path:
     # no value must error loudly (SystemExit code 2), not silently fall
     # through to the environment variable, which could be a stale, wrong
     # pack.
-    parser = argparse.ArgumentParser(prog="engineering-audit-mcp", add_help=False)
-    parser.add_argument("--rules-dir", default=None)
-    args = parser.parse_args(argv)
+    args = _server_arg_parser().parse_args(argv)
     rules_dir_value: str | None = args.rules_dir
 
     if rules_dir_value is None:
@@ -948,6 +959,37 @@ def _resolve_rules_dir(argv: list[str]) -> Path:
             f"directory: {rules_dir}"
         )
     return rules_dir
+
+
+# Read directly by begin_run's update-check call site (see
+# _update_check_enabled below) and set by main() when --no-update-check is
+# passed, so the CLI flag and the natural environment-variable form share one
+# check at call time rather than needing the flag threaded through
+# build_server and AppState.
+_NO_UPDATE_CHECK_ENV_VAR = "ENGINEERING_AUDIT_NO_UPDATE_CHECK"
+
+
+def _update_check_disabled_by_flag(argv: list[str]) -> bool:
+    """Whether --no-update-check was passed on the command line.
+
+    Does not look at ENGINEERING_AUDIT_NO_UPDATE_CHECK itself; main() is the
+    one place that reconciles the flag and the environment variable (see
+    main() below), so begin_run's call site only ever has to check one
+    thing.
+    """
+    return _server_arg_parser().parse_args(argv).no_update_check
+
+
+def _update_check_enabled() -> bool:
+    """Whether begin_run should run its update checks at all.
+
+    Checked by value, not by presence: an empty string counts as unset, so
+    a config-management tool that leaves the variable declared but blank
+    does not silently disable the check. On by default, since the check
+    exists to catch exactly the case where nobody is looking for a reason
+    to turn it off (a stale, pinned install serving an old build forever).
+    """
+    return not os.environ.get(_NO_UPDATE_CHECK_ENV_VAR)
 
 
 def _register_pack_tools(mcp: MCPServer, state: AppState) -> None:
@@ -1071,15 +1113,23 @@ def _register_run_tools(mcp: MCPServer, state: AppState) -> None:
         rather than presenting an unmeasured number as fact.
 
         The run also performs a best-effort tool update check, comparing
-        tool_commit against the tool's latest tagged release on GitHub. The
-        result lands in the returned meta's update_check field, tri-state:
-        "current", "stale", or "could-not-check" (see
-        engineering_audit.update_check for the exact strings). The calling
-        agent MUST tell the user when this reports stale or could-not-check,
-        rather than silently proceeding as if the installed build were
-        confirmed current: this tool is installed via a pinned uvx
-        reference, and a stale pin or cache would otherwise serve an old
-        build forever with nothing to say so.
+        tool_commit against the tool's latest tagged release on GitHub, and
+        the rules pack against its own remote the same way. Each result
+        lands in the returned meta (update_check and pack_update_check
+        respectively), prefixed "current", "stale", "could-not-check" or
+        "not-checked" (see engineering_audit.update_check for the exact
+        strings). The calling agent MUST tell the user when either reports
+        stale or could-not-check, rather than silently proceeding as if the
+        installed build were confirmed current: this tool is installed via a
+        pinned uvx reference, and a stale pin or cache would otherwise serve
+        an old build forever with nothing to say so. This check runs
+        automatically and discloses only the caller's IP address and the
+        fact that this repository's tags were queried, no repository
+        content, findings or paths; it can be turned off with
+        --no-update-check or the ENGINEERING_AUDIT_NO_UPDATE_CHECK
+        environment variable, in which case both fields read "not-checked",
+        which is not something to warn the user about, since turning it off
+        was their own choice.
         """
         # First, before any branch can return early: an environment the tool
         # will not accept is a bad call, and the caller has to hear that
@@ -1146,15 +1196,21 @@ def _register_run_tools(mcp: MCPServer, state: AppState) -> None:
         tool_commit_value = _default_tool_commit()
         pack_version_value = _git_release_version(state.pack.root)
         pack_commit_value = _git_commit(state.pack.root)
+        update_check_enabled = _update_check_enabled()
         meta = RunMeta(
             tool_version=tool_version_value,
             tool_commit=tool_commit_value,
             rules_pack_name=state.pack.root.name,
             rules_pack_version=pack_version_value,
             rules_pack_commit=pack_commit_value,
-            update_check=check_for_update(tool_commit_value, tool_version_value),
+            update_check=check_for_update(
+                tool_commit_value, tool_version_value, enabled=update_check_enabled
+            ),
             pack_update_check=check_pack_for_update(
-                str(state.pack.root), pack_commit_value, pack_version_value
+                str(state.pack.root),
+                pack_commit_value,
+                pack_version_value,
+                enabled=update_check_enabled,
             ),
             assistant=assistant,
             model=model,
@@ -1824,7 +1880,14 @@ def build_server(rules_dir: Path) -> tuple[MCPServer, AppState]:
 
 
 def main() -> None:
-    rules_dir = _resolve_rules_dir(sys.argv[1:])
+    argv = sys.argv[1:]
+    rules_dir = _resolve_rules_dir(argv)
+    if _update_check_disabled_by_flag(argv):
+        # Folded into the environment variable rather than threaded through
+        # build_server/AppState: begin_run reads _NO_UPDATE_CHECK_ENV_VAR
+        # directly (see _update_check_enabled), so this is the one place
+        # that reconciles the CLI flag with that check.
+        os.environ[_NO_UPDATE_CHECK_ENV_VAR] = "1"
     try:
         mcp, _state = build_server(rules_dir)
     except RulesPackError as exc:
