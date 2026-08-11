@@ -201,6 +201,99 @@ def test_tool_repo_url_constant_points_at_the_real_repository() -> None:
 
 
 # ---------------------------------------------------------------------------
+# check_for_update / check_pack_for_update: the enabled=False opt-out
+# ---------------------------------------------------------------------------
+
+
+def test_check_for_update_enabled_by_default_still_runs_git(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # No enabled= argument given at all: the check must still run, since it
+    # stays on unless something explicitly turns it off.
+    def _fake_run(repo_url: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=["git", "ls-remote", repo_url],
+            returncode=0,
+            stdout="aaaa0000\tHEAD\naaaa0000\trefs/tags/v1.0.0\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(update_check_module, "_run_ls_remote", _fake_run)
+
+    result = check_for_update("aaaa0000", "1.0.0")
+
+    assert result == "current (v1.0.0)"
+
+
+def test_check_for_update_disabled_never_invokes_git(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("git ls-remote must not run when the check is disabled")
+
+    monkeypatch.setattr(update_check_module, "_run_ls_remote", _fail_if_called)
+
+    result = check_for_update("deadbeef1234", "1.0.0", enabled=False)
+
+    assert result == "not-checked: update check disabled by configuration"
+
+
+def test_check_pack_for_update_enabled_by_default_still_runs_git(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    monkeypatch.setattr(update_check_module, "_pack_remote_url", lambda pack_dir: "https://example.invalid/pack")
+
+    def _fake_run(repo_url: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=["git", "ls-remote", repo_url],
+            returncode=0,
+            stdout="aaaa0000\tHEAD\naaaa0000\trefs/tags/v1.0.0\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(update_check_module, "_run_ls_remote", _fake_run)
+
+    result = check_pack_for_update(str(tmp_path), "aaaa0000", "1.0.0")
+
+    assert result == "current (v1.0.0)"
+
+
+def test_check_pack_for_update_disabled_never_invokes_git(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("git ls-remote must not run when the check is disabled")
+
+    monkeypatch.setattr(update_check_module, "_pack_remote_url", _fail_if_called)
+    monkeypatch.setattr(update_check_module, "_run_ls_remote", _fail_if_called)
+
+    result = check_pack_for_update(str(tmp_path), "deadbeef1234", "1.0.0", enabled=False)
+
+    assert result == "not-checked: rules pack update check disabled by configuration"
+
+
+def test_disabled_status_is_distinct_from_every_success_and_could_not_check_string() -> None:
+    # The bug this whole feature must not reintroduce: a disabled check
+    # reporting something a reader could mistake for "current" or for a
+    # completed, failed attempt. Collect every string this module can
+    # produce and check the disabled ones stand apart from all the rest.
+    success_and_failure_strings = [
+        _resolve_update_status("aaaa0000\tHEAD\naaaa0000\trefs/tags/v1.0.0\n", "aaaa0000", "1.0.0"),
+        _resolve_update_status("headsha11\tHEAD\nlatestsha22\trefs/tags/v1.5.0\n", "oldsha3333", "1.4.0"),
+        _resolve_update_status("headsha11\tHEAD\n", "headsha11", "1.0.0"),
+        _resolve_update_status("anything at all", None, "1.0.0"),
+    ]
+    disabled_tool = check_for_update("deadbeef1234", "1.0.0", enabled=False)
+    disabled_pack = check_pack_for_update("/nonexistent", "deadbeef1234", "1.0.0", enabled=False)
+
+    for disabled in (disabled_tool, disabled_pack):
+        assert disabled.startswith("not-checked")
+        assert not disabled.startswith("current")
+        assert not disabled.startswith("could-not-check")
+        assert disabled not in success_and_failure_strings
+
+    assert disabled_tool != disabled_pack
+
+
+# ---------------------------------------------------------------------------
 # RunMeta field + report rendering
 # ---------------------------------------------------------------------------
 

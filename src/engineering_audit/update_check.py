@@ -22,6 +22,17 @@ The hard rule this module exists to uphold: a check that could not run must
 never be reported as "current". Reporting "current" on a failure would tell
 the user their stale build is fine, which is worse than saying nothing.
 "could-not-check" is its own honest, distinct state.
+
+The same discipline applies to a check that was never attempted at all. Both
+functions below accept ``enabled``, set from ``--no-update-check`` or the
+``ENGINEERING_AUDIT_NO_UPDATE_CHECK`` environment variable (see server.py's
+``begin_run``); when it is False, the network call is skipped entirely and
+the status is "not-checked: ...", never "could-not-check" and never
+"current". "could-not-check" means an attempt was made and failed;
+"not-checked" means no attempt was made because the user turned it off. A
+reader who cannot tell those apart cannot tell "the network was down" from
+"nobody asked", and conflating either with "current" would tell the user
+their stale build is fine when nothing was actually verified.
 """
 
 from __future__ import annotations
@@ -130,16 +141,23 @@ def check_for_update(
     installed_commit: str | None,
     installed_version: str,
     repo_url: str = TOOL_REPO_URL,
+    enabled: bool = True,
 ) -> str:
     """Best-effort: compare the installed build against the tool's latest
-    GitHub release tag, and return one of three status strings (see
-    :func:`_resolve_update_status` for the exact prefixes).
+    GitHub release tag, and return one of four status strings (see
+    :func:`_resolve_update_status` for the "current"/"stale"/"could-not-check"
+    prefixes; ``enabled=False`` adds the fourth, "not-checked").
 
     Runs a single ``git ls-remote`` against ``repo_url`` (no local
     repository needed) and delegates parsing to :func:`_resolve_update_status`.
     ``installed_commit`` is checked first, before touching the network at
     all: if it is None there is nothing to compare against, so this returns
     ``could-not-check`` without ever invoking git.
+
+    ``enabled=False`` is checked before that, and before anything else: no
+    subprocess is started and no timeout is paid, because the check was
+    turned off deliberately, not attempted and failed. The returned string
+    starts with "not-checked", never "could-not-check" and never "current".
 
     This must never raise: any failure (git missing, network unreachable,
     timeout, non-zero exit) is caught here and folded into a
@@ -149,6 +167,8 @@ def check_for_update(
     not run has no evidence the installed build is current, and reporting
     it as such would be worse than not checking at all.
     """
+    if not enabled:
+        return "not-checked: update check disabled by configuration"
     if installed_commit is None:
         return _resolve_update_status("", None, installed_version)
 
@@ -193,9 +213,11 @@ def check_pack_for_update(
     pack_dir: str,
     pack_commit: str | None,
     pack_version: str | None,
+    enabled: bool = True,
 ) -> str:
     """Best-effort: compare the loaded rules pack against its own remote's
-    latest release tag. Same tri-state contract as :func:`check_for_update`.
+    latest release tag. Same four-state contract as :func:`check_for_update`,
+    including ``enabled``.
 
     This exists because the tool checked itself for staleness and did not
     check its ruleset, which is the thing that actually determines what gets
@@ -207,12 +229,17 @@ def check_pack_for_update(
     That is the common case for a third-party or vendored pack and is a
     perfectly legitimate way to run the tool, so it must never read as
     "current": a check that could not run is not evidence of freshness.
+    ``enabled=False`` is checked first and returns "not-checked" instead,
+    without starting git at all: turned off deliberately is a different fact
+    from attempted and failed.
 
     ``GIT_TERMINAL_PROMPT=0`` is set throughout because the standard pack is a
     private repository. Without it, a machine lacking cached credentials would
     have git block on an interactive password prompt inside what is meant to
     be optional telemetry, hanging the run.
     """
+    if not enabled:
+        return "not-checked: rules pack update check disabled by configuration"
     if pack_commit is None:
         return "could-not-check: rules pack's commit is unknown (not a git checkout)"
     if pack_commit.endswith("-dirty"):

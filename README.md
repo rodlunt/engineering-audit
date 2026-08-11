@@ -140,6 +140,11 @@ claude -p "Read AUDIT.md at <path> and audit this repository via the engineering
 MCP tools." --mcp-config mcp.json --allowedTools "mcp__engineering-audit__*,Read,Glob,Grep"
 ```
 
+Every run also checks this repository's tags for a newer release, on by default (see
+[Security](SECURITY.md) for what that discloses). On an air-gapped machine, or anywhere the
+network cost or the call itself is unwanted, pass `--no-update-check` to `engineering-audit-mcp`
+or set the `ENGINEERING_AUDIT_NO_UPDATE_CHECK` environment variable.
+
 ### Step 5: run your first audit
 
 Ask your assistant to audit the repository you have open ("audit this repo against the
