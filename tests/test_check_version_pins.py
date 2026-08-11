@@ -1,10 +1,10 @@
-"""Tests for scripts/check-version-pins.py (issue #101).
+"""Tests for scripts/check-version-pins.py (issue #101, extended #108).
 
 Builds a small throwaway git repository per test with its own
-pyproject.toml, an @vX.Y.Z install pin and an integrations/*.json manifest
-version field, then points the loaded script module at it. This exercises
-the same code paths the real CI step runs, without touching the real
-repository's own pins.
+pyproject.toml, an @vX.Y.Z install pin, a prose version mention and an
+integrations/*.json manifest version field, then points the loaded script
+module at it. This exercises the same code paths the real CI step runs,
+without touching the real repository's own pins.
 """
 
 from __future__ import annotations
@@ -58,25 +58,29 @@ def _build_repo(
     *,
     pyproject_version: str = "1.2.3",
     at_pin_version: str | None = "1.2.3",
+    prose_pin_version: str | None = "1.2.3",
     manifest_version: str | None = "1.2.3",
 ) -> Path:
     """Build a minimal tracked tree: pyproject.toml, a README with an
-    @vX.Y.Z pin (omitted if at_pin_version is None), and an
-    integrations/example/manifest.json with a "version" field (omitted if
-    manifest_version is None)."""
+    @vX.Y.Z pin and a `--ref vX.Y.Z` prose pin (either omitted if its
+    version arg is None), and an integrations/example/manifest.json with a
+    "version" field (omitted if manifest_version is None)."""
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "pyproject.toml").write_text(
         f'[project]\nname = "example"\nversion = "{pyproject_version}"\n',
         encoding="utf-8",
     )
+    readme_lines = []
     if at_pin_version is not None:
-        (repo / "README.md").write_text(
-            f"Install with `--from git+https://example.invalid/x@v{at_pin_version}`.\n",
-            encoding="utf-8",
+        readme_lines.append(
+            f"Install with `--from git+https://example.invalid/x@v{at_pin_version}`."
         )
-    else:
-        (repo / "README.md").write_text("No pins here.\n", encoding="utf-8")
+    if prose_pin_version is not None:
+        readme_lines.append(f"gemini extensions install x --ref v{prose_pin_version}")
+    if not readme_lines:
+        readme_lines.append("No pins here.")
+    (repo / "README.md").write_text("\n".join(readme_lines) + "\n", encoding="utf-8")
     if manifest_version is not None:
         manifest_dir = repo / "integrations" / "example"
         manifest_dir.mkdir(parents=True)
@@ -89,9 +93,9 @@ def _build_repo(
 
 
 def _run_main(module: ModuleType, repo: Path) -> int:
-    module.REPO_ROOT = repo
-    module.PYPROJECT = repo / "pyproject.toml"
-    return module.main()
+    result = module.main(repo_root=repo, pyproject=repo / "pyproject.toml")
+    assert isinstance(result, int)
+    return result
 
 
 def test_matching_pins_pass(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -110,6 +114,22 @@ def test_mismatched_at_pin_fails(
 ) -> None:
     module = _load_module()
     repo = _build_repo(tmp_path, pyproject_version="1.2.3", at_pin_version="1.0.0")
+
+    exit_code = _run_main(module, repo)
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "README.md" in captured.out
+    assert "MISMATCH" in captured.out
+    assert "README.md" in captured.err
+    assert "1.0.0" in captured.err and "1.2.3" in captured.err
+
+
+def test_mismatched_prose_pin_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    module = _load_module()
+    repo = _build_repo(tmp_path, pyproject_version="1.2.3", prose_pin_version="1.0.0")
 
     exit_code = _run_main(module, repo)
 
@@ -147,6 +167,19 @@ def test_zero_at_pins_fails_loudly(
     assert exit_code == 2
     captured = capsys.readouterr()
     assert "zero @vX.Y.Z install pins" in captured.err
+
+
+def test_zero_prose_pins_fails_loudly(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    module = _load_module()
+    repo = _build_repo(tmp_path, prose_pin_version=None)
+
+    exit_code = _run_main(module, repo)
+
+    assert exit_code == 2
+    captured = capsys.readouterr()
+    assert "zero known prose version mentions" in captured.err
 
 
 def test_zero_manifest_pins_fails_loudly(

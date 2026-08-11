@@ -10,23 +10,28 @@ checklist a human has to honour on every release is not a control. This
 script is the control: it runs in CI on every push and pull request, so a
 forgotten pin fails the build instead of shipping.
 
-Two kinds of pin are discovered and checked against `pyproject.toml`'s
-`version`:
+Issue #108: detecting drift after the fact still left a human making the
+edits by hand. scripts/bump-version.py now makes them instead. Both scripts
+import their pin discovery from scripts/version_pins.py rather than each
+defining their own notion of "where the pins are": see that module's
+docstring for why a second, independently maintained discovery would be a
+subtler version of the exact bug issue #101 found.
 
-1. Any `@vX.Y.Z` install reference committed anywhere in the tracked tree
-   (README install commands, integration docs, the Gemini extension
-   manifest's uvx `args`, and anywhere else the same pattern shows up).
+Three kinds of pin are discovered and checked against `pyproject.toml`'s
+`version`; see version_pins.py for the exact patterns:
+
+1. Any `@vX.Y.Z` install reference committed anywhere in the tracked tree.
 2. The top-level `"version"` field of any tracked JSON manifest under
-   `integrations/` (currently just the Gemini extension manifest, but a
-   future extension's manifest is covered for free rather than needing its
-   own hardcoded path here).
+   `integrations/`.
+3. A fixed list of known prose shapes that name the version without an `@`
+   prefix (`--ref vX.Y.Z`, `currently vX.Y.Z`, `placeholder: vX.Y.Z`).
 
 Fails loudly, not just on mismatch: this script exits non-zero if any pin
-disagrees with `pyproject.toml`, and it also exits non-zero if either
-category above discovers zero pins. Zero pins does not mean the repository
-is clean, it means the patterns above have gone stale after a rename or
-restructure, and a check that can silently pass by finding nothing is worse
-than no check at all.
+disagrees with `pyproject.toml`, and it also exits non-zero if any of the
+three categories above discovers zero pins. Zero pins does not mean the
+repository is clean, it means the patterns in version_pins.py have gone
+stale after a rename or restructure, and a check that can silently pass by
+finding nothing is worse than no check at all.
 
 Every file and pin examined is printed, so the output shows coverage
 (what was checked) rather than only a pass or fail verdict.
@@ -38,147 +43,82 @@ Run via:
 
 from __future__ import annotations
 
-import json
-import re
-import subprocess
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-PYPROJECT = REPO_ROOT / "pyproject.toml"
+# So `import version_pins` resolves to the sibling module in this same
+# directory regardless of how this script is loaded: run directly (`uv run
+# python scripts/check-version-pins.py`, where sys.path[0] is already this
+# directory) or loaded via importlib.util.spec_from_file_location in the
+# test suite (where it is not).
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-# Matches an `@v0.7.0`-style git ref pin, e.g. the uvx --from argument
-# `git+https://github.com/rodlunt/engineering-audit@v0.7.0`. Deliberately
-# not matching GitHub Actions pins like `@c771a70e... # v9.0.0`: those pin a
-# third-party action's commit SHA, with the human-readable version only in a
-# trailing comment, so the `@v` characters never end up adjacent there.
-AT_PIN_RE = re.compile(r"@v(\d+\.\d+\.\d+)")
-
-# Machine-generated, not an install pin a human maintains by hand: uv
-# regenerates this from pyproject.toml itself, so it is not the kind of
-# forgotten-pin bug this script exists to catch.
-EXCLUDED_FILES = {"uv.lock"}
+from version_pins import REPO_ROOT, discover, read_pyproject_version  # noqa: E402
 
 
-def read_pyproject_version() -> str:
-    """Read the `[project] version` field from pyproject.toml.
-
-    Uses a regex rather than a TOML parser: the project's floor is Python
-    3.10 (see requires-python in pyproject.toml) and tomllib is 3.11+, so a
-    full parse would need a dependency this one-line extraction does not.
-    Mirrors the same extraction tag-version-guard.yml already does in
-    shell with sed, for the same reason.
-    """
-    text = PYPROJECT.read_text(encoding="utf-8")
-    match = re.search(r'^version = "([^"]+)"$', text, re.MULTILINE)
-    if match is None:
-        raise SystemExit(
-            f"could not find a `version = \"...\"` line in {PYPROJECT}; "
-            "check extraction is broken, not that the project has no version"
-        )
-    return match.group(1)
-
-
-def list_tracked_files() -> list[Path]:
-    result = subprocess.run(
-        ["git", "-C", str(REPO_ROOT), "ls-files"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return [REPO_ROOT / line for line in result.stdout.splitlines() if line]
-
-
-def find_at_pins(tracked_files: list[Path]) -> list[tuple[Path, int, str]]:
-    """Return (file, line number, pinned version) for every `@vX.Y.Z` found
-    in a tracked text file."""
-    found: list[tuple[Path, int, str]] = []
-    for path in tracked_files:
-        rel = path.relative_to(REPO_ROOT).as_posix()
-        if rel in EXCLUDED_FILES:
-            continue
-        try:
-            text = path.read_text(encoding="utf-8")
-        except (UnicodeDecodeError, OSError):
-            # Binary or unreadable file (images under docs/images, etc.):
-            # not a place an install pin could live.
-            continue
-        for line_no, line in enumerate(text.splitlines(), start=1):
-            for m in AT_PIN_RE.finditer(line):
-                found.append((path, line_no, m.group(1)))
-    return found
-
-
-def find_manifest_version_pins(
-    tracked_files: list[Path],
-) -> list[tuple[Path, str]]:
-    """Return (file, version) for every tracked JSON manifest under
-    integrations/ that declares a top-level "version" field."""
-    found: list[tuple[Path, str]] = []
-    for path in tracked_files:
-        rel = path.relative_to(REPO_ROOT)
-        if rel.suffix != ".json":
-            continue
-        if "integrations" not in rel.parts:
-            continue
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (UnicodeDecodeError, OSError, json.JSONDecodeError):
-            continue
-        if not isinstance(data, dict):
-            continue
-        version = data.get("version")
-        if isinstance(version, str):
-            found.append((path, version))
-    return found
-
-
-def main() -> int:
-    expected = read_pyproject_version()
+def main(repo_root: Path = REPO_ROOT, pyproject: Path | None = None) -> int:
+    pyproject = pyproject if pyproject is not None else repo_root / "pyproject.toml"
+    expected = read_pyproject_version(pyproject)
     print(f"pyproject.toml version: {expected}")
 
-    tracked_files = list_tracked_files()
-    at_pins = find_at_pins(tracked_files)
-    manifest_pins = find_manifest_version_pins(tracked_files)
+    found = discover(repo_root)
 
     mismatches: list[str] = []
 
-    print(f"\n@vX.Y.Z install pins found: {len(at_pins)}")
-    for path, line_no, version in at_pins:
-        rel = path.relative_to(REPO_ROOT).as_posix()
-        status = "ok" if version == expected else "MISMATCH"
-        print(f"  {rel}:{line_no}: @v{version} [{status}]")
-        if version != expected:
+    print(f"\n@vX.Y.Z install pins found: {len(found.at_pins)}")
+    for pin in found.at_pins:
+        rel = pin.path.relative_to(repo_root).as_posix()
+        status = "ok" if pin.version == expected else "MISMATCH"
+        print(f"  {rel}:{pin.line_no}: @v{pin.version} [{status}]")
+        if pin.version != expected:
             mismatches.append(
-                f"{rel}:{line_no} pins @v{version}, pyproject.toml says {expected}"
+                f"{rel}:{pin.line_no} pins @v{pin.version}, pyproject.toml says {expected}"
             )
 
-    print(f"\nmanifest \"version\" fields found: {len(manifest_pins)}")
-    for path, version in manifest_pins:
-        rel = path.relative_to(REPO_ROOT).as_posix()
-        status = "ok" if version == expected else "MISMATCH"
-        print(f'  {rel}: "version": "{version}" [{status}]')
-        if version != expected:
+    print(f"\nprose version mentions found: {len(found.prose_pins)}")
+    for pin in found.prose_pins:
+        rel = pin.path.relative_to(repo_root).as_posix()
+        status = "ok" if pin.version == expected else "MISMATCH"
+        print(f"  {rel}:{pin.line_no}: v{pin.version} [{status}]")
+        if pin.version != expected:
             mismatches.append(
-                f'{rel} "version" is {version}, pyproject.toml says {expected}'
+                f"{rel}:{pin.line_no} names v{pin.version}, pyproject.toml says {expected}"
             )
 
-    # A skipped check must never be representable as a pass: if either
-    # pattern found nothing, the pattern itself is broken (moved, renamed,
-    # or the repository restructured), not proof the repository is clean.
+    print(f'\nmanifest "version" fields found: {len(found.manifest_pins)}')
+    for manifest_pin in found.manifest_pins:
+        rel = manifest_pin.path.relative_to(repo_root).as_posix()
+        status = "ok" if manifest_pin.version == expected else "MISMATCH"
+        print(f'  {rel}: "version": "{manifest_pin.version}" [{status}]')
+        if manifest_pin.version != expected:
+            mismatches.append(
+                f'{rel} "version" is {manifest_pin.version}, pyproject.toml says {expected}'
+            )
+
+    # A skipped check must never be representable as a pass: if any pattern
+    # found nothing, the pattern itself is broken (moved, renamed, or the
+    # repository restructured), not proof the repository is clean.
     problems: list[str] = []
-    if not at_pins:
+    if not found.at_pins:
         problems.append(
             "found zero @vX.Y.Z install pins anywhere in the tracked tree; "
-            "the AT_PIN_RE pattern in this script has gone stale, or every "
-            "pin was removed, either way this is broken, not clean"
+            "the AT_PIN_RE pattern in scripts/version_pins.py has gone "
+            "stale, or every pin was removed, either way this is broken, "
+            "not clean"
         )
-    if not manifest_pins:
+    if not found.prose_pins:
         problems.append(
-            "found zero manifest \"version\" fields under integrations/; "
-            "the manifest scan in this script has gone stale, or the "
-            "Gemini extension manifest was removed, either way this is "
-            "broken, not clean"
+            "found zero known prose version mentions anywhere in the "
+            "tracked tree; the PROSE_LEAD_INS patterns in "
+            "scripts/version_pins.py have gone stale, or every mention "
+            "was removed, either way this is broken, not clean"
+        )
+    if not found.manifest_pins:
+        problems.append(
+            'found zero manifest "version" fields under integrations/; '
+            "the manifest scan in scripts/version_pins.py has gone stale, "
+            "or the Gemini extension manifest was removed, either way "
+            "this is broken, not clean"
         )
 
     if problems:
@@ -194,8 +134,9 @@ def main() -> int:
         return 1
 
     print(
-        f"\nOK: {len(at_pins)} install pin(s) and {len(manifest_pins)} "
-        f"manifest version field(s) all match pyproject.toml version {expected}"
+        f"\nOK: {len(found.at_pins)} install pin(s), {len(found.prose_pins)} "
+        f"prose mention(s) and {len(found.manifest_pins)} manifest version "
+        f"field(s) all match pyproject.toml version {expected}"
     )
     return 0
 
