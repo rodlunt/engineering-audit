@@ -73,6 +73,14 @@ __all__ = [
 # genuinely predates the requirement and is loaded with it relaxed, so a
 # saved run-state stays re-renderable by engineering-audit-render; a file at
 # 4 or above was written by a build that enforced it and is held to it.
+#
+# Deliberately NOT bumped for rules_fetched_domain_ids and
+# rules_fetch_unknown_domain_ids (issue #110): an older reader can ignore both
+# without anything it renders becoming wrong, and the fields carry their own
+# "never recorded" signal in the document (None), so nothing here has to. See
+# RULES_FETCHED_FIELD_DESCRIPTION for the full reasoning. Bumping would have
+# cost real compatibility (a file this build writes would be refused outright
+# by every earlier one) to say something the file already says.
 RUN_STATE_SCHEMA_VERSION = 4
 
 # The first schema version whose not-applicable verdicts must carry a note.
@@ -594,6 +602,51 @@ def _legacy_validation_context(version: int) -> dict[str, bool] | None:
     return None
 
 
+# Shared by RunState and RunProgress, which carry these two fields with
+# identical meaning: the resumed run and the finished run are the same run, and
+# a description that drifted between the two would be a second definition of
+# what "fetched" means.
+#
+# No schema_version bump came with these fields, and that is a decision rather
+# than an oversight. A reader written against version 4 can ignore both of them
+# safely: it renders exactly the report it renders today, with no fetch block,
+# and nothing it does show becomes wrong. What usually forces a bump is a
+# document that cannot be interpreted without knowing which build wrote it (the
+# not-applicable note requirement at version 4 was exactly that), and this one
+# can: an absent rules_fetched_domain_ids means "never recorded", while a build
+# that records it always writes a list, empty included. The distinction a
+# version number would have carried is already in the document.
+RULES_FETCHED_FIELD_DESCRIPTION = (
+    "Domain ids whose rule text was served by get_domain during this run, "
+    "including any fetched before an interruption the run was resumed from. "
+    "get_domain is the only thing in this package that returns rule body text, "
+    "so a domain absent from this list recorded its verdicts without the rules "
+    "passing through the server (issue #110).\n\n"
+    "An empty list and None are different answers. Empty means the run recorded "
+    "fetches and there were none. None means fetches were never recorded at all, "
+    "which is every run-state written before this field existed: unknown, and "
+    "never to be rendered as either 'fetched' or 'not fetched'.\n\n"
+    "What this supports is narrow, and the report's wording is held to it: the "
+    "rule text was fetched, never that it was read or applied. An agent can fetch "
+    "every domain, discard the text and bulk-mark anyway, and this list will look "
+    "clean."
+)
+
+RULES_FETCH_UNKNOWN_FIELD_DESCRIPTION = (
+    "Domain ids whose fetch status cannot be known, because their results were "
+    "carried in from a saved record written before rules_fetched_domain_ids "
+    "existed. These are neither fetched nor not-fetched, and the report names "
+    "them as unrecorded rather than picking one.\n\n"
+    "This is what stops a resumed legacy run from laundering its carried-in "
+    "domains into either verdict: the run records fetches from the resume "
+    "onwards, so a domain audited after it is judged normally, while a domain "
+    "already on disk when it started stays honestly unknown. A domain that "
+    "appears in both lists was fetched after the resume, and "
+    "rules_fetched_domain_ids wins: that is positive evidence, where this list "
+    "is only an absence of it."
+)
+
+
 class RunState(BaseModel):
     """The full state of one audit run: metadata, config and per-domain results."""
 
@@ -609,6 +662,14 @@ class RunState(BaseModel):
             "rule id, the same shape RunProgress.filed_issues has always used, so a rule "
             "with two findings carries both their urls rather than losing one."
         ),
+    )
+    rules_fetched_domain_ids: list[str] | None = Field(
+        default=None,
+        description=RULES_FETCHED_FIELD_DESCRIPTION,
+    )
+    rules_fetch_unknown_domain_ids: list[str] = Field(
+        default_factory=list,
+        description=RULES_FETCH_UNKNOWN_FIELD_DESCRIPTION,
     )
     feedback_issue_url: str | None = None
 
@@ -722,6 +783,14 @@ class RunProgress(BaseModel):
     filed_issues: dict[str, str] = Field(
         default_factory=dict,
         description="Finding key ('<rule id>#<n>') -> GitHub issue URL, for issues already filed.",
+    )
+    rules_fetched_domain_ids: list[str] | None = Field(
+        default=None,
+        description=RULES_FETCHED_FIELD_DESCRIPTION,
+    )
+    rules_fetch_unknown_domain_ids: list[str] = Field(
+        default_factory=list,
+        description=RULES_FETCH_UNKNOWN_FIELD_DESCRIPTION,
     )
     feedback_issue_url: str | None = None
     completed: bool = Field(
