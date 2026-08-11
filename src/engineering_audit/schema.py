@@ -525,6 +525,24 @@ class TelemetryConsent(BaseModel):
     # private repository is about, even though the finding text itself never
     # leaves the machine. The configuration page's label must say this.
     consulted_sources: bool = False
+    # Per-domain pass/finding/not-applicable/could-not-evaluate counts, plus
+    # the run total. Findings rollup alone cannot tell a thin run (many
+    # not-applicable verdicts, few findings) apart from a thorough one; this
+    # is the section that can. No repository content, paths, URLs or finding
+    # text, only counts of the tool's own vocabulary (issue #111).
+    verdict_distribution: bool = False
+    # The assistant-supplied span, the server-measured span, and the
+    # divergence verdict between them. Token counts are deliberately not
+    # part of this: the server never sees them, so nothing here can report a
+    # figure it has no way to check. The configuration page's label says so,
+    # and points at the free-text field for anyone who wants to paste them
+    # in by hand.
+    duration: bool = False
+    # Which domains had their rule text served by get_domain this run (issue
+    # #110). This shows only that rule text was FETCHED, never that it was
+    # read or applied; the configuration page's label must preserve that
+    # same distinction rather than overclaiming it.
+    rules_fetched: bool = False
 
 
 class AuditConfig(BaseModel):

@@ -203,6 +203,22 @@
     source the assistant consulted outside the rules pack). Off by default: URLs fetched
     while auditing a private repository can hint at what that repository is about.
   </label>
+  <label class="consent-row">
+    <input type="checkbox" name="consent_verdict_distribution" $consent_verdict_distribution_checked>
+    Rule verdict distribution (counts of pass, finding, not-applicable and could-not-evaluate,
+    per domain and in total; not the finding text)
+  </label>
+  <label class="consent-row">
+    <input type="checkbox" name="consent_duration" $consent_duration_checked>
+    Run duration (the assistant-reported span, the server-measured span, and whether they
+    agree). Token counts are not included, since the server never sees them: paste them into
+    the feedback text above if you want to share them.
+  </label>
+  <label class="consent-row">
+    <input type="checkbox" name="consent_rules_fetched" $consent_rules_fetched_checked>
+    Rules fetched (per domain, whether this run's rule text was fetched via get_domain.
+    Shows only that it was fetched, never that it was read or applied.)
+  </label>
   <label class="consent-row locked">
     <input type="checkbox" checked disabled>
     Run metadata (always included when sending feedback)

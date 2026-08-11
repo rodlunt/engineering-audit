@@ -1812,8 +1812,11 @@ def _register_feedback_tools(mcp: MCPServer, state: AppState) -> None:
         timestamps), and then each telemetry section the user consented to
         on the configuration page (coverage totals, findings rollup by
         severity/domain id, self-assessment, environment, consulted sources
-        by rule id/url/why); an unconsented section is left out entirely.
-        Finding text itself is never included, only counts.
+        by rule id/url/why, rule verdict distribution by domain and in
+        total, run duration and the divergence verdict between its two
+        measurements, and which domains had their rule text fetched via
+        get_domain); an unconsented section is left out entirely. Finding
+        text itself is never included, only counts.
 
         Files a labelled issue on the tool author's feedback repository via
         gh. If gh is unavailable or filing fails for any reason, the
@@ -1839,7 +1842,21 @@ def _register_feedback_tools(mcp: MCPServer, state: AppState) -> None:
                 "extra_text was given."
             )
 
-        body = build_feedback_body(free_text, run.meta, config.telemetry_consent, run.domain_results)
+        body = build_feedback_body(
+            free_text,
+            run.meta,
+            config.telemetry_consent,
+            run.domain_results,
+            # sorted(), not fetch order: this run is still live, so
+            # run.rules_fetched is always a concrete set here, never the
+            # None that a stored RunState.rules_fetched_domain_ids can be
+            # (see build_feedback_sections' own docstring for what None
+            # means). A domain carried over from an untracked resume still
+            # lands in rules_fetch_unknown, exactly as it does everywhere
+            # else this pair is read (see _rules_fetch_summary above).
+            rules_fetched_domain_ids=sorted(run.rules_fetched),
+            rules_fetch_unknown_domain_ids=sorted(run.rules_fetch_unknown),
+        )
         subject = feedback_subject(run.meta)
 
         if not gh_available():

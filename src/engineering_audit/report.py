@@ -17,7 +17,6 @@ import json
 import re
 import string
 from collections import Counter
-from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -25,6 +24,7 @@ from engineering_audit.feedback import (
     FEEDBACK_EMAIL,
     build_feedback_sections,
     build_issue_trailing_line,
+    duration_text,
     feedback_subject,
     rules_pack_label,
 )
@@ -34,7 +34,6 @@ from engineering_audit.schema import (
     DomainResult,
     Finding,
     IncompleteResultError,
-    RunMeta,
     RunState,
     UnknownRuleIdError,
     Verdict,
@@ -148,119 +147,6 @@ def _markdownish(text: str) -> str:
     return "".join(f"<p>{p.replace(chr(10), '<br>')}</p>" for p in paragraphs)
 
 
-def _parse_iso(value: str | None) -> datetime | None:
-    """Parse an ISO 8601 timestamp as recorded on RunMeta, or None if value
-    is None or is not a timestamp this tool would have written itself.
-
-    Every string reaching here has already passed RunMeta's own
-    _valid_iso_timestamp validator at parse time, so a second failure here
-    would mean a bug in that validator, not bad input; returning None rather
-    than raising keeps this a display-time concern; a report must still
-    render over a corrupt or foreign-written run-state file.
-    """
-    if value is None:
-        return None
-    normalised = value[:-1] + "+00:00" if value.endswith("Z") else value
-    try:
-        return datetime.fromisoformat(normalised)
-    except ValueError:
-        return None
-
-
-def _format_duration(total_seconds: float) -> str:
-    total_seconds = int(round(abs(total_seconds)))
-    hours, remainder = divmod(total_seconds, 3600)
-    minutes, seconds = divmod(remainder, 60)
-    parts = []
-    if hours:
-        parts.append(f"{hours}h")
-    if hours or minutes:
-        parts.append(f"{minutes}m")
-    parts.append(f"{seconds}s")
-    return "".join(parts)
-
-
-# A duration disagreement is flagged, never resolved: see the module
-# docstring on the pair below for why neither figure is corrected in place.
-#
-# The threshold is the larger of a fixed floor and a share of the longer
-# duration, so both ends of a run get an honest tolerance:
-#   - On a short run, the proportional share alone would flag any pair of
-#     clocks that do not agree to the second, which is tighter than two
-#     independently-read clocks (the assistant's notion of "now" and the
-#     server's) should ever be expected to agree even when both are honest.
-#     The floor absorbs that.
-#   - On a long run, a fixed floor alone would flag routine minute-scale
-#     variance (tool round trips, a slow domain sweep) on every run long
-#     enough to accumulate it. The proportional share scales with the run
-#     instead.
-# Chosen so the bug that motivated this fix, started == finished on a run
-# that took minutes, is always caught: the gap between a zero-second
-# assistant-reported duration and any real server-measured duration IS the
-# server duration, which clears the 60-second floor on any audit worth
-# auditing.
-_DURATION_DIVERGENCE_FLOOR_SECONDS = 60.0
-_DURATION_DIVERGENCE_PROPORTION = 0.15
-
-
-def _duration_text(meta: RunMeta) -> str:
-    """The "Duration" meta row's value: the assistant-reported span, the
-    server-measured span, or both with a warning when they disagree by more
-    than expected.
-
-    Never overwrites the assistant's figure with the server's, or vice
-    versa (see issue #102): a resumed run legitimately spans a wall-clock
-    gap that is not audit work, so the server's elapsed time is not
-    automatically the truer number either. The only failure mode this
-    guards against is a duration presented as fact when it was never
-    checked against anything; once both are shown, or the disagreement is
-    named, the reader can judge which to trust.
-    """
-    assistant_start = _parse_iso(meta.started)
-    assistant_end = _parse_iso(meta.finished)
-    server_start = _parse_iso(meta.server_started)
-    server_end = _parse_iso(meta.server_finished)
-
-    assistant_duration = (
-        (assistant_end - assistant_start).total_seconds()
-        if assistant_start is not None and assistant_end is not None
-        else None
-    )
-    server_duration = (
-        (server_end - server_start).total_seconds()
-        if server_start is not None and server_end is not None
-        else None
-    )
-
-    if assistant_duration is None and server_duration is None:
-        return "not available"
-    if server_duration is None:
-        # This run (or the resume that continued it) predates server-side
-        # duration measurement, so there is nothing to check the
-        # assistant's figure against. Unmeasured, not confirmed, and the
-        # row has to say so rather than rendering the lone figure as if it
-        # had been.
-        assert assistant_duration is not None  # the both-None case returned above
-        return (
-            f"{_format_duration(assistant_duration)} as reported by the assistant; not "
-            "measured by the server, so this could not be checked"
-        )
-    if assistant_duration is None:
-        return f"{_format_duration(server_duration)} (server-measured; run still in progress or unreported)"
-
-    threshold = max(
-        _DURATION_DIVERGENCE_FLOOR_SECONDS,
-        _DURATION_DIVERGENCE_PROPORTION * max(assistant_duration, server_duration),
-    )
-    if abs(assistant_duration - server_duration) > threshold:
-        return (
-            f"{_format_duration(assistant_duration)} as reported by the assistant, but the "
-            f"server measured {_format_duration(server_duration)}. These disagree by more "
-            "than expected: treat the reported duration with caution."
-        )
-    return f"{_format_duration(assistant_duration)} (server-measured: {_format_duration(server_duration)})"
-
-
 def _render_meta_block(run_state: RunState) -> str:
     meta = run_state.meta
     rows = [
@@ -290,7 +176,7 @@ def _render_meta_block(run_state: RunState) -> str:
         # never measured (issue #102): the server has no clock of its own
         # until this row, which checks them against server_started/
         # server_finished rather than silently trusting either.
-        ("Duration", _duration_text(meta)),
+        ("Duration", duration_text(meta)),
     ]
     rows_html = "".join(
         f'<div class="meta-label">{_esc(label)}</div><div class="meta-value">{_esc(value)}</div>'
@@ -1013,7 +899,12 @@ def _feedback_section(run_state: RunState, feedback_issue_url: str | None) -> st
             "below.</p>"
         )
 
-    sections = build_feedback_sections(run_state.meta, run_state.domain_results)
+    sections = build_feedback_sections(
+        run_state.meta,
+        run_state.domain_results,
+        rules_fetched_domain_ids=run_state.rules_fetched_domain_ids,
+        rules_fetch_unknown_domain_ids=run_state.rules_fetch_unknown_domain_ids,
+    )
     feedback_data = {
         "email": FEEDBACK_EMAIL,
         "subject": feedback_subject(run_state.meta),
@@ -1023,6 +914,9 @@ def _feedback_section(run_state: RunState, feedback_issue_url: str | None) -> st
         "self_assessment": sections["self_assessment"],
         "environment": sections["environment"],
         "consulted_sources": sections["consulted_sources"],
+        "verdict_distribution": sections["verdict_distribution"],
+        "duration": sections["duration"],
+        "rules_fetched": sections["rules_fetched"],
     }
 
     # Same wording as the configuration page's consent section, so a user
@@ -1054,6 +948,25 @@ def _feedback_section(run_state: RunState, feedback_issue_url: str | None) -> st
             "source consulted outside the rules pack). Off by default: URLs fetched while "
             "auditing a private repository can hint at what that repository is about.",
             consent.consulted_sources,
+        )
+        + _consent_row(
+            "consent-verdict-distribution",
+            "Rule verdict distribution (counts of pass, finding, not-applicable and "
+            "could-not-evaluate, per domain and in total; not the finding text)",
+            consent.verdict_distribution,
+        )
+        + _consent_row(
+            "consent-duration",
+            "Run duration (the assistant-reported span, the server-measured span, and "
+            "whether they agree). Token counts are not included, since the server never "
+            "sees them: paste them into the feedback text above if you want to share them.",
+            consent.duration,
+        )
+        + _consent_row(
+            "consent-rules-fetched",
+            "Rules fetched (per domain, whether this run's rule text was fetched via "
+            "get_domain. Shows only that it was fetched, never that it was read or applied.)",
+            consent.rules_fetched,
         )
         + '<label class="consent-row locked"><input type="checkbox" checked disabled> '
         "Run metadata (always included when sending feedback)</label>"

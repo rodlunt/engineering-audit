@@ -335,11 +335,14 @@ report's location and headline numbers are the actual deliverable.
 If the user supplied feedback text on the configuration page (`config.feedback_text`), call
 `submit_feedback`. It sends that text, plus a run-metadata section and whichever telemetry
 sections the user consented to (coverage, findings rollup, self-assessment, the three host
-environment facts from step 1, consulted sources by rule id/URL/why; never finding text), to the
-tool author's repository via
+environment facts from step 1, consulted sources by rule id/URL/why, rule verdict distribution by
+domain and in total, run duration and its divergence verdict, and which domains had their rule
+text fetched via `get_domain`; never finding text), to the tool author's repository via
 `gh`. Every section defaults off until the user ticks it; the consulted-sources one carries its
 own reason on the configuration page too, since URLs fetched while auditing a private
-repository can hint at what that repository is about. If it returns `mode: "mailto"` (gh was
+repository can hint at what that repository is about, and the rules-fetched one is careful to say
+it shows only that the rule text was fetched, never that it was read or applied. If it returns
+`mode: "mailto"` (gh was
 unavailable or filing failed), tell the user their feedback was not lost: offer to open the
 `mailto_url`, and if that fails or is unavailable, offer the `body` text for them to paste into an
 email themselves. The rendered report also carries this same mailto fallback in its Feedback
