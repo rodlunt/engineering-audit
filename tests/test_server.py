@@ -1808,6 +1808,9 @@ def test_file_issues_confirm_files_one_issue_per_finding(
     assert result["filed"] == {
         "D01-R02#1": "https://github.com/rodlunt/widgets-app/issues/1"
     }
+    # d01 was fetched (_record_d01_with_finding calls _fetch_domain first)
+    # and carries no self_assessment, so the domain note (issue #130) names
+    # "no self-assessed confidence reported" and "fetched ... this run".
     assert calls == [
         {
             "repo": "rodlunt/widgets-app",
@@ -1815,12 +1818,107 @@ def test_file_issues_confirm_files_one_issue_per_finding(
             "body": (
                 "bed-14 has two occupants and no shared-bed flag.\n\n"
                 "Found by an engineering-practice audit (rule D01-R02, severity high, "
-                "at ledger/beds.py:42). Reference: invented for test fixtures only, "
-                "no external source"
+                "at ledger/beds.py:42). This finding's domain: no self-assessed "
+                "confidence reported; its rule text was fetched from the server this "
+                "run. Reference: invented for test fixtures only, no external source"
             ),
             "labels": ["engineering-audit"],
         }
     ]
+
+
+def _extract_issues_data(rendered_html: str) -> dict:
+    """Pull the report's ``<script type="application/json" id="issues-data">``
+    payload out of a rendered report, mirroring what the report's own JS
+    does with JSON.parse at runtime (see test_report.py's
+    _extract_json_script, duplicated here rather than imported since the
+    two test modules otherwise share no fixtures)."""
+    match = re.search(
+        r'<script type="application/json" id="issues-data">(.*?)</script>',
+        rendered_html,
+        re.DOTALL,
+    )
+    assert match is not None, "no issues-data script block found in rendered report"
+    return json.loads(match.group(1))
+
+
+def test_file_issues_and_report_issues_section_produce_the_same_body(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Issue #134's shape again: a correction (markdown stripping, issue
+    # #128; the domain-confidence note, issue #130) applied to report.py's
+    # issues section and not to server.py's own file_issues would leave the
+    # gh-CLI-filed issue, a permanent external record, disagreeing with
+    # what the report itself shows for the identical finding. This exercises
+    # both real code paths (not a hand-copied re-implementation of either)
+    # and asserts they produce byte-identical bodies.
+    _fake, calls = _fake_create_issue()
+    monkeypatch.setattr(server_module, "create_issue", _fake)
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    _configured_github_run(mcp, tmp_path, monkeypatch)
+    _fetch_domain(mcp, "d01")
+    verdicts = _all_pass_verdicts(_domain(mcp, "d01"))
+    verdicts[1] = {"rule_id": "D01-R02", "verdict": "finding"}
+    _call(
+        mcp,
+        "record_domain_result",
+        {
+            "result": {
+                "domain_id": "d01",
+                "status": "completed",
+                "rule_verdicts": verdicts,
+                "findings": [
+                    {
+                        "rule_id": "D01-R02",
+                        "severity": "high",
+                        "title": "Two gnomes share bed-14 without the shared-bed flag",
+                        "location": "ledger/beds.py:42",
+                        "body_md": "bed-14 holds two gnomes.",
+                        "issue_title": "Set shared-bed flag for bed-14",
+                        # Deliberately carries markdown (issue #128) so this
+                        # test also proves both paths strip it the same way,
+                        # not just that both attach the same domain note.
+                        "issue_body": (
+                            "**The issue**: bed-14 has two occupants and no "
+                            "shared-bed flag."
+                        ),
+                    }
+                ],
+                # A self-assessment (issue #130) so the domain note both
+                # paths attach has real, non-default content to compare.
+                "self_assessment": {"confidence": "low", "limits": ""},
+            },
+            "replace": False,
+        },
+    )
+    _record_d02_all_pass(mcp)
+
+    # Path 1: server.py's file_issues, the gh CLI path.
+    _call(mcp, "file_issues", {"confirm": True, "repo": "rodlunt/widgets-app"})
+    assert len(calls) == 1
+    filed_body = calls[0]["body"]
+
+    # Path 2: report.py's issues section, read back out of the rendered
+    # report the same run then produces.
+    report_result = _call(mcp, "render_report", {"finished": "2026-08-09T10:00:00Z"})
+    rendered = Path(report_result["report_path"]).read_text(encoding="utf-8")
+    issues_data = _extract_issues_data(rendered)
+    report_issue = next(
+        issue for issue in issues_data["issues"] if issue["rule_id"] == "D01-R02"
+    )
+
+    assert filed_body == report_issue["body"]
+    # Pin the actual shared text, not just that the two agree with each
+    # other: both the markdown strip and the domain note must have fired.
+    assert filed_body == (
+        "The issue: bed-14 has two occupants and no shared-bed flag.\n\n"
+        "Found by an engineering-practice audit (rule D01-R02, severity high, "
+        "at ledger/beds.py:42). This finding's domain: self-assessed confidence "
+        "low; its rule text was fetched from the server this run. Reference: "
+        "invented for test fixtures only, no external source"
+    )
+    assert "*" not in filed_body
 
 
 def test_file_issues_refuses_a_finding_on_a_sourceless_rule(

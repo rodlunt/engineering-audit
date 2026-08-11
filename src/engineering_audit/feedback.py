@@ -60,26 +60,97 @@ _VERDICT_ORDER = (
 # them. Rendering untrusted assistant-authored finding text into HTML would
 # need a mature CommonMark renderer plus a mature HTML sanitiser, two
 # dependencies this project does not carry, for a gain that is purely
-# cosmetic (bold text). Stripping is the safe, boring choice: a run of one
-# or more literal asterisks, wherever it appears, is removed outright. This
-# is deliberately not a markdown parser: it does not pair delimiters, does
-# not special-case escaped asterisks, and never turns the text either side
-# of a marker into markup. Both of this module's untrusted-text sources
-# (rules-pack citations, which wrap the whole footer and any nested title in
-# markdown emphasis by pack-authoring convention, and assistant-authored
-# finding text, which defaults to **bold** markdown that this report never
-# renders) are passed through it before a reader sees them.
-_MARKDOWN_EMPHASIS_RE = re.compile(r"\*+")
+# cosmetic (bold text). Stripping is the safe, boring choice, but the first
+# cut of it (blanket-removing every literal asterisk) was too blunt: this
+# tool's whole output is claims about code, and code is full of legitimate,
+# unpaired asterisks. A blanket strip turned "def handler(*args, **kwargs):"
+# into "def handler(args, kwargs):", "SELECT * FROM users" into
+# "SELECT  FROM users", and "rm -rf build/*" into "rm -rf build/", the last
+# of which silently rewrites a shell command into a different shell command
+# on its way into a filed GitHub issue. This is the boundary-guard strip
+# hardened against that: it still adds no markdown library and still never
+# turns anything into markup, but it now only removes an asterisk that is
+# genuinely part of a matched emphasis pair, and never touches a code span.
+_CODE_SPAN_RE = re.compile(r"(`+)(.*?)\1", re.DOTALL)
+_ASTERISK_RUN_RE = re.compile(r"\*+")
 
 
 def strip_markdown_emphasis(text: str) -> str:
-    """Remove every run of literal asterisks from text (issue #128).
+    """Strip markdown emphasis, leaving code and unpaired asterisks alone
+    (issue #128).
 
-    See the module-level comment above _MARKDOWN_EMPHASIS_RE for why this
-    is a strip, not a render: the safest markdown parser is the one that is
-    never run.
+    Two safeguards, both required, neither sufficient alone:
+
+    1. **Code spans are protected outright.** Anything between two matching
+       runs of backticks (an inline `` `code span` `` or a fenced code
+       block, which is the same shape with a longer backtick run) is never
+       inspected by step 2 below. Without this, two unrelated code spans
+       that each hold one multiplication asterisk, e.g.
+       "`a * b` and `c * d`", would still get incorrectly paired with each
+       other (both are length-1 runs), stripping an asterisk out of code
+       that was never markdown.
+    2. **Only a matched pair of same-length delimiter runs is stripped,
+       never a lone run.** A naive per-character regex (``\\*(.+?)\\*``)
+       matches the first '*' of a '**' run as the closing half of an
+       earlier, unrelated single '*', so
+       "def handler(*args, **kwargs):" corrupts to
+       "def handler(args, *kwargs):": a run of length 1 (before "args")
+       gets paired against the first character of the run of length 2
+       (before "kwargs"), rather than the two runs being recognised as
+       different delimiters. Pairing by matching run *length* instead (a
+       single '*' can only close another single '*'; a '**' can only close
+       another '**') leaves that line untouched entirely, along with a
+       bare "SELECT * FROM users", "glob pattern **/*.py" and
+       "rm -rf build/*": none of those contain two runs of the same
+       length, so nothing in them is a genuine pair.
+
+    This is still deliberately not a markdown parser: it does not resolve
+    CommonMark's left/right-flanking rules, and a genuinely intended,
+    unpaired double asterisk in prose is still lost, same as before. The
+    safest parser is the one that is never run; this makes the boundary
+    strip more conservative, not a step towards becoming a renderer.
     """
-    return _MARKDOWN_EMPHASIS_RE.sub("", text)
+    protected_spans = [match.span() for match in _CODE_SPAN_RE.finditer(text)]
+
+    def _is_protected(position: int) -> bool:
+        return any(start <= position < end for start, end in protected_spans)
+
+    runs = [
+        match
+        for match in _ASTERISK_RUN_RE.finditer(text)
+        if not _is_protected(match.start())
+    ]
+    if not runs:
+        return text
+
+    # Nearest-neighbour pairing per run length, left to right: the first
+    # unmatched run of a given length is a candidate opener; the next run
+    # of that same length closes it. Two runs of different lengths never
+    # pair with each other, which is the property the docstring above
+    # depends on.
+    pending: dict[
+        int, int
+    ] = {}  # run length -> index into `runs` of its open candidate
+    drop: set[int] = set()  # indices into `runs` whose asterisks are removed
+    for index, run in enumerate(runs):
+        length = len(run.group())
+        opener_index = pending.pop(length, None)
+        if opener_index is None:
+            pending[length] = index
+        else:
+            drop.add(opener_index)
+            drop.add(index)
+    if not drop:
+        return text
+
+    pieces = []
+    cursor = 0
+    for index in sorted(drop):
+        run = runs[index]
+        pieces.append(text[cursor : run.start()])
+        cursor = run.end()
+    pieces.append(text[cursor:])
+    return "".join(pieces)
 
 
 def feedback_subject(meta: RunMeta) -> str:
