@@ -20,6 +20,7 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 import pytest
+from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
 from mcp.server._otel import OpenTelemetryMiddleware
@@ -32,9 +33,11 @@ from engineering_audit.run_state_io import PROGRESS_FILENAME, load_run_progress_
 from engineering_audit.schema import RunMeta, RunState
 from engineering_audit.server import (
     AppState,
+    TelemetryStripError,
     _git_commit,
     _parse_direct_url_commit,
     _resolve_rules_dir,
+    _strip_ambient_otel_middleware,
     build_server,
 )
 
@@ -198,6 +201,41 @@ def test_build_server_strips_opentelemetry_middleware_but_tools_still_work() -> 
     assert [d["id"] for d in result["domains"]] == ["d01", "d02"]
 
 
+def test_strip_otel_middleware_raises_if_nothing_matched_to_strip() -> None:
+    # Simulates the SDK no longer installing anything the private isinstance
+    # check recognises: build_server must treat "nothing to remove" as a
+    # loud failure, not as evidence the server is already clean (issue #107).
+    mcp = MCPServer("otel-strip-nothing-to-find")
+    mcp.middleware[:] = [m for m in mcp.middleware if not isinstance(m, OpenTelemetryMiddleware)]
+    assert not any(isinstance(m, OpenTelemetryMiddleware) for m in mcp.middleware)
+
+    with pytest.raises(TelemetryStripError, match="no OpenTelemetryMiddleware"):
+        _strip_ambient_otel_middleware(mcp)
+
+
+def test_strip_otel_middleware_raises_if_a_lookalike_survives_the_isinstance_filter() -> None:
+    # Simulates a future SDK renaming or relocating OpenTelemetryMiddleware
+    # while mcp.server._otel still exists: the isinstance-based strip would
+    # silently match nothing, so this exercises the name-based backstop
+    # instead (issue #107). The real OpenTelemetryMiddleware the SDK installs
+    # by default is left in place so the "nothing found to strip" check
+    # passes cleanly, isolating this test to the survivor check.
+    class OtelRenamedMiddleware:
+        """Stands in for a telemetry middleware class the SDK renamed to
+        something isinstance() no longer recognises against the pinned
+        private import, but whose name still says what it is."""
+
+    mcp = MCPServer("otel-strip-lookalike-survives")
+    mcp.middleware.append(OtelRenamedMiddleware())
+
+    with pytest.raises(TelemetryStripError, match="OtelRenamedMiddleware"):
+        _strip_ambient_otel_middleware(mcp)
+
+    # The strip itself still ran: the real middleware it does recognise is
+    # gone, only the lookalike survived to trip the postcondition.
+    assert not any(isinstance(m, OpenTelemetryMiddleware) for m in mcp.middleware)
+
+
 def test_tool_surface_is_the_ten_tools_with_their_documented_parameters() -> None:
     # build_server composes seven per-concern registration functions; the
     # protocol surface they produce between them is what clients and AUDIT.md
@@ -299,6 +337,84 @@ def test_resolve_rules_dir_raises_on_trailing_flag_with_no_value(
     assert excinfo.value.code == 2
 
 
+def test_resolve_rules_dir_tolerates_no_update_check_flag(tmp_path: Path) -> None:
+    # _resolve_rules_dir and _update_check_disabled_by_flag share one parser
+    # (_server_arg_parser) precisely so neither chokes on a flag only the
+    # other defines; this is the regression test for that.
+    resolved = _resolve_rules_dir(["--rules-dir", str(tmp_path), "--no-update-check"])
+    assert resolved == tmp_path
+
+
+# ---------------------------------------------------------------------------
+# --no-update-check / ENGINEERING_AUDIT_NO_UPDATE_CHECK
+# ---------------------------------------------------------------------------
+
+
+def test_update_check_disabled_by_flag_true_when_passed() -> None:
+    assert server_module._update_check_disabled_by_flag(["--no-update-check"]) is True
+
+
+def test_update_check_disabled_by_flag_false_by_default() -> None:
+    assert server_module._update_check_disabled_by_flag([]) is False
+
+
+def test_update_check_disabled_by_flag_alongside_rules_dir(tmp_path: Path) -> None:
+    disabled = server_module._update_check_disabled_by_flag(
+        ["--rules-dir", str(tmp_path), "--no-update-check"]
+    )
+    assert disabled is True
+
+
+def test_update_check_enabled_true_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ENGINEERING_AUDIT_NO_UPDATE_CHECK", raising=False)
+    assert server_module._update_check_enabled() is True
+
+
+def test_update_check_enabled_false_when_env_var_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ENGINEERING_AUDIT_NO_UPDATE_CHECK", "1")
+    assert server_module._update_check_enabled() is False
+
+
+def test_update_check_enabled_true_when_env_var_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    # An empty string counts as unset, not as an explicit "off": a
+    # config-management tool that leaves the variable declared but blank
+    # must not silently disable the check.
+    monkeypatch.setenv("ENGINEERING_AUDIT_NO_UPDATE_CHECK", "")
+    assert server_module._update_check_enabled() is True
+
+
+def test_main_folds_no_update_check_flag_into_the_env_var(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # main() is the one place that reconciles --no-update-check with
+    # ENGINEERING_AUDIT_NO_UPDATE_CHECK; this proves the flag actually
+    # reaches the environment variable begin_run reads at call time,
+    # without needing to run the real (blocking) mcp.run().
+    monkeypatch.delenv("ENGINEERING_AUDIT_NO_UPDATE_CHECK", raising=False)
+    monkeypatch.setattr(
+        server_module.sys,
+        "argv",
+        ["engineering-audit-mcp", "--rules-dir", str(tmp_path), "--no-update-check"],
+    )
+    seen_env_value = {}
+
+    class _FakeMCP:
+        def run(self) -> None:
+            pass
+
+    def _fake_build_server(rules_dir: Path):
+        seen_env_value["value"] = server_module.os.environ.get(
+            "ENGINEERING_AUDIT_NO_UPDATE_CHECK"
+        )
+        return _FakeMCP(), None
+
+    monkeypatch.setattr(server_module, "build_server", _fake_build_server)
+
+    server_module.main()
+
+    assert seen_env_value["value"] == "1"
+
+
 # ---------------------------------------------------------------------------
 # begin_run
 # ---------------------------------------------------------------------------
@@ -313,6 +429,66 @@ def test_begin_run_creates_the_output_directory_and_returns_meta(tmp_path: Path)
     assert result["meta"]["rules_pack_name"] == FIXTURE_PACK.name
     assert result["meta"]["finished"] is None
     assert out_dir.is_dir()
+
+
+def test_begin_run_update_checks_run_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Real check_for_update/check_pack_for_update are replaced here purely to
+    # avoid a real network call in the test suite; what is asserted is the
+    # enabled= value begin_run passes them, which must be True unless
+    # something has explicitly turned the check off.
+    monkeypatch.delenv("ENGINEERING_AUDIT_NO_UPDATE_CHECK", raising=False)
+    seen: dict[str, bool] = {}
+
+    def _fake_check_for_update(tool_commit, tool_version, enabled=True):
+        seen["tool"] = enabled
+        return "current (v1.0.0)"
+
+    def _fake_check_pack_for_update(pack_dir, pack_commit, pack_version, enabled=True):
+        seen["pack"] = enabled
+        return "current (v1.0.0)"
+
+    monkeypatch.setattr(server_module, "check_for_update", _fake_check_for_update)
+    monkeypatch.setattr(server_module, "check_pack_for_update", _fake_check_pack_for_update)
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    _begin_run(mcp, tmp_path / "audit-output")
+
+    assert seen == {"tool": True, "pack": True}
+
+
+def test_begin_run_update_checks_disabled_via_env_var(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # No mocking of check_for_update/check_pack_for_update here: enabled=False
+    # short-circuits before either function touches git or the network, so
+    # this exercises the real functions and asserts the real status strings.
+    monkeypatch.setenv("ENGINEERING_AUDIT_NO_UPDATE_CHECK", "1")
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    result = _begin_run(mcp, tmp_path / "audit-output")
+
+    assert result["meta"]["update_check"] == "not-checked: update check disabled by configuration"
+    assert (
+        result["meta"]["pack_update_check"]
+        == "not-checked: rules pack update check disabled by configuration"
+    )
+
+
+def test_begin_run_update_check_disabled_status_is_distinct_from_current(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ENGINEERING_AUDIT_NO_UPDATE_CHECK", "1")
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    result = _begin_run(mcp, tmp_path / "audit-output")
+
+    for field in ("update_check", "pack_update_check"):
+        value = result["meta"][field]
+        assert not value.startswith("current")
+        assert not value.startswith("could-not-check")
+        assert value.startswith("not-checked")
 
 
 def test_begin_run_twice_without_finishing_is_rejected(tmp_path: Path) -> None:

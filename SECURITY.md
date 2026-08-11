@@ -1,10 +1,13 @@
 # Security Policy
 
 engineering-audit is a solo-maintained, local-first tool: the MCP server runs on your own
-machine, and the only network calls it makes are the ones you explicitly opt into (GitHub issue
-filing, feedback submission, and the update check against this repository's own tags). This
-policy is scaled to that: a lightweight private reporting path, not a formal disclosure
-programme.
+machine. GitHub issue filing and feedback submission are network calls you explicitly opt into.
+The update check against this repository's own tags is not: it runs automatically on every run,
+disclosing only your IP address and the fact that someone queried this repository's tags at that
+moment, no repository content, findings or paths. It stays on by default, since it has already
+caught a tester running a stale build, but can be turned off with `--no-update-check` or the
+`ENGINEERING_AUDIT_NO_UPDATE_CHECK` environment variable. This policy is scaled to that: a
+lightweight private reporting path, not a formal disclosure programme.
 
 ## Supported versions
 
