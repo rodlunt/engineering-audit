@@ -54,6 +54,23 @@ pass the `check` status, and there is no human review requirement configured. Th
 CI green is necessary but not sufficient; the maintainer still reads every diff before
 merging.
 
+## Releasing
+
+The version lives in `pyproject.toml` and is derived everywhere else, not hand-edited in
+roughly ten places. To cut a release:
+
+```sh
+uv run python scripts/bump-version.py X.Y.Z
+```
+
+This writes `pyproject.toml`'s version, rewrites every other version pin to match (see
+`scripts/version_pins.py` for the exact list: install command refs, integration docs, the
+Gemini extension manifest, and a few known prose mentions), and runs
+`scripts/check-version-pins.py` itself as a self-check before reporting success. Review the
+diff, commit as `chore(release): X.Y.Z`, and push it through the normal pull request flow.
+Once merged, tag `vX.Y.Z` on `main`. `tag-version-guard.yml` fails the tag push if the
+tagged tree disagrees with `pyproject.toml`'s version, and generates the release SBOM.
+
 ## Rules pack content
 
 Rule content does not live in this repository. The tooling here reads any rules
