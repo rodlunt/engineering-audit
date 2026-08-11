@@ -30,6 +30,7 @@ __all__ = [
     "RUN_STATE_FILENAME",
     "resolve_deliverables_dir",
     "validate_deliverables_dir",
+    "existing_deliverables_warning",
     "deliverables_dir_for",
 ]
 
@@ -38,6 +39,16 @@ __all__ = [
 # calls in server.py cannot drift apart on what "the deliverables" means.
 REPORT_FILENAME = "report.html"
 RUN_STATE_FILENAME = "run-state.json"
+
+
+def _existing_deliverables(path: Path) -> list[str]:
+    """The deliverable filenames already sitting directly inside path, in a
+    stable order. Shared by validate_deliverables_dir (which refuses on
+    them) and existing_deliverables_warning (which only warns), so the two
+    can never disagree about what counts as "a report already there"."""
+    return [
+        name for name in (REPORT_FILENAME, RUN_STATE_FILENAME) if (path / name).exists()
+    ]
 
 
 def resolve_deliverables_dir(raw: str) -> Path:
@@ -60,17 +71,18 @@ def validate_deliverables_dir(path: Path) -> str | None:
     render_report after the whole audit has been paid for. Never overwrites
     an existing report silently: a directory that already holds either
     output file is rejected outright rather than clobbered.
+
+    For the custom path only (the config page's own POST handler is the one
+    caller): a path typed in deliberately for one run is worth refusing
+    outright on collision. The default location gets the gentler
+    existing_deliverables_warning below instead, for the reason given there.
     """
     if path.exists():
         if not path.is_dir():
             return f"'{path}' already exists and is not a directory."
         if not os.access(path, os.W_OK):
             return f"'{path}' exists but is not writable."
-        existing = [
-            name
-            for name in (REPORT_FILENAME, RUN_STATE_FILENAME)
-            if (path / name).exists()
-        ]
+        existing = _existing_deliverables(path)
         if existing:
             return (
                 f"'{path}' already contains {' and '.join(existing)} from a previous run. "
@@ -85,6 +97,33 @@ def validate_deliverables_dir(path: Path) -> str | None:
     if not os.access(parent, os.W_OK):
         return f"The parent directory '{parent}' is not writable, so '{path}' cannot be created."
     return None
+
+
+def existing_deliverables_warning(path: Path) -> str | None:
+    """A plain-language warning if ``path`` already holds a previous run's
+    report.html or run-state.json, or None if it does not, or ``path`` does
+    not exist yet.
+
+    Issue #133: validate_deliverables_dir's refusal only ever ran on the
+    custom-path branch, so the default in-repo location overwrote an
+    existing report unconditionally. Refusing outright there would break the
+    ordinary re-audit workflow, the common case: ``<repo>/audit-output/`` is
+    where every run of that repository lands, so a second run colliding with
+    it is normal, not a mistake to reject. This warns instead, meant for the
+    configuration page to show next to the default choice, so the user
+    learns a report will be replaced before the audit is paid for, not after
+    render_report has already replaced it. Consistent with how the page's
+    gitignore warning behaves: informative, never a refusal.
+    """
+    if not path.is_dir():
+        return None
+    existing = _existing_deliverables(path)
+    if not existing:
+        return None
+    return (
+        f"'{path}' already contains {' and '.join(existing)} from a previous run. "
+        "Submitting this form will replace it."
+    )
 
 
 def deliverables_dir_for(output_dir: Path, deliverables_dir: str | None) -> Path:

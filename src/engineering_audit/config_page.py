@@ -24,6 +24,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 from pydantic import ValidationError
 
 from engineering_audit.output_location import (
+    existing_deliverables_warning,
     resolve_deliverables_dir,
     validate_deliverables_dir,
 )
@@ -618,6 +619,23 @@ class ConfigServer:
             if self._gitignore_warning
             else ""
         )
+        # Computed here, live, rather than precomputed by the caller like
+        # gitignore_warning: unlike the gitignore check this is a plain
+        # filesystem stat with no git subprocess involved, so there is no
+        # benefit to doing it anywhere but where the other output-location
+        # filesystem checks in this class already run (see
+        # _serve_output_location_check and _parse_submission below). None
+        # when there is no run behind this page at all (see self._output_dir).
+        default_location_warning = (
+            existing_deliverables_warning(self._output_dir)
+            if self._output_dir is not None
+            else None
+        )
+        existing_deliverables_warning_html = (
+            f'<p class="output-location-warning">{html.escape(default_location_warning)}</p>'
+            if default_location_warning
+            else ""
+        )
 
         template = string.Template(self._template_text)
         return template.substitute(
@@ -652,6 +670,7 @@ class ConfigServer:
             output_location_error=output_location_error_html,
             output_dir_display=output_dir_display,
             gitignore_warning=gitignore_warning_html,
+            existing_deliverables_warning=existing_deliverables_warning_html,
             output_location_default_checked="checked"
             if output_location_mode == "default"
             else "",
