@@ -145,6 +145,28 @@ Every run also checks this repository's tags for a newer release, on by default 
 network cost or the call itself is unwanted, pass `--no-update-check` to `engineering-audit-mcp`
 or set the `ENGINEERING_AUDIT_NO_UPDATE_CHECK` environment variable.
 
+#### What keeps the staleness checks working
+
+Two checks tell you whether what you are running is current: one for the tool, one for the rules
+pack. Neither ever guesses. A check that could not run reports `could-not-check`, which is a
+distinct state from `current`, so a stale build is never reported as fine. What that honesty does
+not do is tell you when a check has gone blind, and both go blind on install shapes that look
+perfectly ordinary.
+
+| Check | Attached when | Blind when | What you lose |
+|---|---|---|---|
+| Tool build | installed from a git URL, which is what every command in Step 4 does | installed from a downloaded archive or a plain wheel, or run from a local or editable checkout | nothing warns you that a pin left on an old tag, or a stale `uvx` cache, is serving an old build |
+| Rules pack | the rules directory is a git clone with an `origin` remote, which is what Step 3 produces | the rules arrived as a downloaded zip, were vendored into another repository, have no remote, or have uncommitted changes | nothing warns you that the run is judging your repository against superseded rules |
+
+Following Step 3 and Step 4 as written keeps both attached: `git clone` for the rules, and
+`uvx --from git+...@<tag>` for the tool. Any other shape still runs and still audits correctly.
+It just cannot tell you it is out of date.
+
+The provenance rows in the report header carry the answer for the run in front of you. Both
+reading `could-not-check` at once is the combination to watch for, because that is a build of
+unknown age judging your repository against rules of unknown age, with nothing able to detect
+either.
+
 ### Step 5: run your first audit
 
 Ask your assistant to audit the repository you have open ("audit this repo against the

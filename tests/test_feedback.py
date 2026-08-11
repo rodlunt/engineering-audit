@@ -182,8 +182,12 @@ def test_consented_sections_are_included_with_correct_totals() -> None:
     )
 
     assert "Coverage" in body
-    assert "Files inspected: 17" in body
-    assert "Files skipped: 1" in body
+    # Issue #134: no summed total across domains, per-domain figures only,
+    # the same shape as report.py's own per-domain coverage list (issue #87).
+    assert "Files inspected: 17" not in body
+    assert "Files skipped: 1" not in body
+    assert "- d01: 12 file(s) inspected, 1 skipped" in body
+    assert "- d02: 5 file(s) inspected, 0 skipped" in body
 
     assert "Findings rollup" in body
     assert "Total: 1" in body
@@ -291,7 +295,7 @@ def test_build_feedback_sections_returns_the_nine_fixed_sections_regardless_of_c
     }
     assert "Run metadata" in sections["run_metadata"]
     assert "widgets-app" in sections["run_metadata"]
-    assert "Files inspected: 17" in sections["coverage"]
+    assert "- d01: 12 file(s) inspected, 1 skipped" in sections["coverage"]
     assert "Total: 1" in sections["rollup"]
     assert "d01: confidence high." in sections["self_assessment"]
     assert "D01-R01: https://example.invalid/standard" in sections["consulted_sources"]
@@ -334,6 +338,63 @@ def test_verdict_distribution_section_names_a_could_not_run_domain_rather_than_z
     section = build_feedback_sections(_meta(), domain_results)["verdict_distribution"]
     assert "- d03: could not run" in section
     assert "Total verdicts: 3" in section  # unaffected by the domain that never ran
+
+
+def test_coverage_section_lists_per_domain_counts_with_no_cross_domain_totals() -> None:
+    # Issue #134: feedback.py summed files_inspected/files_skipped across
+    # every domain and shipped that total, the same figure issue #87 removed
+    # from the report for having no honest reading (a 344-file repository
+    # rendered "5320 skipped" across 16 domains, since a file sixteen
+    # domains each declined to open was counted sixteen times). The sum is
+    # dropped here too; the per-domain list is what report.py's own
+    # _coverage_summary already renders correctly.
+    section = build_feedback_sections(_meta(), _domain_results())["coverage"]
+    assert "Files inspected:" not in section
+    assert "Files skipped:" not in section
+    assert "- d01: 12 file(s) inspected, 1 skipped" in section
+    assert "- d02: 5 file(s) inspected, 0 skipped" in section
+
+
+def test_coverage_section_names_a_could_not_run_domain_rather_than_zero_coverage() -> (
+    None
+):
+    domain_results = {
+        **_domain_results(),
+        "d03": DomainResult(
+            domain_id="d03", status="could-not-run", reason="no git repository found"
+        ),
+    }
+    section = build_feedback_sections(_meta(), domain_results)["coverage"]
+    assert "- d03: did not run" in section
+
+
+def test_coverage_section_reports_no_coverage_reported_when_domain_has_none() -> None:
+    domain_results = {
+        **_domain_results(),
+        "d03": DomainResult(
+            domain_id="d03",
+            status="completed",
+            rule_verdicts=[RuleVerdict(rule_id="D03-R01", verdict=Verdict.pass_)],
+        ),
+    }
+    section = build_feedback_sections(_meta(), domain_results)["coverage"]
+    assert "- d03: no coverage reported" in section
+
+
+def test_coverage_section_includes_the_note_when_one_is_recorded() -> None:
+    domain_results = {
+        "d01": DomainResult(
+            domain_id="d01",
+            status="completed",
+            coverage=Coverage(
+                files_inspected=12, files_skipped=1, note="one binary asset skipped"
+            ),
+        ),
+    }
+    section = build_feedback_sections(_meta(), domain_results)["coverage"]
+    assert (
+        "- d01: 12 file(s) inspected, 1 skipped (one binary asset skipped)" in section
+    )
 
 
 def test_duration_section_matches_the_reports_own_duration_wording() -> None:
