@@ -131,7 +131,9 @@ def _completed_d01(mcp) -> dict:
     }
 
 
-def _submit_config_page(url: str, domain_ids: list[str], issue_mode: str = "report") -> None:
+def _submit_config_page(
+    url: str, domain_ids: list[str], issue_mode: str = "report"
+) -> None:
     """Fill in and post the interactive configuration page, the way a browser
     would: fetch the page first to read its per-run CSRF token, then post."""
     with urllib.request.urlopen(url, timeout=5) as resp:
@@ -139,7 +141,11 @@ def _submit_config_page(url: str, domain_ids: list[str], issue_mode: str = "repo
     token_match = re.search(r'name="csrf_token" value="([^"]+)"', page)
     assert token_match is not None
     payload = urlencode(
-        {"domain": domain_ids, "issue_mode": issue_mode, "csrf_token": token_match.group(1)},
+        {
+            "domain": domain_ids,
+            "issue_mode": issue_mode,
+            "csrf_token": token_match.group(1),
+        },
         doseq=True,
     ).encode("utf-8")
     request = urllib.request.Request(url + "submit", data=payload, method="POST")
@@ -147,7 +153,9 @@ def _submit_config_page(url: str, domain_ids: list[str], issue_mode: str = "repo
         assert resp.status == 200
 
 
-def _preset_config_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, **overrides) -> Path:
+def _preset_config_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, **overrides
+) -> Path:
     payload = {"selected_domain_ids": ["d01", "d02"], "issue_mode": "report"}
     payload.update(overrides)
     config_path = tmp_path / "preset-config.json"
@@ -210,7 +218,9 @@ def test_build_server_strips_opentelemetry_middleware_but_tools_still_work() -> 
     # dispatch) intact.
     mcp, _state = build_server(FIXTURE_PACK)
     assert not any(isinstance(m, OpenTelemetryMiddleware) for m in mcp.middleware)
-    assert not any(type(m).__name__ == "OpenTelemetryMiddleware" for m in mcp.middleware)
+    assert not any(
+        type(m).__name__ == "OpenTelemetryMiddleware" for m in mcp.middleware
+    )
 
     result = _call(mcp, "list_domains", {})
     assert [d["id"] for d in result["domains"]] == ["d01", "d02"]
@@ -221,14 +231,18 @@ def test_strip_otel_middleware_raises_if_nothing_matched_to_strip() -> None:
     # check recognises: build_server must treat "nothing to remove" as a
     # loud failure, not as evidence the server is already clean (issue #107).
     mcp = MCPServer("otel-strip-nothing-to-find")
-    mcp.middleware[:] = [m for m in mcp.middleware if not isinstance(m, OpenTelemetryMiddleware)]
+    mcp.middleware[:] = [
+        m for m in mcp.middleware if not isinstance(m, OpenTelemetryMiddleware)
+    ]
     assert not any(isinstance(m, OpenTelemetryMiddleware) for m in mcp.middleware)
 
     with pytest.raises(TelemetryStripError, match="no OpenTelemetryMiddleware"):
         _strip_ambient_otel_middleware(mcp)
 
 
-def test_strip_otel_middleware_raises_if_a_lookalike_survives_the_isinstance_filter() -> None:
+def test_strip_otel_middleware_raises_if_a_lookalike_survives_the_isinstance_filter() -> (
+    None
+):
     # Simulates a future SDK renaming or relocating OpenTelemetryMiddleware
     # while mcp.server._otel still exists: the isinstance-based strip would
     # silently match nothing, so this exercises the name-based backstop
@@ -322,7 +336,9 @@ def test_resolve_rules_dir_from_argv_equals_form(tmp_path: Path) -> None:
     assert resolved == tmp_path
 
 
-def test_resolve_rules_dir_from_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_resolve_rules_dir_from_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv("ENGINEERING_AUDIT_RULES_DIR", str(tmp_path))
     resolved = _resolve_rules_dir([])
     assert resolved == tmp_path
@@ -385,12 +401,16 @@ def test_update_check_enabled_true_by_default(monkeypatch: pytest.MonkeyPatch) -
     assert server_module._update_check_enabled() is True
 
 
-def test_update_check_enabled_false_when_env_var_set(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_update_check_enabled_false_when_env_var_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("ENGINEERING_AUDIT_NO_UPDATE_CHECK", "1")
     assert server_module._update_check_enabled() is False
 
 
-def test_update_check_enabled_true_when_env_var_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_update_check_enabled_true_when_env_var_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # An empty string counts as unset, not as an explicit "off": a
     # config-management tool that leaves the variable declared but blank
     # must not silently disable the check.
@@ -435,7 +455,9 @@ def test_main_folds_no_update_check_flag_into_the_env_var(
 # ---------------------------------------------------------------------------
 
 
-def test_begin_run_creates_the_output_directory_and_returns_meta(tmp_path: Path) -> None:
+def test_begin_run_creates_the_output_directory_and_returns_meta(
+    tmp_path: Path,
+) -> None:
     mcp, _state = build_server(FIXTURE_PACK)
     out_dir = tmp_path / "audit-output"
     result = _begin_run(mcp, out_dir)
@@ -465,7 +487,9 @@ def test_begin_run_update_checks_run_by_default(
         return "current (v1.0.0)"
 
     monkeypatch.setattr(server_module, "check_for_update", _fake_check_for_update)
-    monkeypatch.setattr(server_module, "check_pack_for_update", _fake_check_pack_for_update)
+    monkeypatch.setattr(
+        server_module, "check_pack_for_update", _fake_check_pack_for_update
+    )
 
     mcp, _state = build_server(FIXTURE_PACK)
     _begin_run(mcp, tmp_path / "audit-output")
@@ -484,7 +508,10 @@ def test_begin_run_update_checks_disabled_via_env_var(
     mcp, _state = build_server(FIXTURE_PACK)
     result = _begin_run(mcp, tmp_path / "audit-output")
 
-    assert result["meta"]["update_check"] == "not-checked: update check disabled by configuration"
+    assert (
+        result["meta"]["update_check"]
+        == "not-checked: update check disabled by configuration"
+    )
     assert (
         result["meta"]["pack_update_check"]
         == "not-checked: rules pack update check disabled by configuration"
@@ -517,14 +544,18 @@ def test_begin_run_twice_without_finishing_is_rejected(tmp_path: Path) -> None:
 def test_begin_run_replace_discards_the_in_progress_run(tmp_path: Path) -> None:
     mcp, _state = build_server(FIXTURE_PACK)
     _begin_run(mcp, tmp_path / "audit-output", repo_name="first-repo")
-    result = _begin_run(mcp, tmp_path / "audit-output-2", repo_name="second-repo", replace=True)
+    result = _begin_run(
+        mcp, tmp_path / "audit-output-2", repo_name="second-repo", replace=True
+    )
     assert result["meta"]["repo_name"] == "second-repo"
 
 
 def test_begin_run_defaults_tool_version_when_omitted(tmp_path: Path) -> None:
     mcp, _state = build_server(FIXTURE_PACK)
     result = _begin_run(mcp, tmp_path / "audit-output")
-    assert result["meta"]["tool_version"]  # non-empty, package version or dev placeholder
+    assert result["meta"][
+        "tool_version"
+    ]  # non-empty, package version or dev placeholder
 
 
 def test_begin_run_stamps_server_started_independently_of_the_assistant_supplied_started(
@@ -640,7 +671,9 @@ def test_output_dir_ignore_warning_is_silent_with_no_repo_dir(tmp_path: Path) ->
     assert _output_dir_ignore_warning(None, tmp_path / "audit-output") is None
 
 
-def test_output_dir_ignore_warning_is_silent_for_a_non_repo_directory(tmp_path: Path) -> None:
+def test_output_dir_ignore_warning_is_silent_for_a_non_repo_directory(
+    tmp_path: Path,
+) -> None:
     not_a_repo = tmp_path / "plain-dir"
     not_a_repo.mkdir()
     assert _output_dir_ignore_warning(not_a_repo, not_a_repo / "audit-output") is None
@@ -666,7 +699,9 @@ def test_parse_direct_url_commit_returns_none_for_a_local_dir_payload() -> None:
     # A plain local/editable install's direct_url.json has no vcs_info at
     # all: this is the ordinary "installed from a source checkout" case,
     # not a failure, and must still render as "unknown" rather than error.
-    payload = json.dumps({"url": "file:///home/dev/engineering-audit", "dir_info": {"editable": True}})
+    payload = json.dumps(
+        {"url": "file:///home/dev/engineering-audit", "dir_info": {"editable": True}}
+    )
     assert _parse_direct_url_commit(payload) is None
 
 
@@ -697,7 +732,9 @@ def test_start_config_preset_path_rejects_a_missing_file(
 ) -> None:
     mcp, _state = build_server(FIXTURE_PACK)
     _begin_run(mcp, tmp_path / "audit-output")
-    monkeypatch.setenv("ENGINEERING_AUDIT_CONFIG", str(tmp_path / "does-not-exist.json"))
+    monkeypatch.setenv(
+        "ENGINEERING_AUDIT_CONFIG", str(tmp_path / "does-not-exist.json")
+    )
 
     with pytest.raises(ToolError) as excinfo:
         _call(mcp, "start_config", {})
@@ -911,7 +948,9 @@ def test_start_config_interactive_path_survives_a_browserless_environment(
     assert result["opened_in_browser"] is False
 
 
-def test_get_config_interactive_path_blocks_then_returns_after_form_post(tmp_path: Path) -> None:
+def test_get_config_interactive_path_blocks_then_returns_after_form_post(
+    tmp_path: Path,
+) -> None:
     mcp, _state = build_server(FIXTURE_PACK)
     _begin_run(mcp, tmp_path / "audit-output")
     started = _call(mcp, "start_config", {})
@@ -927,7 +966,8 @@ def test_get_config_interactive_path_blocks_then_returns_after_form_post(tmp_pat
     token = token_match.group(1)
 
     payload = urlencode(
-        {"domain": ["d01", "d02"], "issue_mode": "report", "csrf_token": token}, doseq=True
+        {"domain": ["d01", "d02"], "issue_mode": "report", "csrf_token": token},
+        doseq=True,
     ).encode("utf-8")
     request = urllib.request.Request(url + "submit", data=payload, method="POST")
     with urllib.request.urlopen(request, timeout=5) as resp:
@@ -938,7 +978,9 @@ def test_get_config_interactive_path_blocks_then_returns_after_form_post(tmp_pat
     assert sorted(result["selected_domain_ids"]) == ["d01", "d02"]
 
 
-def test_get_config_interactive_timeout_surfaces_as_a_clear_tool_error(tmp_path: Path) -> None:
+def test_get_config_interactive_timeout_surfaces_as_a_clear_tool_error(
+    tmp_path: Path,
+) -> None:
     mcp, _state = build_server(FIXTURE_PACK)
     _begin_run(mcp, tmp_path / "audit-output")
     started = _call(mcp, "start_config", {})
@@ -1039,7 +1081,9 @@ def test_get_config_deadline_is_cumulative_across_polls_not_per_call(
     else:  # pragma: no cover - only reached if the deadline is never enforced
         pytest.fail("get_config never reported a timeout despite a 0.5 second deadline")
 
-    assert statuses, "get_config timed out without ever reporting the waiting state first"
+    assert statuses, (
+        "get_config timed out without ever reporting the waiting state first"
+    )
     assert set(statuses) == {"waiting"}
 
 
@@ -1095,7 +1139,9 @@ def test_get_config_preset_path_reports_the_configured_status(
 # ---------------------------------------------------------------------------
 
 
-def test_begin_run_accepts_the_three_documented_environment_keys(tmp_path: Path) -> None:
+def test_begin_run_accepts_the_three_documented_environment_keys(
+    tmp_path: Path,
+) -> None:
     environment = {
         "os": "Ubuntu 24.04",
         "host_cli": "codex",
@@ -1110,7 +1156,9 @@ def test_begin_run_accepts_a_subset_of_the_environment_keys(tmp_path: Path) -> N
     # Omitting a key the assistant could not determine is the honest answer,
     # and must not be harder than inventing one.
     mcp, _state = build_server(FIXTURE_PACK)
-    result = _begin_run(mcp, tmp_path / "audit-output", environment={"os": "macOS 15.2"})
+    result = _begin_run(
+        mcp, tmp_path / "audit-output", environment={"os": "macOS 15.2"}
+    )
     assert result["meta"]["environment"] == {"os": "macOS 15.2"}
 
 
@@ -1168,7 +1216,9 @@ def test_begin_run_without_an_environment_still_works(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _configured_run(mcp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **config_overrides) -> None:
+def _configured_run(
+    mcp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **config_overrides
+) -> None:
     _begin_run(mcp, tmp_path / "audit-output")
     _preset_config_env(monkeypatch, tmp_path, **config_overrides)
     _call(mcp, "start_config", {})
@@ -1181,7 +1231,11 @@ def test_record_domain_result_rejects_a_domain_not_selected(
     mcp, _state = build_server(FIXTURE_PACK)
     _configured_run(mcp, tmp_path, monkeypatch, selected_domain_ids=["d01"])
 
-    result = {"domain_id": "d02", "status": "completed", "rule_verdicts": _all_pass_verdicts(_domain(mcp, "d02"))}
+    result = {
+        "domain_id": "d02",
+        "status": "completed",
+        "rule_verdicts": _all_pass_verdicts(_domain(mcp, "d02")),
+    }
     with pytest.raises(ToolError) as excinfo:
         _call(mcp, "record_domain_result", {"result": result})
     assert "d02" in str(excinfo.value)
@@ -1195,13 +1249,19 @@ def test_record_domain_result_rejects_an_incomplete_completed_result(
     _configured_run(mcp, tmp_path, monkeypatch)
 
     incomplete_verdicts = _all_pass_verdicts(_domain(mcp, "d01"))[:-1]  # drop D01-R04
-    result = {"domain_id": "d01", "status": "completed", "rule_verdicts": incomplete_verdicts}
+    result = {
+        "domain_id": "d01",
+        "status": "completed",
+        "rule_verdicts": incomplete_verdicts,
+    }
     with pytest.raises(ToolError) as excinfo:
         _call(mcp, "record_domain_result", {"result": result})
     assert "D01-R04" in str(excinfo.value)
 
 
-def test_record_domain_result_replace_guard(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_record_domain_result_replace_guard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     mcp, _state = build_server(FIXTURE_PACK)
     _configured_run(mcp, tmp_path, monkeypatch)
 
@@ -1224,7 +1284,13 @@ def test_record_domain_result_accepts_could_not_run(
     result = _call(
         mcp,
         "record_domain_result",
-        {"result": {"domain_id": "d01", "status": "could-not-run", "reason": "no ledger file present"}},
+        {
+            "result": {
+                "domain_id": "d01",
+                "status": "could-not-run",
+                "reason": "no ledger file present",
+            }
+        },
     )
     assert result["status"] == "could-not-run"
     assert result["finding_count"] == 0
@@ -1428,7 +1494,9 @@ def test_render_report_stamps_server_finished_independently_of_the_assistant_sup
 
     monkeypatch.setattr(server_module, "_now_utc_iso", lambda: "2026-08-11T00:10:00Z")
     result = _call(mcp, "render_report", {"finished": "2020-01-01T00:00:00Z"})
-    restored = RunState.from_json(Path(result["run_state_path"]).read_text(encoding="utf-8"))
+    restored = RunState.from_json(
+        Path(result["run_state_path"]).read_text(encoding="utf-8")
+    )
 
     assert restored.meta.finished == "2020-01-01T00:00:00Z"
     assert restored.meta.server_started == "2026-08-11T00:00:03Z"
@@ -1475,7 +1543,9 @@ def test_begin_run_populates_rules_pack_commit_when_the_rules_dir_is_a_git_repo(
     _record_d02_all_pass(mcp)
     report_result = _call(mcp, "render_report", {"finished": "2026-08-09T10:00:00Z"})
 
-    run_state = RunState.from_json(Path(report_result["run_state_path"]).read_text(encoding="utf-8"))
+    run_state = RunState.from_json(
+        Path(report_result["run_state_path"]).read_text(encoding="utf-8")
+    )
     assert run_state.meta.rules_pack_commit == expected_sha
 
 
@@ -1506,7 +1576,9 @@ def test_full_audit_flow_walks_every_tool_in_order(
     assert selected_ids == ["d01", "d02"]
 
     for domain_id in selected_ids:
-        _call(mcp, "get_domain", {"domain_id": domain_id})  # the agent reads the rule text
+        _call(
+            mcp, "get_domain", {"domain_id": domain_id}
+        )  # the agent reads the rule text
         if domain_id == "d01":
             outcome = _record_d01_with_finding(mcp)
         else:
@@ -1527,7 +1599,9 @@ def test_full_audit_flow_walks_every_tool_in_order(
 # ---------------------------------------------------------------------------
 
 
-def _fake_create_issue(fail_on: set[str] | None = None, warn_on: set[str] | None = None):
+def _fake_create_issue(
+    fail_on: set[str] | None = None, warn_on: set[str] | None = None
+):
     """Build a fake create_issue plus the list of calls it recorded.
 
     Mirrors engineering_audit.issues.create_issue's signature exactly (as
@@ -1542,10 +1616,14 @@ def _fake_create_issue(fail_on: set[str] | None = None, warn_on: set[str] | None
         if fail_on and title in fail_on:
             raise IssueFilingError(f"gh issue create failed for {title!r}")
         counter["n"] += 1
-        warnings = [f"label(s) {labels} not found on repo {repo}; issue filed without them"] if (
-            warn_on and title in warn_on
-        ) else []
-        return CreatedIssue(url=f"https://github.com/{repo}/issues/{counter['n']}", warnings=warnings)
+        warnings = (
+            [f"label(s) {labels} not found on repo {repo}; issue filed without them"]
+            if (warn_on and title in warn_on)
+            else []
+        )
+        return CreatedIssue(
+            url=f"https://github.com/{repo}/issues/{counter['n']}", warnings=warnings
+        )
 
     return _fake, calls
 
@@ -1566,7 +1644,9 @@ def _stub_ensure_label(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
     return calls
 
 
-def _stub_label_status(monkeypatch: pytest.MonkeyPatch, status: LabelStatus) -> list[dict]:
+def _stub_label_status(
+    monkeypatch: pytest.MonkeyPatch, status: LabelStatus
+) -> list[dict]:
     calls: list[dict] = []
 
     def _fake(repo: str, name: str = "engineering-audit") -> LabelStatus:
@@ -1590,7 +1670,9 @@ def _configured_github_run(
     _call(mcp, "get_config", {"timeout_s": 1})
 
 
-def test_file_issues_preview_never_invokes_gh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_file_issues_preview_never_invokes_gh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     def _must_not_be_called(*_args, **_kwargs):
         raise AssertionError("gh must not be invoked while previewing (confirm=False)")
 
@@ -1624,7 +1706,9 @@ def test_file_issues_confirm_files_one_issue_per_finding(
     result = _call(mcp, "file_issues", {"confirm": True, "repo": "rodlunt/widgets-app"})
 
     assert result["repo"] == "rodlunt/widgets-app"
-    assert result["filed"] == {"D01-R02#1": "https://github.com/rodlunt/widgets-app/issues/1"}
+    assert result["filed"] == {
+        "D01-R02#1": "https://github.com/rodlunt/widgets-app/issues/1"
+    }
     assert calls == [
         {
             "repo": "rodlunt/widgets-app",
@@ -1683,7 +1767,9 @@ def test_file_issues_refuses_a_finding_on_a_sourceless_rule(
     assert calls == []
 
 
-def test_file_issues_issue_mode_report_errors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_file_issues_issue_mode_report_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     mcp, _state = build_server(FIXTURE_PACK)
     _configured_run(mcp, tmp_path, monkeypatch)  # defaults to issue_mode="report"
     _record_d01_with_finding(mcp)
@@ -1752,8 +1838,12 @@ def test_file_issues_partial_failure_reports_filed_and_unfiled(
     # The one that succeeded must be recorded, so a retry does not re-file it.
     _fake2, calls2 = _fake_create_issue()
     monkeypatch.setattr(server_module, "create_issue", _fake2)
-    retry_result = _call(mcp, "file_issues", {"confirm": True, "repo": "rodlunt/widgets-app"})
-    assert retry_result["filed"] == {"D02-R01#1": "https://github.com/rodlunt/widgets-app/issues/1"}
+    retry_result = _call(
+        mcp, "file_issues", {"confirm": True, "repo": "rodlunt/widgets-app"}
+    )
+    assert retry_result["filed"] == {
+        "D02-R01#1": "https://github.com/rodlunt/widgets-app/issues/1"
+    }
     assert [c["title"] for c in calls2] == ["A d02 finding"]
 
 
@@ -1842,7 +1932,9 @@ def test_file_issues_retry_after_a_failure_between_two_findings_on_one_rule(
     retry = _call(mcp, "file_issues", {"confirm": True, "repo": "rodlunt/widgets-app"})
 
     assert [c["title"] for c in calls2] == ["Set shared-bed flag for bed-19"]
-    assert retry["filed"] == {"D01-R02#2": "https://github.com/rodlunt/widgets-app/issues/1"}
+    assert retry["filed"] == {
+        "D01-R02#2": "https://github.com/rodlunt/widgets-app/issues/1"
+    }
     assert retry["all_filed_issue_urls"] == {
         "D01-R02#1": "https://github.com/rodlunt/widgets-app/issues/1",
         "D01-R02#2": "https://github.com/rodlunt/widgets-app/issues/1",
@@ -1881,10 +1973,12 @@ def test_render_report_carries_a_distinct_filed_url_per_finding_on_one_rule(
 
     rendered = Path(report_result["report_path"]).read_text(encoding="utf-8")
     assert (
-        'href="https://github.com/rodlunt/widgets-app/issues/1">already filed</a>' in rendered
+        'href="https://github.com/rodlunt/widgets-app/issues/1">already filed</a>'
+        in rendered
     )
     assert (
-        'href="https://github.com/rodlunt/widgets-app/issues/2">already filed</a>' in rendered
+        'href="https://github.com/rodlunt/widgets-app/issues/2">already filed</a>'
+        in rendered
     )
 
 
@@ -1916,7 +2010,9 @@ def test_file_issues_checks_the_label_once_per_call_not_once_per_issue(
 
     result = _call(mcp, "file_issues", {"confirm": True, "repo": "rodlunt/widgets-app"})
 
-    assert _stub_ensure_label == [{"repo": "rodlunt/widgets-app", "name": "engineering-audit"}]
+    assert _stub_ensure_label == [
+        {"repo": "rodlunt/widgets-app", "name": "engineering-audit"}
+    ]
     assert result["label"] == {"name": "engineering-audit", "state": "present"}
     assert result["warnings"] == []
     assert len(calls) == 2
@@ -2008,7 +2104,9 @@ def test_file_issues_confirm_detects_repo_from_repo_dir(
     _fake, calls = _fake_create_issue()
     monkeypatch.setattr(server_module, "create_issue", _fake)
     monkeypatch.setattr(server_module, "gh_available", lambda: True)
-    monkeypatch.setattr(server_module, "detect_repo", lambda cwd: "rodlunt/detected-repo")
+    monkeypatch.setattr(
+        server_module, "detect_repo", lambda cwd: "rodlunt/detected-repo"
+    )
 
     mcp, _state = build_server(FIXTURE_PACK)
     _configured_github_run(mcp, tmp_path, monkeypatch, repo_dir=audited_repo)
@@ -2037,7 +2135,9 @@ def test_file_issues_confirm_raises_when_gh_unavailable_and_no_repo_given(
     assert "gh is not available" in str(excinfo.value)
 
 
-def _bare_tracker(tmp_path: Path, repo_dir: Path | None = None) -> server_module.RunTracker:
+def _bare_tracker(
+    tmp_path: Path, repo_dir: Path | None = None
+) -> server_module.RunTracker:
     meta = RunMeta(
         tool_version="0.0.0-dev",
         rules_pack_name="fixture_pack",
@@ -2060,7 +2160,10 @@ def test_resolve_target_repo_takes_an_explicit_repo_without_touching_gh(
     monkeypatch.setattr(server_module, "detect_repo", _must_not_be_called)
 
     tracker = _bare_tracker(tmp_path, repo_dir=tmp_path)
-    assert server_module._resolve_target_repo(tracker, "rodlunt/widgets-app") == "rodlunt/widgets-app"
+    assert (
+        server_module._resolve_target_repo(tracker, "rodlunt/widgets-app")
+        == "rodlunt/widgets-app"
+    )
 
 
 def test_resolve_target_repo_raises_when_detection_finds_no_github_remote(
@@ -2114,7 +2217,11 @@ def test_submit_feedback_extra_text_is_accepted_when_config_has_none(
     mcp, _state = build_server(FIXTURE_PACK)
     _configured_run(mcp, tmp_path, monkeypatch)
 
-    result = _call(mcp, "submit_feedback", {"extra_text": "This came from the agent, not the form."})
+    result = _call(
+        mcp,
+        "submit_feedback",
+        {"extra_text": "This came from the agent, not the form."},
+    )
     assert result["mode"] == "issue"
     assert "This came from the agent, not the form." in calls[0]["body"]
 
@@ -2127,7 +2234,9 @@ def test_submit_feedback_files_to_feedback_repo_with_feedback_label(
     monkeypatch.setattr(server_module, "gh_available", lambda: True)
 
     mcp, _state = build_server(FIXTURE_PACK)
-    _configured_run(mcp, tmp_path, monkeypatch, feedback_text="The gnome export was slow.")
+    _configured_run(
+        mcp, tmp_path, monkeypatch, feedback_text="The gnome export was slow."
+    )
 
     result = _call(mcp, "submit_feedback", {})
     assert result["mode"] == "issue"
@@ -2283,12 +2392,19 @@ def test_submit_feedback_gh_unavailable_returns_mailto_with_encoded_body(
     monkeypatch.setattr(server_module, "gh_available", lambda: False)
 
     mcp, _state = build_server(FIXTURE_PACK)
-    _configured_run(mcp, tmp_path, monkeypatch, feedback_text="The gnome export was slow.")
+    _configured_run(
+        mcp, tmp_path, monkeypatch, feedback_text="The gnome export was slow."
+    )
 
     result = _call(mcp, "submit_feedback", {})
     assert result["mode"] == "mailto"
-    assert result["mailto_url"].startswith("mailto:rodneylunt79+audit-feedback@gmail.com?subject=")
-    assert "The%20gnome%20export%20was%20slow." in result["mailto_url"] or "The+gnome" in result["mailto_url"]
+    assert result["mailto_url"].startswith(
+        "mailto:rodneylunt79+audit-feedback@gmail.com?subject="
+    )
+    assert (
+        "The%20gnome%20export%20was%20slow." in result["mailto_url"]
+        or "The+gnome" in result["mailto_url"]
+    )
     assert "The gnome export was slow." in result["body"]
 
 
@@ -2303,7 +2419,9 @@ def test_submit_feedback_filing_failure_falls_back_to_mailto(
     monkeypatch.setattr(server_module, "create_issue", _always_fail)
 
     mcp, _state = build_server(FIXTURE_PACK)
-    _configured_run(mcp, tmp_path, monkeypatch, feedback_text="The gnome export was slow.")
+    _configured_run(
+        mcp, tmp_path, monkeypatch, feedback_text="The gnome export was slow."
+    )
 
     result = _call(mcp, "submit_feedback", {})
     assert result["mode"] == "mailto"
@@ -2322,7 +2440,9 @@ def test_submit_feedback_after_render_report_still_sends_and_updates_the_report(
     monkeypatch.setattr(server_module, "gh_available", lambda: True)
 
     mcp, _state = build_server(FIXTURE_PACK)
-    _configured_run(mcp, tmp_path, monkeypatch, feedback_text="The gnome export was slow.")
+    _configured_run(
+        mcp, tmp_path, monkeypatch, feedback_text="The gnome export was slow."
+    )
     _record_d01_with_finding(mcp)
     _record_d02_all_pass(mcp)
 
@@ -2354,7 +2474,9 @@ def test_submit_feedback_after_render_report_warns_when_the_report_cannot_be_rew
     monkeypatch.setattr(server_module, "gh_available", lambda: True)
 
     mcp, _state = build_server(FIXTURE_PACK)
-    _configured_run(mcp, tmp_path, monkeypatch, feedback_text="The gnome export was slow.")
+    _configured_run(
+        mcp, tmp_path, monkeypatch, feedback_text="The gnome export was slow."
+    )
     _record_d01_with_finding(mcp)
     _record_d02_all_pass(mcp)
     _call(mcp, "render_report", {"finished": "2026-08-09T10:00:00Z"})
@@ -2383,7 +2505,9 @@ def test_submit_feedback_after_begin_run_of_a_new_run_targets_the_new_run(
     monkeypatch.setattr(server_module, "gh_available", lambda: True)
 
     mcp, _state = build_server(FIXTURE_PACK)
-    _configured_run(mcp, tmp_path, monkeypatch, feedback_text="The gnome export was slow.")
+    _configured_run(
+        mcp, tmp_path, monkeypatch, feedback_text="The gnome export was slow."
+    )
     _record_d01_with_finding(mcp)
     _record_d02_all_pass(mcp)
     first_report = _call(mcp, "render_report", {"finished": "2026-08-09T10:00:00Z"})
@@ -2414,7 +2538,9 @@ def test_submit_feedback_then_render_report_links_the_filed_issue(
     monkeypatch.setattr(server_module, "gh_available", lambda: True)
 
     mcp, _state = build_server(FIXTURE_PACK)
-    _configured_run(mcp, tmp_path, monkeypatch, feedback_text="The gnome export was slow.")
+    _configured_run(
+        mcp, tmp_path, monkeypatch, feedback_text="The gnome export was slow."
+    )
     _record_d01_with_finding(mcp)
     _record_d02_all_pass(mcp)
 
@@ -2506,7 +2632,9 @@ def test_a_completed_recovery_file_that_survived_removal_is_not_offered_as_resum
     mcp = _interrupted_run(tmp_path, monkeypatch, out_dir)
     _call(mcp, "render_report", {"finished": "2026-08-09T10:00:00Z"})
 
-    finished_record = json.loads((out_dir / "run-state.json").read_text(encoding="utf-8"))
+    finished_record = json.loads(
+        (out_dir / "run-state.json").read_text(encoding="utf-8")
+    )
     _progress_file(out_dir).write_text(
         json.dumps({**finished_record, "completed": True}), encoding="utf-8"
     )
@@ -2655,7 +2783,9 @@ def test_corrupt_recovery_state_is_reported_loudly_not_treated_as_no_prior_run(
 ) -> None:
     out_dir = tmp_path / "audit-output"
     _interrupted_run(tmp_path, monkeypatch, out_dir)
-    _progress_file(out_dir).write_text("{ this file was truncated mid-", encoding="utf-8")
+    _progress_file(out_dir).write_text(
+        "{ this file was truncated mid-", encoding="utf-8"
+    )
 
     mcp, _state = build_server(FIXTURE_PACK)
     offer = _begin_run(mcp, out_dir)
@@ -2712,7 +2842,9 @@ def test_resume_by_a_different_model_records_both_and_warns(
     _interrupted_run(tmp_path, monkeypatch, out_dir)
 
     mcp, _state = build_server(FIXTURE_PACK)
-    resumed = _begin_run(mcp, out_dir, resume=True, assistant="codex", model="gpt-5.6-sol")
+    resumed = _begin_run(
+        mcp, out_dir, resume=True, assistant="codex", model="gpt-5.6-sol"
+    )
 
     assert resumed["resumed"] is True
     assert resumed["meta"]["assistant"] == "codex"
@@ -2759,7 +2891,9 @@ def test_resume_keeps_the_original_server_started_rather_than_restamping_it(
 
     monkeypatch.setattr(server_module, "_now_utc_iso", lambda: "2026-08-09T11:45:00Z")
     result = _call(mcp, "render_report", {"finished": "2026-08-09T11:45:00Z"})
-    restored = RunState.from_json(Path(result["run_state_path"]).read_text(encoding="utf-8"))
+    restored = RunState.from_json(
+        Path(result["run_state_path"]).read_text(encoding="utf-8")
+    )
 
     # Kept from the original begin_run, not the resume, and not the render.
     assert restored.meta.server_started == "2026-08-09T09:00:01Z"
@@ -2968,7 +3102,13 @@ def test_a_could_not_run_domain_is_not_warned_about(
     response = _call(
         mcp,
         "record_domain_result",
-        {"result": {"domain_id": "d01", "status": "could-not-run", "reason": "no ledger file"}},
+        {
+            "result": {
+                "domain_id": "d01",
+                "status": "could-not-run",
+                "reason": "no ledger file",
+            }
+        },
     )
 
     assert response["rules_fetched"] is False
@@ -3026,7 +3166,9 @@ def test_render_report_hands_back_the_domains_whose_rules_were_never_fetched(
         "verdicts_without_rules_fetched_domain_ids": ["d01"],
         "fetch_not_recorded_domain_ids": [],
     }
-    assert any("without their rule text ever being fetched" in w for w in result["warnings"])
+    assert any(
+        "without their rule text ever being fetched" in w for w in result["warnings"]
+    )
 
 
 def test_a_resumed_run_keeps_the_fetches_made_before_the_interruption(

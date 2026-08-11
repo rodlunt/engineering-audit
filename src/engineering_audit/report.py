@@ -185,7 +185,9 @@ def _render_meta_block(run_state: RunState) -> str:
     return f'<div class="meta-grid">{rows_html}</div>'
 
 
-def _coverage_summary(selected: dict[str, DomainResult], domain_titles: dict[str, str]) -> str:
+def _coverage_summary(
+    selected: dict[str, DomainResult], domain_titles: dict[str, str]
+) -> str:
     """Render the per-domain coverage list.
 
     This used to also sum inspected/skipped file counts across every
@@ -224,7 +226,8 @@ def _findings_rollup(
     total = len(all_findings)
 
     sev_items = "".join(
-        f"<li>{_esc(sev)}: {severity_counts.get(sev, 0)}</li>" for sev in _SEVERITY_ORDER
+        f"<li>{_esc(sev)}: {severity_counts.get(sev, 0)}</li>"
+        for sev in _SEVERITY_ORDER
     )
     # Built from every selected domain, defaulting to zero, the same way the
     # by-severity breakdown above always shows all four severities including
@@ -235,7 +238,9 @@ def _findings_rollup(
     # such on its own row, because "0" is exactly what a domain that was
     # swept clean also shows and the two are not the same result (issue
     # #100). The full counts and reasons are in the Not applicable block.
-    fully_not_applicable = set(_fully_not_applicable_domain_ids(_not_applicable_counts(selected)))
+    fully_not_applicable = set(
+        _fully_not_applicable_domain_ids(_not_applicable_counts(selected))
+    )
     set_aside_note = " (every rule not applicable, nothing checked)"
     domain_items = (
         "".join(
@@ -293,7 +298,9 @@ def _group_rule_ids_by_reason(
                     f"'{rv.rule_id}', which is not in the rules pack"
                 )
             note = rv.note.strip() if rv.note else ""
-            reason_to_rule_ids.setdefault(note or unrecorded_reason_label, []).append(rv.rule_id)
+            reason_to_rule_ids.setdefault(note or unrecorded_reason_label, []).append(
+                rv.rule_id
+            )
     return reason_to_rule_ids
 
 
@@ -306,7 +313,9 @@ def _reason_groups_html(reason_to_rule_ids: dict[str, list[str]]) -> str:
     rule-specific reasons visible near the bottom rather than buried inside a
     hundred near-identical rows.
     """
-    ordered_reasons = sorted(reason_to_rule_ids.items(), key=lambda item: (-len(item[1]), item[0]))
+    ordered_reasons = sorted(
+        reason_to_rule_ids.items(), key=lambda item: (-len(item[1]), item[0])
+    )
     items = "".join(
         f"<li><strong>{_esc(reason)}</strong><br>"
         f"{_esc(', '.join(sorted(rule_ids)))} "
@@ -341,12 +350,14 @@ def _could_not_evaluate_list(
     # coverage: this box's whole purpose is to flag evaluation gaps, and a
     # domain that never ran at all is the largest possible gap.
     not_run_domain_ids = [
-        domain_id for domain_id, result in selected.items() if result.status == "could-not-run"
+        domain_id
+        for domain_id, result in selected.items()
+        if result.status == "could-not-run"
     ]
 
     if not reason_to_rule_ids and not not_run_domain_ids:
         return (
-            '<h3>Could not evaluate</h3>'
+            "<h3>Could not evaluate</h3>"
             '<p class="ok">Every selected rule reached a verdict of pass, finding or '
             "not applicable. Nothing was left could-not-evaluate.</p>"
         )
@@ -375,7 +386,9 @@ def _could_not_evaluate_list(
     return "".join(parts)
 
 
-def _not_applicable_counts(selected: dict[str, DomainResult]) -> dict[str, tuple[int, int]]:
+def _not_applicable_counts(
+    selected: dict[str, DomainResult],
+) -> dict[str, tuple[int, int]]:
     """Domain id -> (rules verdicted not-applicable, rules verdicted at all).
 
     Both halves of the pair matter: "21 not applicable" says nothing on its
@@ -435,7 +448,9 @@ def _not_applicable_list(
     for domain_id, result in selected.items():
         title = domain_titles[domain_id]
         if result.status == "could-not-run":
-            rows.append(f"<li>{_esc(domain_id)}: {_esc(title)}: did not run at all</li>")
+            rows.append(
+                f"<li>{_esc(domain_id)}: {_esc(title)}: did not run at all</li>"
+            )
             continue
         not_applicable, verdicted = counts[domain_id]
         rows.append(
@@ -549,7 +564,8 @@ def _rules_fetched_list(
 
     def _names(domain_ids: list[str]) -> str:
         return ", ".join(
-            f"{_esc(domain_titles[domain_id])} ({_esc(domain_id)})" for domain_id in domain_ids
+            f"{_esc(domain_titles[domain_id])} ({_esc(domain_id)})"
+            for domain_id in domain_ids
         )
 
     if not missing and not unknown:
@@ -586,7 +602,9 @@ def _rules_fetched_list(
     return "".join(parts)
 
 
-def _self_assessment_list(selected: dict[str, DomainResult], domain_titles: dict[str, str]) -> str:
+def _self_assessment_list(
+    selected: dict[str, DomainResult], domain_titles: dict[str, str]
+) -> str:
     rows = []
     for domain_id, result in selected.items():
         title = domain_titles[domain_id]
@@ -595,7 +613,9 @@ def _self_assessment_list(selected: dict[str, DomainResult], domain_titles: dict
         elif result.self_assessment is not None:
             sa = result.self_assessment
             limits = f" Limits: {_esc(sa.limits)}." if sa.limits else ""
-            rows.append(f"<li>{_esc(title)}: confidence {_esc(sa.confidence)}.{limits}</li>")
+            rows.append(
+                f"<li>{_esc(title)}: confidence {_esc(sa.confidence)}.{limits}</li>"
+            )
         else:
             rows.append(f"<li>{_esc(title)}: no self-assessment reported</li>")
     return f"<ul>{''.join(rows)}</ul>"
@@ -658,7 +678,8 @@ def _environment_info(run_state: RunState) -> str:
     if not environment:
         return "<p>No environment information reported for this run.</p>"
     rows = "".join(
-        f"<li><strong>{_esc(key)}:</strong> {_esc(value)}</li>" for key, value in environment.items()
+        f"<li><strong>{_esc(key)}:</strong> {_esc(value)}</li>"
+        for key, value in environment.items()
     )
     return f"<ul>{rows}</ul>"
 
@@ -777,10 +798,10 @@ def _github_file_form(repo_prefill: str) -> str:
         "this page: it is never stored (no localStorage, sessionStorage or cookies). A "
         "fine-grained personal access token with Issues read and write access on the one "
         "target repository is enough.</p>"
-        '<label>Repository (owner/name)<br>'
+        "<label>Repository (owner/name)<br>"
         f'<input type="text" id="gh-repo" value="{_esc(repo_prefill)}" placeholder="owner/name">'
         "</label><br>"
-        '<label>Personal access token<br>'
+        "<label>Personal access token<br>"
         '<input type="password" id="gh-pat" autocomplete="off">'
         "</label><br>"
         '<button type="button" id="gh-file-button" onclick="fileSelectedIssues()">'
@@ -827,7 +848,11 @@ def _issues_section(
         full_text = f"{finding.issue_title}\n\n{body_with_trailing}"
 
         issues_data.append(
-            {"rule_id": finding.rule_id, "title": finding.issue_title, "body": body_with_trailing}
+            {
+                "rule_id": finding.rule_id,
+                "title": finding.issue_title,
+                "body": body_with_trailing,
+            }
         )
 
         seen[finding.rule_id] += 1
@@ -838,7 +863,9 @@ def _issues_section(
 
         if filed_url:
             _require_href_scheme(
-                filed_url, ("http", "https"), f"issue url for rule id '{finding.rule_id}'"
+                filed_url,
+                ("http", "https"),
+                f"issue url for rule id '{finding.rule_id}'",
             )
             checkbox_html = (
                 f'<input type="checkbox" id="issue-check-{index}" disabled> '
@@ -853,9 +880,9 @@ def _issues_section(
         blocks.append(
             '<div class="issue-block">'
             f'<label class="issue-select">{checkbox_html}</label>'
-            f'<p><strong>{_esc(finding.issue_title)}</strong></p>'
+            f"<p><strong>{_esc(finding.issue_title)}</strong></p>"
             f'<textarea id="{textarea_id}" readonly rows="6">{_esc(full_text)}</textarea>'
-            f"<button type=\"button\" onclick=\"copyIssueText('{textarea_id}', this)\">"
+            f'<button type="button" onclick="copyIssueText(\'{textarea_id}\', this)">'
             "Copy issue text</button> "
             f'<span class="issue-status" id="{status_id}"></span>'
             "</div>"
@@ -892,7 +919,9 @@ def _feedback_section(run_state: RunState, feedback_issue_url: str | None) -> st
 
     filed_html = ""
     if feedback_issue_url:
-        _require_href_scheme(feedback_issue_url, ("http", "https"), "feedback issue url")
+        _require_href_scheme(
+            feedback_issue_url, ("http", "https"), "feedback issue url"
+        )
         filed_html = (
             f'<p>Feedback for this run was already filed as <a href="{_esc(feedback_issue_url)}">'
             "an issue</a> on the tool author's repository. Further feedback can still be sent "
@@ -1034,7 +1063,9 @@ def render_report(run_state: RunState, pack: RulesPack) -> str:
             )
         result = run_state.domain_results.get(domain_id)
         if result is None:
-            raise ReportError(f"selected domain '{domain_id}' has no DomainResult for this run")
+            raise ReportError(
+                f"selected domain '{domain_id}' has no DomainResult for this run"
+            )
         selected[domain_id] = result
 
     for domain_id, result in selected.items():
@@ -1099,7 +1130,9 @@ def render_report(run_state: RunState, pack: RulesPack) -> str:
         page_title=f"Engineering practice audit report: {_esc(run_state.meta.repo_name)}",
         meta_block=_render_meta_block(run_state),
         performance_summary=performance_summary,
-        findings_section=_findings_section(selected, domain_titles, rule_index, pack.is_v2),
+        findings_section=_findings_section(
+            selected, domain_titles, rule_index, pack.is_v2
+        ),
         issues_section=_issues_section(
             selected, rule_index, run_state.filed_issue_urls or None, repo_prefill
         ),

@@ -49,8 +49,16 @@ def _run_state() -> RunState:
         meta=_meta(),
         config=AuditConfig(selected_domain_ids=["d01", "d02"], issue_mode="report"),
         domain_results={
-            "d01": DomainResult(domain_id="d01", status="completed", rule_verdicts=_all_pass_verdicts(d01)),
-            "d02": DomainResult(domain_id="d02", status="completed", rule_verdicts=_all_pass_verdicts(d02)),
+            "d01": DomainResult(
+                domain_id="d01",
+                status="completed",
+                rule_verdicts=_all_pass_verdicts(d01),
+            ),
+            "d02": DomainResult(
+                domain_id="d02",
+                status="completed",
+                rule_verdicts=_all_pass_verdicts(d02),
+            ),
         },
     )
 
@@ -65,7 +73,9 @@ def _write_state(path: Path, state: RunState | None = None) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def test_main_happy_path_writes_report_beside_the_state_file(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+def test_main_happy_path_writes_report_beside_the_state_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
     state_path = _write_state(tmp_path / "run-state.json")
 
     render_cli.main([str(state_path), "--rules-dir", str(FIXTURE_PACK)])
@@ -80,12 +90,16 @@ def test_main_respects_explicit_out_path(tmp_path: Path) -> None:
     state_path = _write_state(tmp_path / "run-state.json")
     out_path = tmp_path / "somewhere" / "audit.html"
 
-    render_cli.main([str(state_path), "--rules-dir", str(FIXTURE_PACK), "--out", str(out_path)])
+    render_cli.main(
+        [str(state_path), "--rules-dir", str(FIXTURE_PACK), "--out", str(out_path)]
+    )
 
     assert out_path.is_file()
 
 
-def test_main_resolves_rules_dir_from_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_main_resolves_rules_dir_from_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     state_path = _write_state(tmp_path / "run-state.json")
     monkeypatch.setenv("ENGINEERING_AUDIT_RULES_DIR", str(FIXTURE_PACK))
 
@@ -99,7 +113,9 @@ def test_main_resolves_rules_dir_from_environment(tmp_path: Path, monkeypatch: p
 # ---------------------------------------------------------------------------
 
 
-def test_main_missing_rules_dir_exits_non_zero(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_main_missing_rules_dir_exits_non_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.delenv("ENGINEERING_AUDIT_RULES_DIR", raising=False)
     state_path = _write_state(tmp_path / "run-state.json")
 
@@ -112,13 +128,17 @@ def test_main_nonexistent_rules_dir_exits_non_zero(tmp_path: Path) -> None:
     state_path = _write_state(tmp_path / "run-state.json")
 
     with pytest.raises(SystemExit) as excinfo:
-        render_cli.main([str(state_path), "--rules-dir", str(tmp_path / "does-not-exist")])
+        render_cli.main(
+            [str(state_path), "--rules-dir", str(tmp_path / "does-not-exist")]
+        )
     assert "does not exist" in str(excinfo.value)
 
 
 def test_main_missing_state_file_exits_non_zero(tmp_path: Path) -> None:
     with pytest.raises(SystemExit) as excinfo:
-        render_cli.main([str(tmp_path / "no-such-file.json"), "--rules-dir", str(FIXTURE_PACK)])
+        render_cli.main(
+            [str(tmp_path / "no-such-file.json"), "--rules-dir", str(FIXTURE_PACK)]
+        )
     assert "does not exist" in str(excinfo.value)
 
 
@@ -132,7 +152,9 @@ def test_main_invalid_json_exits_non_zero(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("document", ["[1, 2, 3]", "null", '"just a string"', "42"])
-def test_main_non_dict_top_level_json_exits_non_zero(tmp_path: Path, document: str) -> None:
+def test_main_non_dict_top_level_json_exits_non_zero(
+    tmp_path: Path, document: str
+) -> None:
     # RunState.from_json used to raise a raw AttributeError for a JSON top
     # level that parses but is not an object (calling .get on a list or
     # None); this must surface as the CLI's usual clean, non-zero SystemExit,
@@ -145,7 +167,9 @@ def test_main_non_dict_top_level_json_exits_non_zero(tmp_path: Path, document: s
     assert "not a valid run-state file" in str(excinfo.value)
 
 
-def test_main_higher_schema_version_exits_non_zero_naming_both_versions(tmp_path: Path) -> None:
+def test_main_higher_schema_version_exits_non_zero_naming_both_versions(
+    tmp_path: Path,
+) -> None:
     data = json.loads(_run_state().to_json())
     data["schema_version"] = RUN_STATE_SCHEMA_VERSION + 1
     state_path = tmp_path / "run-state.json"
@@ -168,7 +192,9 @@ def test_main_bad_rules_pack_exits_non_zero(tmp_path: Path) -> None:
     assert "could not load rules pack" in str(excinfo.value)
 
 
-def test_main_incomplete_run_state_raises_report_error_as_clean_exit(tmp_path: Path) -> None:
+def test_main_incomplete_run_state_raises_report_error_as_clean_exit(
+    tmp_path: Path,
+) -> None:
     # render_report itself refuses a run whose selected domain has no
     # recorded result; the CLI must turn that into a clean, non-zero exit
     # with the message, not an uncaught traceback.
@@ -179,7 +205,11 @@ def test_main_incomplete_run_state_raises_report_error_as_clean_exit(tmp_path: P
         meta=_meta(),
         config=AuditConfig(selected_domain_ids=["d01", "d02"], issue_mode="report"),
         domain_results={
-            "d01": DomainResult(domain_id="d01", status="completed", rule_verdicts=_all_pass_verdicts(d01)),
+            "d01": DomainResult(
+                domain_id="d01",
+                status="completed",
+                rule_verdicts=_all_pass_verdicts(d01),
+            ),
         },
     )
     state_path = _write_state(tmp_path / "run-state.json", state)

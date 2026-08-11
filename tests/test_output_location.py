@@ -26,12 +26,16 @@ def test_resolve_deliverables_dir_expands_home(tmp_path, monkeypatch) -> None:
     assert resolve_deliverables_dir("~/reports") == (tmp_path / "reports").resolve()
 
 
-def test_resolve_deliverables_dir_makes_a_relative_path_absolute(tmp_path, monkeypatch) -> None:
+def test_resolve_deliverables_dir_makes_a_relative_path_absolute(
+    tmp_path, monkeypatch
+) -> None:
     monkeypatch.chdir(tmp_path)
     assert resolve_deliverables_dir("reports") == (tmp_path / "reports").resolve()
 
 
-def test_validate_deliverables_dir_accepts_an_empty_existing_directory(tmp_path) -> None:
+def test_validate_deliverables_dir_accepts_an_empty_existing_directory(
+    tmp_path,
+) -> None:
     target = tmp_path / "reports"
     target.mkdir()
     assert validate_deliverables_dir(target) is None

@@ -118,7 +118,9 @@ def build_demo_run_state(pack: RulesPack) -> RunState:
             limits="did not check gnome beds outside the main garden plot",
         ),
         coverage=Coverage(
-            files_inspected=14, files_skipped=1, note="one binary hat-colour swatch skipped"
+            files_inspected=14,
+            files_skipped=1,
+            note="one binary hat-colour swatch skipped",
         ),
         consulted_sources=[_DEMO_CONSULTED_SOURCE],
     )
@@ -126,7 +128,9 @@ def build_demo_run_state(pack: RulesPack) -> RunState:
     d02_result = DomainResult(
         domain_id="d02",
         status="completed",
-        rule_verdicts=[RuleVerdict(rule_id=r.id, verdict=Verdict.pass_) for r in d02.rules],
+        rule_verdicts=[
+            RuleVerdict(rule_id=r.id, verdict=Verdict.pass_) for r in d02.rules
+        ],
         findings=[],
         self_assessment=SelfAssessment(
             confidence="medium", limits="did not check archived shipment routes"

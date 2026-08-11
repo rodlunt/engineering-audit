@@ -142,7 +142,9 @@ def test_get_page_telemetry_consent_defaults_are_all_unticked(domains) -> None:
         srv.shutdown()
 
 
-def test_get_page_verdict_distribution_consent_label_names_its_contents(domains) -> None:
+def test_get_page_verdict_distribution_consent_label_names_its_contents(
+    domains,
+) -> None:
     # Issue #111: the label must say plainly what the section contains
     # (four verdict kinds, per domain and in total), not just gesture at
     # "verdicts", and must not claim to include finding text.
@@ -158,7 +160,9 @@ def test_get_page_verdict_distribution_consent_label_names_its_contents(domains)
         srv.shutdown()
 
 
-def test_get_page_duration_consent_label_names_its_contents_and_excludes_token_counts(domains) -> None:
+def test_get_page_duration_consent_label_names_its_contents_and_excludes_token_counts(
+    domains,
+) -> None:
     # Issue #111: token counts cannot be part of this section, since the
     # server never sees them; the label must say so and point at the
     # free-text field rather than silently omitting them with no
@@ -177,7 +181,9 @@ def test_get_page_duration_consent_label_names_its_contents_and_excludes_token_c
         srv.shutdown()
 
 
-def test_get_page_rules_fetched_consent_label_carries_the_fetched_not_applied_wording(domains) -> None:
+def test_get_page_rules_fetched_consent_label_carries_the_fetched_not_applied_wording(
+    domains,
+) -> None:
     # Issue #111 / #110: this section must never claim the rule text was
     # read or applied, only that it was fetched. That wording discipline
     # was established for the report and MCP tool by #117 and must not be
@@ -188,12 +194,16 @@ def test_get_page_rules_fetched_consent_label_carries_the_fetched_not_applied_wo
         with urllib.request.urlopen(url, timeout=5) as resp:
             page = resp.read().decode("utf-8")
         assert "Rules fetched" in page
-        assert "Shows only that it was fetched, never that it was read or applied" in page
+        assert (
+            "Shows only that it was fetched, never that it was read or applied" in page
+        )
     finally:
         srv.shutdown()
 
 
-def test_get_page_environment_consent_label_matches_what_the_code_sends(domains) -> None:
+def test_get_page_environment_consent_label_matches_what_the_code_sends(
+    domains,
+) -> None:
     # Issue #48 made this label stop claiming a fixed three-field set, because
     # the field it gated was an open dict the assistant filled however it
     # liked. Issue #89 closed the schema instead (ENVIRONMENT_KEYS), so the
@@ -216,7 +226,9 @@ def test_get_page_environment_consent_label_matches_what_the_code_sends(domains)
         srv.shutdown()
 
 
-def test_get_page_consulted_sources_consent_label_states_the_privacy_note(domains) -> None:
+def test_get_page_consulted_sources_consent_label_states_the_privacy_note(
+    domains,
+) -> None:
     # Issue #57: URLs fetched while auditing a private repository can hint
     # at what that repository is about; the label controlling whether they
     # are sent to the maintainer must say this plainly, not just default the
@@ -361,7 +373,11 @@ def test_post_with_wrong_csrf_token_is_rejected(domains) -> None:
         _fetch_csrf_token(url)
         status, _body = _post(
             url,
-            {"domain": ["d01"], "issue_mode": "report", "csrf_token": "not-the-real-token"},
+            {
+                "domain": ["d01"],
+                "issue_mode": "report",
+                "csrf_token": "not-the-real-token",
+            },
         )
         assert status == 403
         assert srv.poll() == "pending"
@@ -385,7 +401,9 @@ def test_post_with_correct_csrf_token_is_accepted(domains) -> None:
         srv.shutdown()
 
 
-def test_post_with_non_numeric_content_length_returns_400_and_server_keeps_serving(domains) -> None:
+def test_post_with_non_numeric_content_length_returns_400_and_server_keeps_serving(
+    domains,
+) -> None:
     # int(Content-Length) on a malformed header used to raise ValueError
     # uncaught, crashing the handler thread. It must return a clean 400 and
     # leave the server able to serve the next request.
@@ -438,7 +456,9 @@ def test_post_with_oversized_content_length_is_rejected(domains) -> None:
         srv.shutdown()
 
 
-def test_post_with_no_domain_selected_shows_friendly_error_and_preserves_form(domains) -> None:
+def test_post_with_no_domain_selected_shows_friendly_error_and_preserves_form(
+    domains,
+) -> None:
     # Issue #49: submitting with no domain ticked used to raise a raw
     # Pydantic ValidationError straight into send_error, showing the user
     # an exception dump and losing everything else they had typed. It must
@@ -463,10 +483,14 @@ def test_post_with_no_domain_selected_shows_friendly_error_and_preserves_form(do
         assert "please keep my note" in body
         # The github radio and the coverage checkbox must still be checked
         # in the re-rendered form.
-        github_match = re.search(r'<input type="radio" name="issue_mode" value="github"[^>]*>', body)
+        github_match = re.search(
+            r'<input type="radio" name="issue_mode" value="github"[^>]*>', body
+        )
         assert github_match is not None
         assert "checked" in github_match.group(0)
-        coverage_match = re.search(r'<input type="checkbox" name="consent_coverage"[^>]*>', body)
+        coverage_match = re.search(
+            r'<input type="checkbox" name="consent_coverage"[^>]*>', body
+        )
         assert coverage_match is not None
         assert "checked" in coverage_match.group(0)
         # Nothing was actually accepted: the run is still unconfigured and
@@ -489,7 +513,9 @@ def test_second_submission_is_rejected(domains) -> None:
             pass
 
         with pytest.raises(HTTPError) as excinfo:
-            request2 = urllib.request.Request(url + "submit", data=payload, method="POST")
+            request2 = urllib.request.Request(
+                url + "submit", data=payload, method="POST"
+            )
             urllib.request.urlopen(request2, timeout=5)
         assert excinfo.value.code == 409
     finally:
@@ -539,7 +565,9 @@ def test_responses_carry_a_content_security_policy_header(domains) -> None:
         srv.shutdown()
 
 
-def test_fresh_config_server_never_carries_a_previous_runs_feedback_text(domains) -> None:
+def test_fresh_config_server_never_carries_a_previous_runs_feedback_text(
+    domains,
+) -> None:
     # Issue #62: the feedback textarea was observed pre-filled with text
     # from an earlier run against a different repository. Investigation
     # (see config_page.py and the only caller, server.py's start_config)
@@ -603,7 +631,8 @@ def test_wait_returns_immediately_once_submitted(domains) -> None:
         url = srv.start()
         token = _fetch_csrf_token(url)
         payload = urlencode(
-            {"domain": ["d01", "d02"], "issue_mode": "github", "csrf_token": token}, doseq=True
+            {"domain": ["d01", "d02"], "issue_mode": "github", "csrf_token": token},
+            doseq=True,
         ).encode("utf-8")
         request = urllib.request.Request(url + "submit", data=payload, method="POST")
         with urllib.request.urlopen(request, timeout=5):
@@ -691,7 +720,9 @@ def test_each_page_load_gets_its_own_script_nonce(domains) -> None:
         nonces = []
         for _ in range(2):
             with urllib.request.urlopen(url, timeout=5) as resp:
-                match = re.search(r'<script nonce="([^"]+)">', resp.read().decode("utf-8"))
+                match = re.search(
+                    r'<script nonce="([^"]+)">', resp.read().decode("utf-8")
+                )
             assert match is not None
             nonces.append(match.group(1))
         assert nonces[0] != nonces[1]
@@ -754,7 +785,9 @@ def test_a_saved_draft_restores_the_domain_selection_on_a_fresh_page(domains) ->
     srv = ConfigServer(domains)
     try:
         url = srv.start()
-        page, _ = _get_page_with_cookie(url, _draft_cookie({"d": ["d02"], "m": "github"}))
+        page, _ = _get_page_with_cookie(
+            url, _draft_cookie({"d": ["d02"], "m": "github"})
+        )
         assert _ticked_domain_ids(page) == {"d02"}
         assert re.search(r'value="github" checked', page) is not None
     finally:
@@ -765,7 +798,9 @@ def test_a_restored_draft_is_cleared_so_it_cannot_pre_tick_a_later_run(domains) 
     srv = ConfigServer(domains)
     try:
         url = srv.start()
-        _, set_cookie = _get_page_with_cookie(url, _draft_cookie({"d": ["d02"], "m": "report"}))
+        _, set_cookie = _get_page_with_cookie(
+            url, _draft_cookie({"d": ["d02"], "m": "report"})
+        )
         assert set_cookie is not None
         assert set_cookie.startswith(f"{_DRAFT_COOKIE_NAME}=;")
         assert "Max-Age=0" in set_cookie
@@ -813,7 +848,9 @@ def test_a_draft_never_pre_ticks_a_consent_box(domains) -> None:
         ):
             tag_match = re.search(rf'<input type="checkbox" name="{name}"[^>]*>', page)
             assert tag_match is not None
-            assert "checked" not in tag_match.group(0), f"{name} was restored from a draft"
+            assert "checked" not in tag_match.group(0), (
+                f"{name} was restored from a draft"
+            )
     finally:
         srv.shutdown()
 
@@ -824,7 +861,9 @@ def test_a_draft_naming_a_domain_this_pack_does_not_have_is_intersected_away(
     srv = ConfigServer(domains)
     try:
         url = srv.start()
-        page, _ = _get_page_with_cookie(url, _draft_cookie({"d": ["d01", "d99"], "m": "report"}))
+        page, _ = _get_page_with_cookie(
+            url, _draft_cookie({"d": ["d01", "d99"], "m": "report"})
+        )
         assert _ticked_domain_ids(page) == {"d01"}
     finally:
         srv.shutdown()
@@ -843,7 +882,9 @@ def test_a_draft_naming_a_domain_this_pack_does_not_have_is_intersected_away(
         f"{_DRAFT_COOKIE_NAME}={'x' * 5000}",
     ],
 )
-def test_an_unusable_draft_cookie_falls_back_to_the_normal_default(cookie, domains) -> None:
+def test_an_unusable_draft_cookie_falls_back_to_the_normal_default(
+    cookie, domains
+) -> None:
     # Falling back means every domain ticked, which is the page's own default
     # and a state the user can see; it is never a silently narrowed selection.
     srv = ConfigServer(domains)
@@ -975,7 +1016,9 @@ def test_the_page_script_disables_submit_and_saves_a_draft_when_the_heartbeat_fa
     assert draft.issue_mode == "github"
 
 
-def test_the_page_script_leaves_the_form_alone_while_the_heartbeat_answers(domains) -> None:
+def test_the_page_script_leaves_the_form_alone_while_the_heartbeat_answers(
+    domains,
+) -> None:
     # The control for the test above: an answering server must not produce a
     # banner, a disabled button or a saved draft. Without this, a script that
     # declared the server dead unconditionally would pass that test.
@@ -994,9 +1037,7 @@ def test_the_page_script_leaves_the_form_alone_while_the_heartbeat_answers(domai
     finally:
         srv.shutdown()
     script = page[page.index(">", page.index("<script")) + 1 : page.index("</script>")]
-    healthy_fetch = (
-        'globalThis.fetch = function () { pings += 1; return Promise.resolve({ ok: true }); };'
-    )
+    healthy_fetch = "globalThis.fetch = function () { pings += 1; return Promise.resolve({ ok: true }); };"
 
     result = subprocess.run(
         [node, "--input-type=commonjs", "-"],
@@ -1096,7 +1137,9 @@ def test_check_output_location_endpoint_echoes_the_resolved_path(
     srv = ConfigServer(domains)
     try:
         url = srv.start()
-        with urllib.request.urlopen(url + "check-output-location?path=~%2Freports", timeout=5) as resp:
+        with urllib.request.urlopen(
+            url + "check-output-location?path=~%2Freports", timeout=5
+        ) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
         assert payload["resolved"] == str((tmp_path / "reports").resolve())
         assert payload["error"] is None
@@ -1104,7 +1147,9 @@ def test_check_output_location_endpoint_echoes_the_resolved_path(
         srv.shutdown()
 
 
-def test_check_output_location_endpoint_reports_a_missing_parent(tmp_path, domains) -> None:
+def test_check_output_location_endpoint_reports_a_missing_parent(
+    tmp_path, domains
+) -> None:
     missing = tmp_path / "does-not-exist" / "reports"
     srv = ConfigServer(domains)
     try:
@@ -1287,17 +1332,23 @@ def test_the_second_inline_script_parses(domains) -> None:
     finally:
         srv.shutdown()
     starts = [m.start() for m in re.finditer(r'<script nonce="', page)]
-    assert len(starts) == 2, "expected exactly two <script> tags on the configuration page"
+    assert len(starts) == 2, (
+        "expected exactly two <script> tags on the configuration page"
+    )
     second_open = page.index(">", starts[1]) + 1
     second_close = page.index("</script>", second_open)
     script = page[second_open:second_close]
-    result = subprocess.run([node, "--check", "-"], input=script, capture_output=True, text=True)
+    result = subprocess.run(
+        [node, "--check", "-"], input=script, capture_output=True, text=True
+    )
     assert result.returncode == 0, (
         f"the configuration page's second inline script does not parse:\n{result.stderr}"
     )
 
 
-def test_parse_draft_cookie_rejects_a_bad_issue_mode_without_dropping_the_domains() -> None:
+def test_parse_draft_cookie_rejects_a_bad_issue_mode_without_dropping_the_domains() -> (
+    None
+):
     draft = _parse_draft_cookie(
         f"{_DRAFT_COOKIE_NAME}={quote(json.dumps({'d': ['d01'], 'm': 'rm -rf'}))}",
         {"d01", "d02"},

@@ -116,7 +116,7 @@ def rewrite_manifest_pins(
             # formatting, not that there is nothing to do. Surface it
             # rather than silently leaving the manifest unbumped.
             raise SystemExit(
-                f"could not rewrite the \"version\" field in "
+                f'could not rewrite the "version" field in '
                 f"{pin.path.relative_to(repo_root).as_posix()}: "
                 f"rewrite_manifest_version() found the field via json.loads "
                 f"but its line-anchored rewrite pattern did not match; the "
@@ -155,7 +155,7 @@ def main(argv: list[str] | None = None, repo_root: Path = REPO_ROOT) -> int:
     print(f"target version: {target}")
 
     write_pyproject_version(target, pyproject)
-    print(f"\npyproject.toml: version = \"{current}\" -> \"{target}\"")
+    print(f'\npyproject.toml: version = "{current}" -> "{target}"')
 
     found = discover(repo_root)
 

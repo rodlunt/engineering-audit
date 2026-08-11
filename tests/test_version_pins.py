@@ -149,7 +149,9 @@ def test_find_manifest_version_pins(tmp_path: Path) -> None:
     assert pins[0].version == "9.9.9"
 
 
-def test_bare_version_without_a_known_lead_in_is_not_a_prose_pin(tmp_path: Path) -> None:
+def test_bare_version_without_a_known_lead_in_is_not_a_prose_pin(
+    tmp_path: Path,
+) -> None:
     # Guards the deliberate choice documented in version_pins.py: a bare
     # vX.Y.Z is not enough, it must follow one of PROSE_LEAD_INS. Otherwise
     # unrelated version-shaped text (a citation, a third-party tool's
@@ -203,7 +205,10 @@ def test_rewrite_text_pin_file_at_pin_preserves_surrounding_text() -> None:
     )
 
     assert count == 1
-    assert new_text == f"Install `--from git+https://example.invalid/x@v{new_version}` please.\n"
+    assert (
+        new_text
+        == f"Install `--from git+https://example.invalid/x@v{new_version}` please.\n"
+    )
 
 
 @pytest.mark.parametrize("lead_in", version_pins.PROSE_LEAD_INS)
@@ -219,7 +224,9 @@ def test_rewrite_text_pin_file_prose_pin_preserves_lead_in(lead_in: str) -> None
 
 
 def test_rewrite_manifest_version_preserves_formatting() -> None:
-    text = json.dumps({"name": "example", "version": "1.2.3", "other": 1}, indent=2) + "\n"
+    text = (
+        json.dumps({"name": "example", "version": "1.2.3", "other": 1}, indent=2) + "\n"
+    )
 
     new_text, count = version_pins.rewrite_manifest_version(text, "1.2.3", "1.3.0")
 

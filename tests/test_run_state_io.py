@@ -96,13 +96,20 @@ def test_schema_validation_failure_raises_run_state_load_error(tmp_path: Path) -
     # (missing the required 'meta' field) must surface the same typed
     # error as any other malformed run-state, not a raw pydantic traceback.
     path = tmp_path / "run-state.json"
-    path.write_text(json.dumps({"config": {"selected_domain_ids": ["d01"], "issue_mode": "report"}}), encoding="utf-8")
+    path.write_text(
+        json.dumps(
+            {"config": {"selected_domain_ids": ["d01"], "issue_mode": "report"}}
+        ),
+        encoding="utf-8",
+    )
 
     with pytest.raises(RunStateLoadError, match="not a valid run-state file"):
         load_run_state_file(path)
 
 
-def test_non_integer_schema_version_is_a_named_error_not_a_type_error(tmp_path: Path) -> None:
+def test_non_integer_schema_version_is_a_named_error_not_a_type_error(
+    tmp_path: Path,
+) -> None:
     # A string version compares fine against an int in some languages and
     # raises TypeError in this one; either way it is a corrupt file, and the
     # caller must get the same typed error it gets for every other corruption.
@@ -121,7 +128,10 @@ def test_non_integer_schema_version_is_a_named_error_not_a_type_error(tmp_path: 
 
 
 def _progress(**overrides) -> RunProgress:
-    defaults = dict(meta=_run_state().meta, config=AuditConfig(selected_domain_ids=["d01"], issue_mode="report"))
+    defaults = dict(
+        meta=_run_state().meta,
+        config=AuditConfig(selected_domain_ids=["d01"], issue_mode="report"),
+    )
     defaults.update(overrides)
     return RunProgress(**defaults)
 
@@ -135,23 +145,29 @@ def test_save_and_load_run_progress_round_trips(tmp_path: Path) -> None:
     assert load_run_progress_file(path) == progress
 
 
-def test_missing_progress_file_is_a_load_error_not_a_silent_empty_state(tmp_path: Path) -> None:
+def test_missing_progress_file_is_a_load_error_not_a_silent_empty_state(
+    tmp_path: Path,
+) -> None:
     with pytest.raises(RunStateLoadError, match="does not exist"):
         load_run_progress_file(tmp_path / "run-state.progress.json")
 
 
-def test_corrupt_progress_file_raises_rather_than_parsing_partially(tmp_path: Path) -> None:
+def test_corrupt_progress_file_raises_rather_than_parsing_partially(
+    tmp_path: Path,
+) -> None:
     # The half-written-file case the atomic writer exists to prevent, checked
     # from the reading side: it must be refused, never read as a run that
     # simply had fewer domains.
     path = tmp_path / "run-state.progress.json"
-    path.write_text(_progress().to_json()[: 200], encoding="utf-8")
+    path.write_text(_progress().to_json()[:200], encoding="utf-8")
 
     with pytest.raises(RunStateLoadError, match="not a valid run-progress file"):
         load_run_progress_file(path)
 
 
-def test_higher_schema_version_progress_file_is_refused_naming_both_versions(tmp_path: Path) -> None:
+def test_higher_schema_version_progress_file_is_refused_naming_both_versions(
+    tmp_path: Path,
+) -> None:
     data = json.loads(_progress().to_json())
     data["schema_version"] = RUN_STATE_SCHEMA_VERSION + 1
     path = tmp_path / "run-state.progress.json"
@@ -164,7 +180,9 @@ def test_higher_schema_version_progress_file_is_refused_naming_both_versions(tmp
     assert str(RUN_STATE_SCHEMA_VERSION) in message
 
 
-def test_undecodable_progress_file_is_a_load_error_not_a_unicode_crash(tmp_path: Path) -> None:
+def test_undecodable_progress_file_is_a_load_error_not_a_unicode_crash(
+    tmp_path: Path,
+) -> None:
     path = tmp_path / "run-state.progress.json"
     path.write_bytes(b"\xff\xfe\x00binary rubbish")
 

@@ -53,7 +53,7 @@ def _fragment_text(pack: RulesPack, merge_target: str) -> str:
     # output is deterministic across runs for an unchanged pack.
     for domain in pack.domains:
         lines.append(
-            f'- {domain.trigger} When this moment arrives, call the engineering-audit '
+            f"- {domain.trigger} When this moment arrives, call the engineering-audit "
             f'MCP tool `get_domain("{domain.id}")` and apply the rules before deciding.'
         )
     lines.append("")
@@ -90,8 +90,12 @@ def generate_fragments(rules_dir: Path, out_dir: Path) -> RulesPack:
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="engineering-audit-fragments")
-    parser.add_argument("--rules-dir", required=True, help="Path to a rules pack directory")
-    parser.add_argument("--out-dir", required=True, help="Directory to write the fragments into")
+    parser.add_argument(
+        "--rules-dir", required=True, help="Path to a rules pack directory"
+    )
+    parser.add_argument(
+        "--out-dir", required=True, help="Directory to write the fragments into"
+    )
     return parser.parse_args(argv)
 
 

@@ -104,7 +104,9 @@ def _not_applicable_note_relaxed(context: object) -> bool:
     "enforce the requirement": an unrecognised context must fail closed, not
     open a hole in the constraint by accident.
     """
-    return bool(isinstance(context, dict) and context.get(LEGACY_NOT_APPLICABLE_CONTEXT_KEY))
+    return bool(
+        isinstance(context, dict) and context.get(LEGACY_NOT_APPLICABLE_CONTEXT_KEY)
+    )
 
 
 class Verdict(str, Enum):
@@ -139,7 +141,9 @@ class RuleVerdict(BaseModel):
 
     @model_validator(mode="after")
     def _note_required_for_could_not_evaluate(self) -> "RuleVerdict":
-        if self.verdict == Verdict.COULD_NOT_EVALUATE and not (self.note and self.note.strip()):
+        if self.verdict == Verdict.COULD_NOT_EVALUATE and not (
+            self.note and self.note.strip()
+        ):
             raise ValueError(
                 f"rule {self.rule_id}: verdict is could-not-evaluate but no note (reason) was given"
             )
@@ -161,7 +165,9 @@ class RuleVerdict(BaseModel):
         # LEGACY_NOT_APPLICABLE_CONTEXT_KEY for why loading such a file must
         # not fail, and note that it is the loader that opts in, never a
         # caller recording a fresh verdict.
-        if self.verdict == Verdict.NOT_APPLICABLE and not (self.note and self.note.strip()):
+        if self.verdict == Verdict.NOT_APPLICABLE and not (
+            self.note and self.note.strip()
+        ):
             if _not_applicable_note_relaxed(info.context):
                 return self
             raise ValueError(
@@ -232,7 +238,9 @@ class SelfAssessment(BaseModel):
     def _confidence_allowed(cls, value: str) -> str:
         allowed = {"high", "medium", "low"}
         if value not in allowed:
-            raise ValueError(f"confidence must be one of {sorted(allowed)}, got {value!r}")
+            raise ValueError(
+                f"confidence must be one of {sorted(allowed)}, got {value!r}"
+            )
         return value
 
 
@@ -281,7 +289,9 @@ class ConsultedSource(BaseModel):
             normalised = value[:-1] + "+00:00" if value.endswith("Z") else value
             datetime.fromisoformat(normalised)
         except ValueError as exc:
-            raise ValueError(f"accessed timestamp {value!r} is not a valid ISO 8601 string") from exc
+            raise ValueError(
+                f"accessed timestamp {value!r} is not a valid ISO 8601 string"
+            ) from exc
         return value
 
     @model_validator(mode="after")
@@ -323,7 +333,8 @@ class DomainResult(BaseModel):
         ),
     )
     reason: str | None = Field(
-        default=None, description="Required when status is could-not-run: why the domain could not be audited."
+        default=None,
+        description="Required when status is could-not-run: why the domain could not be audited.",
     )
 
     @field_validator("status")
@@ -500,7 +511,9 @@ class RunMeta(BaseModel):
             normalised = value[:-1] + "+00:00" if value.endswith("Z") else value
             datetime.fromisoformat(normalised)
         except ValueError as exc:
-            raise ValueError(f"timestamp {value!r} is not a valid ISO 8601 string") from exc
+            raise ValueError(
+                f"timestamp {value!r} is not a valid ISO 8601 string"
+            ) from exc
         return value
 
 
@@ -567,7 +580,9 @@ class AuditConfig(BaseModel):
     def _issue_mode_allowed(cls, value: str) -> str:
         allowed = {"github", "report"}
         if value not in allowed:
-            raise ValueError(f"issue_mode must be one of {sorted(allowed)}, got {value!r}")
+            raise ValueError(
+                f"issue_mode must be one of {sorted(allowed)}, got {value!r}"
+            )
         return value
 
     @field_validator("selected_domain_ids")
@@ -1019,7 +1034,9 @@ def validate_consulted_sources(domain: "Domain", result: DomainResult) -> None:
     domain, and its rule id still has to name a real one.
     """
     domain_rule_ids = {rule.id for rule in domain.rules}
-    unknown = sorted({source.rule_id for source in result.consulted_sources} - domain_rule_ids)
+    unknown = sorted(
+        {source.rule_id for source in result.consulted_sources} - domain_rule_ids
+    )
     if unknown:
         raise UnknownRuleIdError(
             f"domain {domain.id}: consulted_sources reference rule id(s) this domain "

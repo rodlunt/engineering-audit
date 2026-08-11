@@ -23,7 +23,10 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 from pydantic import ValidationError
 
-from engineering_audit.output_location import resolve_deliverables_dir, validate_deliverables_dir
+from engineering_audit.output_location import (
+    resolve_deliverables_dir,
+    validate_deliverables_dir,
+)
 from engineering_audit.rules import Domain
 from engineering_audit.schema import AuditConfig, TelemetryConsent
 
@@ -104,6 +107,7 @@ def _csp(script_nonce: str | None) -> str:
         "base-uri 'none'"
     )
 
+
 # A generous but bounded cap on the submitted form body. The form is a
 # handful of checkboxes, a couple of radio buttons and one feedback
 # textarea: nothing this page legitimately sends should ever approach this
@@ -151,7 +155,9 @@ class _ConfigDraft:
     issue_mode: str
 
 
-def _parse_draft_cookie(header_value: str | None, known_domain_ids: set[str]) -> _ConfigDraft | None:
+def _parse_draft_cookie(
+    header_value: str | None, known_domain_ids: set[str]
+) -> _ConfigDraft | None:
     """Rebuild a :class:`_ConfigDraft` from a Cookie header, or None if there
     is nothing usable in it.
 
@@ -187,7 +193,9 @@ def _parse_draft_cookie(header_value: str | None, known_domain_ids: set[str]) ->
     # Intersected with the pack actually loaded now, never trusted as given: a
     # draft written against a different rules pack must not put an id on this
     # page that this page cannot offer.
-    selected = {value for value in raw_domains if isinstance(value, str)} & known_domain_ids
+    selected = {
+        value for value in raw_domains if isinstance(value, str)
+    } & known_domain_ids
     if not selected:
         return None
 
@@ -405,7 +413,9 @@ class ConfigServer:
                     self.send_error(HTTPStatus.NOT_FOUND)
                     return
                 if server._submitted.is_set():
-                    self.send_error(HTTPStatus.CONFLICT, "Configuration already submitted")
+                    self.send_error(
+                        HTTPStatus.CONFLICT, "Configuration already submitted"
+                    )
                     return
                 try:
                     length = int(self.headers.get("Content-Length", "0"))
@@ -413,23 +423,31 @@ class ConfigServer:
                     # A non-numeric Content-Length is a malformed request, not
                     # a reason to crash the handler thread: reply 400 and keep
                     # serving.
-                    self.send_error(HTTPStatus.BAD_REQUEST, "Invalid Content-Length header")
+                    self.send_error(
+                        HTTPStatus.BAD_REQUEST, "Invalid Content-Length header"
+                    )
                     return
                 if length > _MAX_BODY_BYTES:
                     # An attacker-controlled Content-Length is not proof the
                     # body is actually that large, but reading up to it is:
                     # reject before ever calling rfile.read().
-                    self.send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "Request body too large")
+                    self.send_error(
+                        HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "Request body too large"
+                    )
                     return
                 raw_body = self.rfile.read(length).decode("utf-8")
                 fields = parse_qs(raw_body, keep_blank_values=True)
 
                 token = fields.get("csrf_token", [None])[0]
-                if token is None or not secrets.compare_digest(token, server._csrf_token):
+                if token is None or not secrets.compare_digest(
+                    token, server._csrf_token
+                ):
                     # Missing, wrong, or forged: this submission did not
                     # come from a page this server itself rendered, so it
                     # does not get to change the run's configuration.
-                    self.send_error(HTTPStatus.FORBIDDEN, "Missing or invalid CSRF token")
+                    self.send_error(
+                        HTTPStatus.FORBIDDEN, "Missing or invalid CSRF token"
+                    )
                     return
 
                 try:
@@ -542,7 +560,9 @@ class ConfigServer:
         else:
             defaults = self._defaults
             selected_ids = (
-                set(defaults.selected_domain_ids) if defaults else {d.id for d in self._domains}
+                set(defaults.selected_domain_ids)
+                if defaults
+                else {d.id for d in self._domains}
             )
             issue_mode = defaults.issue_mode if defaults else "report"
             consent = defaults.telemetry_consent if defaults else TelemetryConsent()
@@ -574,7 +594,9 @@ class ConfigServer:
                 f'<span class="domain-trigger">{html.escape(domain.trigger)}</span>'
                 "</label>"
             )
-        domain_error = f'<p class="form-error">{html.escape(error)}</p>' if error else ""
+        domain_error = (
+            f'<p class="form-error">{html.escape(error)}</p>' if error else ""
+        )
         output_location_error_html = (
             f'<p class="form-error">{html.escape(output_location_error)}</p>'
             if output_location_error
@@ -614,18 +636,28 @@ class ConfigServer:
             feedback_text=html.escape(feedback_text or ""),
             consent_coverage_checked="checked" if consent.coverage else "",
             consent_rollup_checked="checked" if consent.rollup else "",
-            consent_self_assessment_checked="checked" if consent.self_assessment else "",
+            consent_self_assessment_checked="checked"
+            if consent.self_assessment
+            else "",
             consent_environment_checked="checked" if consent.environment else "",
-            consent_consulted_sources_checked="checked" if consent.consulted_sources else "",
-            consent_verdict_distribution_checked="checked" if consent.verdict_distribution else "",
+            consent_consulted_sources_checked="checked"
+            if consent.consulted_sources
+            else "",
+            consent_verdict_distribution_checked="checked"
+            if consent.verdict_distribution
+            else "",
             consent_duration_checked="checked" if consent.duration else "",
             consent_rules_fetched_checked="checked" if consent.rules_fetched else "",
             csrf_token=html.escape(self._csrf_token),
             output_location_error=output_location_error_html,
             output_dir_display=output_dir_display,
             gitignore_warning=gitignore_warning_html,
-            output_location_default_checked="checked" if output_location_mode == "default" else "",
-            output_location_custom_checked="checked" if output_location_mode == "custom" else "",
+            output_location_default_checked="checked"
+            if output_location_mode == "default"
+            else "",
+            output_location_custom_checked="checked"
+            if output_location_mode == "custom"
+            else "",
             output_location_path=html.escape(output_location_path or ""),
         )
 
@@ -675,7 +707,9 @@ class ConfigServer:
         if self._submitted.is_set():
             with self._lock:
                 if self._config is None:
-                    raise RuntimeError("submitted event set but no config stored: internal bug")
+                    raise RuntimeError(
+                        "submitted event set but no config stored: internal bug"
+                    )
                 return self._config
         return "pending"
 
@@ -691,7 +725,9 @@ class ConfigServer:
             )
         with self._lock:
             if self._config is None:
-                raise RuntimeError("submitted event set but no config stored: internal bug")
+                raise RuntimeError(
+                    "submitted event set but no config stored: internal bug"
+                )
             return self._config
 
     def shutdown(self) -> None:

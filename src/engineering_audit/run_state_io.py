@@ -137,7 +137,9 @@ def atomic_write_text(path: Path, text: str) -> None:
     temporary file. The previous contents of ``path`` are untouched in that
     case: a failed write leaves the last good state, never a truncated one.
     """
-    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    fd, tmp_name = tempfile.mkstemp(
+        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
+    )
     tmp_path = Path(tmp_name)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:

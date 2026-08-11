@@ -65,7 +65,9 @@ def _domain_results() -> dict[str, DomainResult]:
                 RuleVerdict(rule_id="D01-R02", verdict=Verdict.FINDING),
             ],
             findings=[finding],
-            self_assessment=SelfAssessment(confidence="high", limits="did not check archives"),
+            self_assessment=SelfAssessment(
+                confidence="high", limits="did not check archives"
+            ),
             coverage=Coverage(files_inspected=12, files_skipped=1),
             consulted_sources=[
                 ConsultedSource(
@@ -94,9 +96,14 @@ def test_feedback_subject_uses_date_and_assistant() -> None:
 
 
 def test_body_always_includes_free_text_and_run_metadata() -> None:
-    body = build_feedback_body("The gnome export was slow.", _meta(), TelemetryConsent(
-        coverage=False, rollup=False, self_assessment=False, environment=False
-    ), _domain_results())
+    body = build_feedback_body(
+        "The gnome export was slow.",
+        _meta(),
+        TelemetryConsent(
+            coverage=False, rollup=False, self_assessment=False, environment=False
+        ),
+        _domain_results(),
+    )
 
     assert "The gnome export was slow." in body
     assert "Run metadata" in body
@@ -107,10 +114,17 @@ def test_body_always_includes_free_text_and_run_metadata() -> None:
     assert "0.1.0" in body
 
 
-def test_run_metadata_reports_unknown_tool_and_rules_commit_when_not_determined() -> None:
-    body = build_feedback_body("hi", _meta(), TelemetryConsent(
-        coverage=False, rollup=False, self_assessment=False, environment=False
-    ), _domain_results())
+def test_run_metadata_reports_unknown_tool_and_rules_commit_when_not_determined() -> (
+    None
+):
+    body = build_feedback_body(
+        "hi",
+        _meta(),
+        TelemetryConsent(
+            coverage=False, rollup=False, self_assessment=False, environment=False
+        ),
+        _domain_results(),
+    )
 
     assert "Tool commit: unknown" in body
     assert "Rules commit: unknown" in body
@@ -118,19 +132,32 @@ def test_run_metadata_reports_unknown_tool_and_rules_commit_when_not_determined(
 
 def test_run_metadata_reports_full_tool_and_rules_commit_when_known() -> None:
     meta = _meta(tool_commit="a" * 40, rules_pack_commit=f"{'b' * 40}-dirty")
-    body = build_feedback_body("hi", meta, TelemetryConsent(
-        coverage=False, rollup=False, self_assessment=False, environment=False
-    ), _domain_results())
+    body = build_feedback_body(
+        "hi",
+        meta,
+        TelemetryConsent(
+            coverage=False, rollup=False, self_assessment=False, environment=False
+        ),
+        _domain_results(),
+    )
 
     assert f"Tool commit: {'a' * 40}" in body
     assert f"Rules commit: {'b' * 40}-dirty" in body
 
 
 def test_unconsented_sections_are_omitted_entirely() -> None:
-    body = build_feedback_body("hi", _meta(), TelemetryConsent(
-        coverage=False, rollup=False, self_assessment=False, environment=False,
-        consulted_sources=False,
-    ), _domain_results())
+    body = build_feedback_body(
+        "hi",
+        _meta(),
+        TelemetryConsent(
+            coverage=False,
+            rollup=False,
+            self_assessment=False,
+            environment=False,
+            consulted_sources=False,
+        ),
+        _domain_results(),
+    )
 
     assert "Coverage" not in body
     assert "Findings rollup" not in body
@@ -141,10 +168,18 @@ def test_unconsented_sections_are_omitted_entirely() -> None:
 
 
 def test_consented_sections_are_included_with_correct_totals() -> None:
-    body = build_feedback_body("hi", _meta(), TelemetryConsent(
-        coverage=True, rollup=True, self_assessment=True, environment=True,
-        consulted_sources=True,
-    ), _domain_results())
+    body = build_feedback_body(
+        "hi",
+        _meta(),
+        TelemetryConsent(
+            coverage=True,
+            rollup=True,
+            self_assessment=True,
+            environment=True,
+            consulted_sources=True,
+        ),
+        _domain_results(),
+    )
 
     assert "Coverage" in body
     assert "Files inspected: 17" in body
@@ -163,12 +198,18 @@ def test_consented_sections_are_included_with_correct_totals() -> None:
     assert "Environment" in body
 
     assert "Sources consulted" in body
-    assert "D01-R01: https://example.invalid/standard (why: checked the standard's " in body
+    assert (
+        "D01-R01: https://example.invalid/standard (why: checked the standard's "
+        in body
+    )
 
 
 def test_environment_section_reports_absence_when_none_recorded() -> None:
     body = build_feedback_body(
-        "hi", _meta(environment=None), TelemetryConsent(environment=True), _domain_results()
+        "hi",
+        _meta(environment=None),
+        TelemetryConsent(environment=True),
+        _domain_results(),
     )
     assert "No environment information reported for this run." in body
 
@@ -186,14 +227,20 @@ def test_environment_section_lists_recorded_keys() -> None:
 
 def test_finding_text_never_appears_in_the_body_even_when_rollup_consented() -> None:
     body = build_feedback_body(
-        "hi", _meta(), TelemetryConsent(coverage=True, rollup=True, self_assessment=True, environment=True),
+        "hi",
+        _meta(),
+        TelemetryConsent(
+            coverage=True, rollup=True, self_assessment=True, environment=True
+        ),
         _domain_results(),
     )
     assert "a finding title that must never appear in feedback" not in body
     assert "the finding body, which must also never appear in feedback" not in body
 
 
-def test_consulted_source_carries_only_rule_id_url_and_why_never_title_or_accessed() -> None:
+def test_consulted_source_carries_only_rule_id_url_and_why_never_title_or_accessed() -> (
+    None
+):
     # Design decision: consulted_sources also carries title and accessed,
     # for the local report to display, but the feedback body sent off the
     # machine is deliberately thinner, the same way findings carry only
@@ -207,7 +254,11 @@ def test_consulted_source_carries_only_rule_id_url_and_why_never_title_or_access
 
 
 def test_build_mailto_url_encodes_subject_and_body() -> None:
-    url = build_mailto_url(FEEDBACK_EMAIL, "Feedback: audit run 2026-08-09 (claude-code)", "line one\nline two & more")
+    url = build_mailto_url(
+        FEEDBACK_EMAIL,
+        "Feedback: audit run 2026-08-09 (claude-code)",
+        "line one\nline two & more",
+    )
     parsed = urlparse(url)
     assert parsed.scheme == "mailto"
     assert parsed.path == FEEDBACK_EMAIL
@@ -220,7 +271,9 @@ def test_feedback_repo_constant_is_the_tool_authors_repo() -> None:
     assert FEEDBACK_REPO == "rodlunt/engineering-audit"
 
 
-def test_build_feedback_sections_returns_the_nine_fixed_sections_regardless_of_consent() -> None:
+def test_build_feedback_sections_returns_the_nine_fixed_sections_regardless_of_consent() -> (
+    None
+):
     # build_feedback_sections computes every section unconditionally; only
     # build_feedback_body (and the report's own consent gating) decides
     # which ones make it into a given message.
@@ -264,7 +317,9 @@ def test_verdict_distribution_section_reports_per_domain_and_run_total_counts() 
     assert "a finding title that must never appear in feedback" not in section
 
 
-def test_verdict_distribution_section_names_a_could_not_run_domain_rather_than_zero_counts() -> None:
+def test_verdict_distribution_section_names_a_could_not_run_domain_rather_than_zero_counts() -> (
+    None
+):
     # A could-not-run domain has no rule_verdicts at all (DomainResult
     # enforces this): reporting it as "pass 0, finding 0, ..." would look
     # exactly like a domain that ran and found nothing wrong, which is the
@@ -272,7 +327,9 @@ def test_verdict_distribution_section_names_a_could_not_run_domain_rather_than_z
     # having run instead.
     domain_results = {
         **_domain_results(),
-        "d03": DomainResult(domain_id="d03", status="could-not-run", reason="no git repository found"),
+        "d03": DomainResult(
+            domain_id="d03", status="could-not-run", reason="no git repository found"
+        ),
     }
     section = build_feedback_sections(_meta(), domain_results)["verdict_distribution"]
     assert "- d03: could not run" in section
@@ -292,7 +349,9 @@ def test_duration_section_matches_the_reports_own_duration_wording() -> None:
     assert "server-measured" in section
 
 
-def test_duration_section_reports_unmeasured_honestly_rather_than_as_agreement() -> None:
+def test_duration_section_reports_unmeasured_honestly_rather_than_as_agreement() -> (
+    None
+):
     # server_started/server_finished absent means "never measured", not
     # "agrees with the assistant". The section must say so, not silently
     # show only the assistant's figure as though it had been checked.
@@ -315,7 +374,9 @@ def test_rules_fetched_section_reports_per_domain_fetched_state() -> None:
     assert "- d02: not fetched" in section
 
 
-def test_rules_fetched_section_reports_unrecorded_rather_than_not_fetched_for_a_legacy_run() -> None:
+def test_rules_fetched_section_reports_unrecorded_rather_than_not_fetched_for_a_legacy_run() -> (
+    None
+):
     # rules_fetched_domain_ids=None means the whole run predates fetch
     # tracking: every domain's status is unknown, and the section must say
     # "unrecorded" for each, never collapse that into "not fetched" (which
@@ -331,7 +392,9 @@ def test_rules_fetched_section_reports_unrecorded_rather_than_not_fetched_for_a_
     assert "- d02: not fetched" not in section
 
 
-def test_rules_fetched_section_distinguishes_a_domain_carried_in_from_an_earlier_untracked_resume() -> None:
+def test_rules_fetched_section_distinguishes_a_domain_carried_in_from_an_earlier_untracked_resume() -> (
+    None
+):
     # A run that DOES record fetches can still carry one domain forward from
     # before tracking existed (an earlier resume): that domain lands in
     # rules_fetch_unknown_domain_ids even though the run overall has a
@@ -351,10 +414,15 @@ def test_rules_fetched_section_distinguishes_a_domain_carried_in_from_an_earlier
 def test_rules_fetched_section_names_a_could_not_run_domain_as_did_not_run() -> None:
     domain_results = {
         **_domain_results(),
-        "d03": DomainResult(domain_id="d03", status="could-not-run", reason="no git repository found"),
+        "d03": DomainResult(
+            domain_id="d03", status="could-not-run", reason="no git repository found"
+        ),
     }
     section = build_feedback_sections(
-        _meta(), domain_results, rules_fetched_domain_ids=["d01"], rules_fetch_unknown_domain_ids=[]
+        _meta(),
+        domain_results,
+        rules_fetched_domain_ids=["d01"],
+        rules_fetch_unknown_domain_ids=[],
     )["rules_fetched"]
     assert "- d03: did not run" in section
 
@@ -366,10 +434,15 @@ def test_consulted_sources_section_reports_absence_when_none_recorded() -> None:
     # built.
     domain_results = {"d02": _domain_results()["d02"]}
     sections = build_feedback_sections(_meta(), domain_results)
-    assert "No sources were consulted outside the rules pack this run." in sections["consulted_sources"]
+    assert (
+        "No sources were consulted outside the rules pack this run."
+        in sections["consulted_sources"]
+    )
 
 
-def test_rollup_by_domain_includes_a_domain_that_was_audited_and_came_back_clean() -> None:
+def test_rollup_by_domain_includes_a_domain_that_was_audited_and_came_back_clean() -> (
+    None
+):
     # d02 in _domain_results() is completed with zero findings: it must
     # appear in the rollup's "By domain" breakdown at zero, not be omitted
     # as if it were never audited at all.
@@ -378,7 +451,9 @@ def test_rollup_by_domain_includes_a_domain_that_was_audited_and_came_back_clean
     assert "d02: 0" in sections["rollup"]
 
 
-def test_build_feedback_body_matches_build_feedback_sections_for_every_consent_combination() -> None:
+def test_build_feedback_body_matches_build_feedback_sections_for_every_consent_combination() -> (
+    None
+):
     # The MCP path (build_feedback_body) must always be reconstructible from
     # build_feedback_sections' per-section chunks, since the report's JS
     # reconstructs the same body from those same chunks by a different
@@ -413,16 +488,18 @@ def test_build_feedback_body_matches_build_feedback_sections_for_every_consent_c
         assert body == "\n\n".join(expected_parts)
 
 
-def test_verdict_distribution_duration_and_rules_fetched_are_omitted_unless_consented() -> None:
-    body = build_feedback_body(
-        "hi", _meta(), TelemetryConsent(), _domain_results()
-    )
+def test_verdict_distribution_duration_and_rules_fetched_are_omitted_unless_consented() -> (
+    None
+):
+    body = build_feedback_body("hi", _meta(), TelemetryConsent(), _domain_results())
     assert "Rule verdict distribution" not in body
     assert "Duration" not in body
     assert "Rules fetched" not in body
 
 
-def test_verdict_distribution_duration_and_rules_fetched_appear_when_consented() -> None:
+def test_verdict_distribution_duration_and_rules_fetched_appear_when_consented() -> (
+    None
+):
     body = build_feedback_body(
         "hi",
         _meta(),
@@ -465,7 +542,13 @@ def test_build_issue_trailing_line_matches_the_wording_file_issues_sends() -> No
 
 
 def test_build_issue_trailing_line_raises_for_a_sourceless_rule() -> None:
-    rule = Rule(id="D01-R04", title="Unsourced rule", number=4, volatility="volatile", source=None)
+    rule = Rule(
+        id="D01-R04",
+        title="Unsourced rule",
+        number=4,
+        volatility="volatile",
+        source=None,
+    )
     finding = Finding(
         rule_id="D01-R04",
         severity=Severity.LOW,

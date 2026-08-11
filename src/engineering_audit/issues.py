@@ -60,7 +60,9 @@ class CreatedIssue:
     warnings: list[str] = field(default_factory=list)
 
 
-def _default_runner(args: list[str], cwd: Path | None = None) -> "subprocess.CompletedProcess[str]":
+def _default_runner(
+    args: list[str], cwd: Path | None = None
+) -> "subprocess.CompletedProcess[str]":
     return subprocess.run(args, cwd=cwd, capture_output=True, text=True, check=False)
 
 
@@ -140,7 +142,19 @@ def ensure_label(
     losing the finding is not.
     """
     listed = runner(
-        ["gh", "label", "list", "--repo", repo, "--search", name, "--json", "name", "-q", ".[].name"]
+        [
+            "gh",
+            "label",
+            "list",
+            "--repo",
+            repo,
+            "--search",
+            name,
+            "--json",
+            "name",
+            "-q",
+            ".[].name",
+        ]
     )
     if listed.returncode == 0:
         # A failed list is not an absent label: fall through to the create
@@ -190,7 +204,12 @@ def _looks_like_unknown_label_error(stderr: str) -> bool:
         return False
     return any(
         phrase in lowered
-        for phrase in ("not found", "does not exist", "could not resolve", "could not add")
+        for phrase in (
+            "not found",
+            "does not exist",
+            "could not resolve",
+            "could not add",
+        )
     )
 
 
@@ -231,7 +250,17 @@ def create_issue(
     """
 
     def _run(label_list: list[str]) -> "subprocess.CompletedProcess[str]":
-        args = ["gh", "issue", "create", "--repo", repo, "--title", title, "--body", body]
+        args = [
+            "gh",
+            "issue",
+            "create",
+            "--repo",
+            repo,
+            "--title",
+            title,
+            "--body",
+            body,
+        ]
         for label in label_list:
             args += ["--label", label]
         return runner(args)

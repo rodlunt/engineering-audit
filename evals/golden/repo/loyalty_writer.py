@@ -20,7 +20,9 @@ def sign_up_customer(conn, email: str, display_name: str) -> int:
     return cursor.lastrowid
 
 
-def record_redemption(conn, customer_id: int, reward_name: str, points_cost: int) -> None:
+def record_redemption(
+    conn, customer_id: int, reward_name: str, points_cost: int
+) -> None:
     """Record a redemption and deduct the spent points from the customer's
     running balance."""
     cursor = conn.cursor()

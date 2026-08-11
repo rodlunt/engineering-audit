@@ -24,6 +24,7 @@ def test_signup_creates_a_bronze_tier_customer_with_zero_balance():
     customer_id = sign_up_customer(conn, "priya@example.test", "Priya")
 
     row = conn.execute(
-        "SELECT loyalty_tier, points_balance FROM customers WHERE id = ?", (customer_id,)
+        "SELECT loyalty_tier, points_balance FROM customers WHERE id = ?",
+        (customer_id,),
     ).fetchone()
     assert row == ("bronze", 0)

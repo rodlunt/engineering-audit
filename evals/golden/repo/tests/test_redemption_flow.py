@@ -25,7 +25,9 @@ def _connect():
 def test_redemption_deducts_points_and_records_the_ledger_row():
     conn = _connect()
     customer_id = sign_up_customer(conn, "ash@example.test", "Ash")
-    conn.execute("UPDATE customers SET points_balance = 500 WHERE id = ?", (customer_id,))
+    conn.execute(
+        "UPDATE customers SET points_balance = 500 WHERE id = ?", (customer_id,)
+    )
     conn.commit()
 
     record_redemption(conn, customer_id, "free flat white", 150)
@@ -36,6 +38,7 @@ def test_redemption_deducts_points_and_records_the_ledger_row():
     assert balance == 350
 
     ledger_rows = conn.execute(
-        "SELECT reward_name, points_spent FROM redemptions WHERE customer_id = ?", (customer_id,)
+        "SELECT reward_name, points_spent FROM redemptions WHERE customer_id = ?",
+        (customer_id,),
     ).fetchall()
     assert ledger_rows == [("free flat white", 150)]
