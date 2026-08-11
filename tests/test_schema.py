@@ -399,6 +399,29 @@ def test_telemetry_consent_consulted_sources_defaults_off() -> None:
     assert TelemetryConsent().consulted_sources is False
 
 
+def test_audit_config_deliverables_dir_defaults_to_none() -> None:
+    # Issue #109: the default stays exactly what it was before this field
+    # existed, unset, meaning "the run's own output_dir".
+    assert _config().deliverables_dir is None
+
+
+def test_audit_config_accepts_an_explicit_deliverables_dir() -> None:
+    config = AuditConfig(
+        selected_domain_ids=["d01"],
+        issue_mode="report",
+        deliverables_dir="/home/rodney/audit-reports/widgets-app",
+    )
+    assert config.deliverables_dir == "/home/rodney/audit-reports/widgets-app"
+
+
+def test_audit_config_rejects_a_blank_deliverables_dir() -> None:
+    # A blank string is an empty form field that made it through, not a real
+    # choice; schema.py only checks the shape, not whether the path itself is
+    # usable (see output_location.validate_deliverables_dir for that).
+    with pytest.raises(ValidationError):
+        AuditConfig(selected_domain_ids=["d01"], issue_mode="report", deliverables_dir="   ")
+
+
 def test_run_state_rejects_domain_results_key_mismatched_with_domain_id() -> None:
     # domain_results is keyed by domain_id; a DomainResult filed under a
     # different key than its own domain_id is silent data corruption (a

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -918,6 +919,290 @@ def test_the_page_script_leaves_the_form_alone_while_the_heartbeat_answers(domai
     assert observed["submitDisabled"] is False
     assert observed["bannerHidden"] is True
     assert observed["cookie"] == ""
+
+
+# ---------------------------------------------------------------------------
+# Output location choice (issue #109)
+# ---------------------------------------------------------------------------
+
+
+def _submit_output_location(
+    url: str, token: str, output_location: str, output_location_path: str = ""
+) -> tuple[int, str]:
+    return _post(
+        url,
+        {
+            "domain": ["d01"],
+            "issue_mode": "report",
+            "output_location": output_location,
+            "output_location_path": output_location_path,
+            "csrf_token": token,
+        },
+    )
+
+
+def test_default_output_location_leaves_deliverables_dir_unset(domains) -> None:
+    # The conservative reading of issue #109: the default stays exactly what
+    # it was, and the user gains a choice rather than a changed behaviour.
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        token = _fetch_csrf_token(url)
+        status, _body = _submit_output_location(url, token, "default")
+        assert status == 200
+        config = srv.poll()
+        assert config != "pending"
+        assert config.deliverables_dir is None
+    finally:
+        srv.shutdown()
+
+
+def test_custom_output_location_is_resolved_and_honoured(tmp_path, domains) -> None:
+    target = tmp_path / "reports" / "this-run"
+    target.mkdir(parents=True)
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        token = _fetch_csrf_token(url)
+        status, _body = _submit_output_location(url, token, "custom", str(target))
+        assert status == 200
+        config = srv.poll()
+        assert config != "pending"
+        assert config.deliverables_dir == str(target.resolve())
+    finally:
+        srv.shutdown()
+
+
+def test_custom_output_location_path_is_expanded_and_resolved(
+    tmp_path, domains, monkeypatch
+) -> None:
+    # "~" expansion happens against HOME at submission time; a fabricated
+    # HOME here makes the resolution observable rather than incidental.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / "reports").mkdir()
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        token = _fetch_csrf_token(url)
+        status, _body = _submit_output_location(url, token, "custom", "~/reports")
+        assert status == 200
+        config = srv.poll()
+        assert config != "pending"
+        assert config.deliverables_dir == str((tmp_path / "reports").resolve())
+    finally:
+        srv.shutdown()
+
+
+def test_check_output_location_endpoint_echoes_the_resolved_path(
+    tmp_path, domains, monkeypatch
+) -> None:
+    # This is the "before submission" echo: a live, read-only preview the
+    # page's script polls as the user types, not only shown after a
+    # rejected submission.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / "reports").mkdir()
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        with urllib.request.urlopen(url + "check-output-location?path=~%2Freports", timeout=5) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        assert payload["resolved"] == str((tmp_path / "reports").resolve())
+        assert payload["error"] is None
+    finally:
+        srv.shutdown()
+
+
+def test_check_output_location_endpoint_reports_a_missing_parent(tmp_path, domains) -> None:
+    missing = tmp_path / "does-not-exist" / "reports"
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        with urllib.request.urlopen(
+            url + "check-output-location?path=" + quote(str(missing)), timeout=5
+        ) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        assert payload["resolved"] == str(missing)
+        assert payload["error"] is not None
+        assert "does not exist" in payload["error"]
+    finally:
+        srv.shutdown()
+
+
+def test_custom_output_location_with_missing_parent_is_rejected_at_config_time(
+    tmp_path, domains
+) -> None:
+    # Requirement: fail clearly at configuration time, not at render_report
+    # after the whole audit has been paid for.
+    missing = tmp_path / "does-not-exist" / "reports"
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        token = _fetch_csrf_token(url)
+        status, body = _submit_output_location(url, token, "custom", str(missing))
+        assert status == 400
+        assert "does not exist" in body
+        assert srv.poll() == "pending"
+    finally:
+        srv.shutdown()
+
+
+def test_custom_output_location_with_unwritable_parent_is_rejected_at_config_time(
+    tmp_path, domains
+) -> None:
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        pytest.skip(
+            "running as root: permission bits never block root, so an unwritable "
+            "parent cannot be exercised this way"
+        )
+    parent = tmp_path / "locked"
+    parent.mkdir()
+    parent.chmod(0o500)  # read + execute, no write
+    target = parent / "reports"
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        token = _fetch_csrf_token(url)
+        try:
+            status, body = _submit_output_location(url, token, "custom", str(target))
+        finally:
+            parent.chmod(0o700)  # restore so tmp_path cleanup can remove it
+        assert status == 400
+        assert "not writable" in body
+        assert srv.poll() == "pending"
+    finally:
+        srv.shutdown()
+
+
+def test_custom_output_location_never_silently_overwrites_an_existing_report(
+    tmp_path, domains
+) -> None:
+    target = tmp_path / "reports"
+    target.mkdir()
+    (target / "report.html").write_text("an earlier run's report", encoding="utf-8")
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        token = _fetch_csrf_token(url)
+        status, body = _submit_output_location(url, token, "custom", str(target))
+        assert status == 400
+        assert "already contains" in body
+        assert srv.poll() == "pending"
+    finally:
+        srv.shutdown()
+
+
+def test_custom_output_location_with_blank_path_is_rejected_with_a_friendly_message(
+    domains,
+) -> None:
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        token = _fetch_csrf_token(url)
+        status, body = _submit_output_location(url, token, "custom", "")
+        assert status == 400
+        assert "Enter a custom path" in body
+        assert srv.poll() == "pending"
+    finally:
+        srv.shutdown()
+
+
+def test_rejected_custom_output_location_re_renders_the_form_and_keeps_other_fields(
+    tmp_path, domains
+) -> None:
+    missing = tmp_path / "does-not-exist" / "reports"
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        token = _fetch_csrf_token(url)
+        status, body = _post(
+            url,
+            {
+                "domain": ["d01"],
+                "issue_mode": "github",
+                "feedback_text": "please keep my note",
+                "output_location": "custom",
+                "output_location_path": str(missing),
+                "csrf_token": token,
+            },
+        )
+        assert status == 400
+        assert "please keep my note" in body
+        github_match = re.search(
+            r'<input type="radio" name="issue_mode" value="github"[^>]*>', body
+        )
+        assert github_match is not None
+        assert "checked" in github_match.group(0)
+        # The mistyped path itself is preserved so the user is not left
+        # retyping it.
+        assert str(missing) in body
+    finally:
+        srv.shutdown()
+
+
+def test_default_output_location_shows_the_runs_output_dir(tmp_path, domains) -> None:
+    out_dir = tmp_path / "audit-output"
+    srv = ConfigServer(domains, output_dir=out_dir)
+    try:
+        url = srv.start()
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            page = resp.read().decode("utf-8")
+        assert str(out_dir) in page
+    finally:
+        srv.shutdown()
+
+
+def test_gitignore_warning_is_shown_when_given_to_the_server(domains) -> None:
+    srv = ConfigServer(
+        domains, gitignore_warning="audit-output is not covered by a .gitignore entry."
+    )
+    try:
+        url = srv.start()
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            page = resp.read().decode("utf-8")
+        assert "not covered by a .gitignore entry" in page
+    finally:
+        srv.shutdown()
+
+
+def test_no_gitignore_warning_when_none_is_given(domains) -> None:
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            page = resp.read().decode("utf-8")
+        assert 'class="gitignore-warning"' not in page
+    finally:
+        srv.shutdown()
+
+
+def test_the_second_inline_script_parses(domains) -> None:
+    # The output-location preview lives in its own <script> tag (see
+    # config-page.html) precisely so it cannot take the heartbeat down with
+    # it on a syntax error; this is that second tag's own parse check, the
+    # sibling of test_the_pages_inline_script_parses.
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip(
+            "node is not installed on this machine, so the configuration page's second "
+            "inline script was not parse-checked. Node is present on CI runners; install "
+            "node to run this check locally."
+        )
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            page = resp.read().decode("utf-8")
+    finally:
+        srv.shutdown()
+    starts = [m.start() for m in re.finditer(r'<script nonce="', page)]
+    assert len(starts) == 2, "expected exactly two <script> tags on the configuration page"
+    second_open = page.index(">", starts[1]) + 1
+    second_close = page.index("</script>", second_open)
+    script = page[second_open:second_close]
+    result = subprocess.run([node, "--check", "-"], input=script, capture_output=True, text=True)
+    assert result.returncode == 0, (
+        f"the configuration page's second inline script does not parse:\n{result.stderr}"
+    )
 
 
 def test_parse_draft_cookie_rejects_a_bad_issue_mode_without_dropping_the_domains() -> None:

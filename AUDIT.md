@@ -53,6 +53,12 @@ directory inside the repository being audited, not inside this tool's own reposi
 GitHub repository to file issues on; pass it now even if you do not yet know whether the user
 will choose GitHub issue filing.
 
+`output_dir` is only ever the run's working directory: it is where the crash-recovery progress
+file described below lives, and nothing else is guaranteed to end up there. Where the finished
+`report.html` and `run-state.json` actually land is a separate choice the user makes on the
+configuration page in step 3, defaulting to `output_dir` if they do not change it. Do not tell
+the user their report will be at `output_dir` before that page has been submitted.
+
 If `begin_run` errors because a run is already in progress, that means a previous audit in this
 same server process never finished. Either resume by calling the remaining tools in order below
 against the existing run, or, if you are deliberately restarting, call `begin_run` again with
@@ -123,7 +129,9 @@ Call `start_config`. It responds in one of two modes:
   it in the user's browser itself. If `opened_in_browser` is true, tell the user a configuration
   page has opened in their browser, and still show the URL in case the tab is buried. If it is
   false (a remote or display-less session), **show the URL to the user as a clickable line** and
-  ask them to open it. Either way: choose which domains to audit, and submit the form.
+  ask them to open it. Either way: choose which domains to audit, decide where the report should
+  land (the page shows the default in-repo path and warns when it is not gitignored, or a custom
+  path), and submit the form.
 
 In interactive mode, **call `get_config` in a loop.** It does not hold one call open until the
 user submits: it waits internally for about 25 seconds, then returns and expects to be called
@@ -299,13 +307,15 @@ Check `config.issue_mode` from step 3's `get_config` response.
 ## 7. Render the report
 
 Call `render_report` with a `finished` ISO timestamp (the current time, same format as `started`
-in step 1). It writes `report.html` and `run-state.json` into the run's `output_dir` and returns
-their paths along with a findings summary. Any issues filed in step 6 are linked automatically,
-and any `consulted_sources` recorded in step 4 appear in the report's own "Sources consulted
-this run" section, grouped by rule id; there is nothing further to pass for either. The run's
-`run-state.progress.json` recovery file is removed at this point: `run-state.json` is the
-record from here, and a later `begin_run` on the same `output_dir` starts a clean run rather
-than offering to resume this one.
+in step 1). It writes `report.html` and `run-state.json` into the deliverables directory chosen
+on the configuration page in step 3 (`output_dir` if the user left it on the default), and
+returns their paths along with a findings summary. Any issues filed in step 6 are linked
+automatically, and any `consulted_sources` recorded in step 4 appear in the report's own "Sources
+consulted this run" section, grouped by rule id; there is nothing further to pass for either. The
+run's `run-state.progress.json` recovery file, which always stays in `output_dir` regardless of
+where the deliverables landed, is removed at this point: `run-state.json` is the record from
+here, and a later `begin_run` on the same `output_dir` starts a clean run rather than offering to
+resume this one.
 
 `started` and `finished` are your own claim about when the run ran, not something the server
 checks at the time you give it. The server separately stamps its own clock at `begin_run` and at

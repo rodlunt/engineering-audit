@@ -65,6 +65,13 @@ from engineering_audit.issues import (
     ensure_label,
     gh_available,
 )
+from engineering_audit.output_location import (
+    REPORT_FILENAME,
+    RUN_STATE_FILENAME,
+    deliverables_dir_for,
+    resolve_deliverables_dir,
+    validate_deliverables_dir,
+)
 from engineering_audit.report import ReportError, write_report
 from engineering_audit.rules import Rule, RulesPack, RulesPackError, get_domain_text, load_pack
 from engineering_audit.run_state_io import (
@@ -240,6 +247,38 @@ def _git_release_version(path: Path) -> str | None:
     exact = _run_git(["describe", "--tags", "--exact-match", "--match", "v*"], path)
     at_tag = exact is not None and exact.returncode == 0
     return tag if at_tag else f"{tag}+"
+
+
+def _output_dir_ignore_warning(repo_dir: Path | None, output_dir: Path) -> str | None:
+    """A plain-language warning if output_dir is not covered by a gitignore
+    entry inside repo_dir, or None if it is, or the check does not apply, or
+    it could not be made at all.
+
+    Issue #109: a tester noticed by eye that the default output_dir sits
+    untracked inside the repository being audited, with nothing telling
+    them so. This is the tool making the same observation itself, from
+    repo_dir, before the run gets far enough to matter: shown on the
+    configuration page next to the default choice, not after the fact.
+
+    Best effort, the same convention every other git fact in this module
+    follows (see _git_commit, _git_release_version): no repo_dir, git not
+    installed, the call timing out, or git reporting a fatal error (most
+    commonly output_dir sitting outside repo_dir entirely, or repo_dir not
+    being a git repository at all) all fall through to None rather than a
+    guess dressed up as a fact.
+    """
+    if repo_dir is None:
+        return None
+    result = _run_git(["check-ignore", "-q", str(output_dir)], repo_dir)
+    if result is None or result.returncode not in (0, 1):
+        return None
+    if result.returncode == 0:
+        return None  # already ignored: nothing to warn about
+    return (
+        f"{output_dir} is not covered by a .gitignore entry in this repository. Add one, "
+        "or choose a custom location above, or the report and run state risk being "
+        "committed by accident."
+    )
 
 
 @dataclass
@@ -452,12 +491,15 @@ def _rules_fetch_summary(run: RunTracker) -> dict[str, list[str]]:
 def _progress_path(output_dir: Path) -> Path:
     """The crash-recovery file for a run whose output directory is this.
 
-    It lives beside the run's own report.html and run-state.json, and nowhere
-    else: the output directory is the one path the agent already has to name
-    and remember, so a resumed session finds the file by pointing begin_run at
-    the same place it pointed the interrupted one. A central per-user recovery
+    It lives in output_dir and nowhere else, even when the configuration
+    page (or a preset AuditConfig) sends the finished report.html and
+    run-state.json to a different, user-chosen deliverables directory (issue
+    #109): output_dir is the one path the agent already has to name and
+    remember, so a resumed session finds the progress file by pointing
+    begin_run at the same place it pointed the interrupted one, regardless of
+    where that run's deliverables end up landing. A central per-user recovery
     directory would need its own naming, its own cleanup, and its own answer
-    to "which of these three is my run", none of which this needs.
+    to "which of these is my run", none of which this needs.
     """
     return output_dir / PROGRESS_FILENAME
 
@@ -1435,12 +1477,32 @@ def _register_config_tools(mcp: MCPServer, state: AppState) -> None:
                     f"ENGINEERING_AUDIT_CONFIG file '{path}' is not a valid AuditConfig: {exc}"
                 ) from exc
             _validate_selected_domains(state, config)
+            if config.deliverables_dir is not None:
+                # The interactive page validates a custom path before it
+                # ever reaches AuditConfig (see config_page.py's
+                # _parse_submission); a preset file skips that page
+                # entirely, so the same checks (parent exists, is
+                # writable, no report already sitting there) run again
+                # here. "The page is not the only possible caller" is
+                # exactly this path (issue #109).
+                resolved = resolve_deliverables_dir(config.deliverables_dir)
+                path_error = validate_deliverables_dir(resolved)
+                if path_error:
+                    raise ValueError(
+                        f"ENGINEERING_AUDIT_CONFIG file '{path}' names a deliverables_dir "
+                        f"that cannot be used: {path_error}"
+                    )
+                config = config.model_copy(update={"deliverables_dir": str(resolved)})
             run.config = config
             run.config_mode = "preset"
             _persist_run(run)
             return _with_warnings(run, _config_summary(run))
 
-        config_server = ConfigServer(state.pack.domains)
+        config_server = ConfigServer(
+            state.pack.domains,
+            output_dir=run.output_dir,
+            gitignore_warning=_output_dir_ignore_warning(run.repo_dir, run.output_dir),
+        )
         url = config_server.start()
         run.config_server = config_server
         run.config_mode = "interactive"
@@ -1849,8 +1911,14 @@ def _register_report_tools(mcp: MCPServer, state: AppState) -> None:
         refuses to render an incomplete run: a selected domain with no
         recorded result, or a completed result missing a rule verdict, raises
         rather than producing a report that looks clean over a gap), and
-        writes both report.html and run-state.json to the run's output
-        directory. Any issue URLs filed this run via file_issues, and any
+        writes both report.html and run-state.json to the run's deliverables
+        directory: config.deliverables_dir if the configuration page (or a
+        preset AuditConfig) named one, otherwise the run's own output_dir,
+        unchanged from how every run before that choice existed behaved.
+        output_dir itself is never affected by this choice; it stays the
+        run's working directory for the crash-recovery progress file
+        regardless of where the finished deliverables land (issue #109).
+        Any issue URLs filed this run via file_issues, and any
         feedback issue filed via submit_feedback, are carried on the
         RunState itself, so the written run-state.json is self-sufficient:
         it (and its schema_version) can be handed to
@@ -1903,12 +1971,13 @@ def _register_report_tools(mcp: MCPServer, state: AppState) -> None:
             feedback_issue_url=run.feedback_issue_url,
         )
 
+        deliverables_dir = deliverables_dir_for(run.output_dir, config.deliverables_dir)
         report_path = write_report(
             run_state,
             state.pack,
-            run.output_dir / "report.html",
+            deliverables_dir / REPORT_FILENAME,
         )
-        run_state_path = run.output_dir / "run-state.json"
+        run_state_path = deliverables_dir / RUN_STATE_FILENAME
         atomic_write_text(run_state_path, run_state.to_json())
 
         # The run's real output is on disk now, so the crash-recovery file has

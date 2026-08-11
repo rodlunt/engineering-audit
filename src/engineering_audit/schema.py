@@ -532,6 +532,17 @@ class AuditConfig(BaseModel):
     issue_mode: str
     feedback_text: str | None = None
     telemetry_consent: TelemetryConsent = Field(default_factory=TelemetryConsent)
+    deliverables_dir: str | None = Field(
+        default=None,
+        description=(
+            "Where render_report writes report.html and run-state.json, as an absolute, "
+            "already-resolved path (see engineering_audit.output_location.resolve_deliverables_dir). "
+            "None means the default: the run's own output_dir, unchanged from how every run "
+            "before this field existed behaved. output_dir itself is never affected by this "
+            "field: it stays the run's working directory for the crash-recovery progress file "
+            "regardless of where the finished deliverables end up (issue #109)."
+        ),
+    )
 
     @field_validator("issue_mode")
     @classmethod
@@ -546,6 +557,19 @@ class AuditConfig(BaseModel):
     def _at_least_one_domain(cls, value: list[str]) -> list[str]:
         if not value:
             raise ValueError("selected_domain_ids must not be empty")
+        return value
+
+    @field_validator("deliverables_dir")
+    @classmethod
+    def _deliverables_dir_not_blank(cls, value: str | None) -> str | None:
+        # Syntactic only: a blank string is never a real choice, just an
+        # empty form field that made it through. Whether the path itself is
+        # usable (parent exists, is writable, no report already there) is a
+        # filesystem question, deliberately not asked here; see
+        # output_location.validate_deliverables_dir and its docstring for why
+        # this model stays I/O-free.
+        if value is not None and not value.strip():
+            raise ValueError("deliverables_dir must not be blank when provided")
         return value
 
 

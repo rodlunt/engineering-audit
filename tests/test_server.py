@@ -35,6 +35,7 @@ from engineering_audit.server import (
     AppState,
     TelemetryStripError,
     _git_commit,
+    _output_dir_ignore_warning,
     _parse_direct_url_commit,
     _resolve_rules_dir,
     _strip_ambient_otel_middleware,
@@ -602,6 +603,49 @@ def test_git_commit_returns_none_for_a_non_repo_directory(tmp_path: Path) -> Non
     assert _git_commit(not_a_repo) is None
 
 
+# ---------------------------------------------------------------------------
+# _output_dir_ignore_warning (issue #109)
+# ---------------------------------------------------------------------------
+
+
+def test_output_dir_ignore_warning_fires_when_output_dir_is_not_gitignored(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    output_dir = repo / "audit-output"
+    output_dir.mkdir()
+
+    warning = _output_dir_ignore_warning(repo, output_dir)
+    assert warning is not None
+    assert str(output_dir) in warning
+    assert "gitignore" in warning.lower()
+
+
+def test_output_dir_ignore_warning_is_silent_when_output_dir_is_gitignored(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".gitignore").write_text("audit-output/\n", encoding="utf-8")
+    _init_git_repo(repo)
+    output_dir = repo / "audit-output"
+    output_dir.mkdir()
+
+    assert _output_dir_ignore_warning(repo, output_dir) is None
+
+
+def test_output_dir_ignore_warning_is_silent_with_no_repo_dir(tmp_path: Path) -> None:
+    assert _output_dir_ignore_warning(None, tmp_path / "audit-output") is None
+
+
+def test_output_dir_ignore_warning_is_silent_for_a_non_repo_directory(tmp_path: Path) -> None:
+    not_a_repo = tmp_path / "plain-dir"
+    not_a_repo.mkdir()
+    assert _output_dir_ignore_warning(not_a_repo, not_a_repo / "audit-output") is None
+
+
 def test_parse_direct_url_commit_returns_commit_id_for_a_git_style_payload() -> None:
     payload = json.dumps(
         {
@@ -700,6 +744,57 @@ def test_start_config_preset_path_rejects_unknown_domain_ids(
     assert "d99" in str(excinfo.value)
 
 
+# ---------------------------------------------------------------------------
+# start_config: deliverables_dir validation (issue #109)
+#
+# The preset path is the second caller output_location.py's rules have to
+# hold, alongside the interactive page's own POST handler (see
+# tests/test_config_page.py), because a preset AuditConfig never passes
+# through that page's _parse_submission at all.
+# ---------------------------------------------------------------------------
+
+
+def test_start_config_preset_path_honours_a_custom_deliverables_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mcp, _state = build_server(FIXTURE_PACK)
+    _begin_run(mcp, tmp_path / "audit-output")
+    target = tmp_path / "reports"
+    target.mkdir()
+    _preset_config_env(monkeypatch, tmp_path, deliverables_dir=str(target))
+
+    result = _call(mcp, "start_config", {})
+    assert result["config"]["deliverables_dir"] == str(target.resolve())
+
+
+def test_start_config_preset_path_rejects_a_deliverables_dir_with_a_missing_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mcp, _state = build_server(FIXTURE_PACK)
+    _begin_run(mcp, tmp_path / "audit-output")
+    missing = tmp_path / "does-not-exist" / "reports"
+    _preset_config_env(monkeypatch, tmp_path, deliverables_dir=str(missing))
+
+    with pytest.raises(ToolError) as excinfo:
+        _call(mcp, "start_config", {})
+    assert "does not exist" in str(excinfo.value)
+
+
+def test_start_config_preset_path_never_silently_overwrites_an_existing_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mcp, _state = build_server(FIXTURE_PACK)
+    _begin_run(mcp, tmp_path / "audit-output")
+    target = tmp_path / "reports"
+    target.mkdir()
+    (target / "report.html").write_text("an earlier run's report", encoding="utf-8")
+    _preset_config_env(monkeypatch, tmp_path, deliverables_dir=str(target))
+
+    with pytest.raises(ToolError) as excinfo:
+        _call(mcp, "start_config", {})
+    assert "already contains" in str(excinfo.value)
+
+
 def test_get_config_preset_path_returns_the_stored_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -748,6 +843,42 @@ def test_start_config_interactive_path_returns_a_url(tmp_path: Path) -> None:
     result = _call(mcp, "start_config", {})
     assert result["mode"] == "interactive"
     assert result["url"].startswith("http://127.0.0.1:")
+
+
+def test_start_config_interactive_path_warns_when_output_dir_is_not_gitignored(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    output_dir = repo / "audit-output"
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    _begin_run(mcp, output_dir, repo_dir=str(repo))
+    result = _call(mcp, "start_config", {})
+
+    with urllib.request.urlopen(result["url"], timeout=5) as resp:
+        page = resp.read().decode("utf-8")
+    assert str(output_dir) in page
+    assert "gitignore" in page.lower()
+
+
+def test_start_config_interactive_path_is_silent_when_output_dir_is_gitignored(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".gitignore").write_text("audit-output/\n", encoding="utf-8")
+    _init_git_repo(repo)
+    output_dir = repo / "audit-output"
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    _begin_run(mcp, output_dir, repo_dir=str(repo))
+    result = _call(mcp, "start_config", {})
+
+    with urllib.request.urlopen(result["url"], timeout=5) as resp:
+        page = resp.read().decode("utf-8")
+    assert 'class="gitignore-warning"' not in page
 
 
 def test_start_config_interactive_path_opens_the_browser_and_says_so(
@@ -1242,6 +1373,44 @@ def test_render_report_succeeds_once_every_selected_domain_is_recorded(
 
     assert result["findings_summary"]["total_findings"] == 1
     assert result["findings_summary"]["by_severity"]["high"] == 1
+
+
+def test_render_report_writes_to_a_custom_deliverables_dir_and_leaves_the_progress_file_in_output_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The heart of issue #109's recommended option (a): the picker chooses
+    # where the deliverables land, but output_dir stays the run's working
+    # directory for the crash-recovery progress file throughout, and that
+    # file is gone once the report is written, same as the default path.
+    mcp, _state = build_server(FIXTURE_PACK)
+    out_dir = tmp_path / "audit-output"
+    deliverables_dir = tmp_path / "reports" / "this-run"
+    deliverables_dir.mkdir(parents=True)
+    _begin_run(mcp, out_dir)
+    _preset_config_env(monkeypatch, tmp_path, deliverables_dir=str(deliverables_dir))
+    _call(mcp, "start_config", {})
+    _call(mcp, "get_config", {"timeout_s": 1})
+
+    # The progress file is written into output_dir well before render_report,
+    # exactly as it always was; the custom deliverables choice must not have
+    # redirected it.
+    assert (out_dir / PROGRESS_FILENAME).is_file()
+
+    _record_d01_with_finding(mcp)
+    _record_d02_all_pass(mcp)
+
+    result = _call(mcp, "render_report", {"finished": "2026-08-09T10:00:00Z"})
+
+    report_path = Path(result["report_path"])
+    run_state_path = Path(result["run_state_path"])
+    assert report_path == deliverables_dir / "report.html"
+    assert run_state_path == deliverables_dir / "run-state.json"
+    assert report_path.is_file()
+    assert run_state_path.is_file()
+    # Nothing landed in output_dir except the now-removed progress file.
+    assert not (out_dir / "report.html").exists()
+    assert not (out_dir / "run-state.json").exists()
+    assert not (out_dir / PROGRESS_FILENAME).exists()
 
 
 def test_render_report_stamps_server_finished_independently_of_the_assistant_supplied_finished(

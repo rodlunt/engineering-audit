@@ -56,6 +56,30 @@
   .consent-row.locked { color: var(--muted); }
   .form-error { color: #b3261e; font-weight: 600; margin: 0 0 0.75rem; }
   .draft-notice { color: var(--muted); font-size: 0.9rem; margin: 0 0 0.75rem; }
+  .gitignore-warning {
+    color: #8a5a00;
+    font-size: 0.9rem;
+    margin: 0.4rem 0 0.75rem 1.6rem;
+  }
+  .output-location-path {
+    width: 100%;
+    font-family: inherit;
+    font-size: 0.95rem;
+    background: var(--bg);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.5rem;
+    margin-top: 0.4rem;
+  }
+  .output-location-path:disabled { opacity: 0.5; }
+  .path-resolved {
+    font-size: 0.85rem;
+    color: var(--muted);
+    margin: 0.35rem 0 0;
+    min-height: 1.2em;
+  }
+  .path-resolved.path-error { color: #b3261e; }
   .dead-banner {
     background: #fdecea;
     border: 1px solid #b3261e;
@@ -69,9 +93,12 @@
   @media (prefers-color-scheme: dark) {
     .form-error { color: #ff8a80; }
     .dead-banner { background: #2b1614; border-color: #ff8a80; color: #ffd4cf; }
+    .gitignore-warning { color: #e0a94a; }
+    .path-resolved.path-error { color: #ff8a80; }
   }
   button[disabled] { opacity: 0.5; cursor: not-allowed; }
-  label[for="feedback-textarea"] { display: block; font-weight: 500; margin-bottom: 0.3rem; }
+  label[for="feedback-textarea"],
+  label[for="output-location-path"] { display: block; font-weight: 500; margin: 0.5rem 0 0.3rem; }
   textarea {
     width: 100%;
     min-height: 5rem;
@@ -113,6 +140,23 @@
   $domain_error
   $draft_notice
   $domain_checkboxes
+</section>
+
+<section>
+  <h2>Where should the report be written?</h2>
+  $output_location_error
+  <label class="radio-row">
+    <input type="radio" name="output_location" value="default" id="output-location-default" $output_location_default_checked>
+    Default: inside the repository, at <code>$output_dir_display</code>
+  </label>
+  $gitignore_warning
+  <label class="radio-row">
+    <input type="radio" name="output_location" value="custom" id="output-location-custom" $output_location_custom_checked>
+    A custom path
+  </label>
+  <label for="output-location-path">Custom path</label>
+  <input type="text" name="output_location_path" id="output-location-path" class="output-location-path" autocomplete="off" placeholder="e.g. ~/audit-reports/this-repo" value="$output_location_path">
+  <p id="output-location-resolved" class="path-resolved" aria-live="polite"></p>
 </section>
 
 <section>
@@ -231,6 +275,73 @@
   }
 
   setInterval(ping, $heartbeat_interval_ms);
+})();
+</script>
+
+<script nonce="$csp_nonce">
+// Custom output location: resolve and validate the typed path against the
+// server as the user types, so the resolved absolute path (and any problem
+// with it) is shown before the form is ever submitted, not only after a
+// rejected submission. This is a convenience preview only; the real check
+// runs again, server side, when the form is actually posted (see
+// _InvalidOutputLocation in config_page.py), so a fetch that fails here
+// (offline devtools, a blocked request) never blocks submission.
+//
+// A separate <script> tag from the heartbeat above, deliberately: it shares
+// the same per-response nonce (a CSP nonce grants every script tag in the
+// response, not just one), but keeping the two apart means a change here
+// can never risk a syntax error taking the heartbeat down with it, and vice
+// versa.
+(function () {
+  var modeDefault = document.getElementById("output-location-default");
+  var modeCustom = document.getElementById("output-location-custom");
+  var pathInput = document.getElementById("output-location-path");
+  var resolvedEl = document.getElementById("output-location-resolved");
+  var debounceTimer = null;
+
+  function showResolved(text, isError) {
+    resolvedEl.textContent = text;
+    resolvedEl.className = isError ? "path-resolved path-error" : "path-resolved";
+  }
+
+  function checkPath() {
+    var raw = pathInput.value.trim();
+    if (!raw) {
+      showResolved("", false);
+      return;
+    }
+    fetch("$check_output_location_path?path=" + encodeURIComponent(raw), { cache: "no-store" })
+      .then(function (response) { return response.json(); })
+      .then(function (data) {
+        if (data.error) {
+          showResolved(data.error, true);
+        } else {
+          showResolved("Will write to: " + data.resolved, false);
+        }
+      })
+      .catch(function () {
+        // Best effort only, see the comment above this block.
+      });
+  }
+
+  function updateFieldState() {
+    var isCustom = modeCustom.checked;
+    pathInput.disabled = !isCustom;
+    if (isCustom) {
+      checkPath();
+    } else {
+      showResolved("", false);
+    }
+  }
+
+  modeDefault.addEventListener("change", updateFieldState);
+  modeCustom.addEventListener("change", updateFieldState);
+  pathInput.addEventListener("input", function () {
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(checkPath, 400);
+  });
+
+  updateFieldState();
 })();
 </script>
 </body>
