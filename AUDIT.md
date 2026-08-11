@@ -178,8 +178,9 @@ For each domain id in `selected_domain_ids`, in order:
    - `pass`: you checked, and the repository satisfies the rule.
    - `finding`: you checked, and the repository violates the rule. Attach a `Finding` (see
      below).
-   - `not-applicable`: the rule's precondition does not hold in this repository (e.g. a rule
-     about API versioning in a repo with no API).
+   - `not-applicable`: the rule's precondition does not hold in this repository, **and you say
+     which precondition** in the required `note` field (e.g. a rule about API versioning in a
+     repo with no API: "this repository exposes no API, only a CLI").
    - `could-not-evaluate`: you could not reach a verdict, **and you say why** in the required
      `note` field. Reasons for could-not-evaluate include: the relevant file does not exist, you
      do not have the access needed to check (e.g. a live deployment), or the rule requires
@@ -188,6 +189,13 @@ For each domain id in `selected_domain_ids`, in order:
    **A rule you did not actually check is could-not-evaluate, never `pass`.** A `pass` is a
    specific claim that you looked and it was fine; treat it with the same care you would want
    from a human auditor putting their name to a finding.
+
+   **`not-applicable` is a claim about the repository, not a way to move on.** It says you
+   looked, found the thing the rule is about is absent, and can name what is absent. The
+   precondition that does not hold is one short sentence to write, and writing it is what
+   separates a rule that genuinely does not apply from a rule nobody read. The server rejects a
+   `not-applicable` verdict with no note, and the report counts these per domain and lists your
+   reasons, so a domain you set aside in full reads as set aside, not as swept clean.
 
 3. Every `Finding` must:
    - Cite a **real `path:line` location you actually read**. Never fabricate a plausible-looking

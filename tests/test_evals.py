@@ -92,8 +92,9 @@ def _build_run_state(
     Every rule verdicts pass, except: rule ids in findings, which verdict
     finding and carry a matching Finding at the given location; rule ids in
     verdict_overrides, which carry the given verdict instead (a required
-    note is filled in automatically for could-not-evaluate); and rule ids in
-    omit_verdicts, which carry no verdict at all.
+    note is filled in automatically for could-not-evaluate and for
+    not-applicable); and rule ids in omit_verdicts, which carry no verdict at
+    all.
     """
     verdict_overrides = verdict_overrides or {}
     domain_results: dict[str, DomainResult] = {}
@@ -112,7 +113,7 @@ def _build_run_state(
                 overridden = verdict_overrides[rule.id]
                 note = (
                     "planted for the eval harness test suite"
-                    if overridden == Verdict.COULD_NOT_EVALUATE
+                    if overridden in (Verdict.COULD_NOT_EVALUATE, Verdict.NOT_APPLICABLE)
                     else None
                 )
                 verdicts.append(RuleVerdict(rule_id=rule.id, verdict=overridden, note=note))

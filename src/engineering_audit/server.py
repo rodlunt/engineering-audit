@@ -1335,7 +1335,8 @@ def _register_result_tools(mcp: MCPServer, state: AppState) -> None:
         """Record the audit result for one domain.
 
         The payload itself is pydantic-validated by DomainResult (finding and
-        verdict consistency, could-not-run reason, could-not-evaluate notes,
+        verdict consistency, could-not-run reason, could-not-evaluate and
+        not-applicable notes, both of which are the verdict's stated reason,
         and that every consulted_sources entry has a non-blank url, title
         and why). On top of that: the domain must be one of the domains
         selected for this run, a completed result must carry a verdict for

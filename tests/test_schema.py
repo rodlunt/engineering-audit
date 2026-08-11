@@ -88,7 +88,11 @@ def test_domain_result_accepts_unique_rule_verdicts() -> None:
         status="completed",
         rule_verdicts=[
             RuleVerdict(rule_id="D01-R01", verdict=Verdict.pass_),
-            RuleVerdict(rule_id="D01-R02", verdict=Verdict.NOT_APPLICABLE),
+            RuleVerdict(
+                rule_id="D01-R02",
+                verdict=Verdict.NOT_APPLICABLE,
+                note="this repository keeps no gnome ledger at all",
+            ),
         ],
     )
     assert len(result.rule_verdicts) == 2
@@ -105,10 +109,17 @@ def test_domain_result_rejects_duplicate_rule_id_in_rule_verdicts() -> None:
             status="completed",
             rule_verdicts=[
                 RuleVerdict(rule_id="D01-R01", verdict=Verdict.pass_),
-                RuleVerdict(rule_id="D01-R01", verdict=Verdict.NOT_APPLICABLE),
+                # Carries its note, so the failure below is the duplicate this
+                # test is about and not the missing-note rule next door.
+                RuleVerdict(
+                    rule_id="D01-R01",
+                    verdict=Verdict.NOT_APPLICABLE,
+                    note="this repository keeps no gnome ledger at all",
+                ),
             ],
         )
     assert "D01-R01" in str(excinfo.value)
+    assert "duplicate" in str(excinfo.value)
 
 
 def test_could_not_run_with_findings_rejected() -> None:
@@ -194,6 +205,140 @@ def test_could_not_evaluate_with_note_accepted() -> None:
         rule_id="D01-R01", verdict=Verdict.COULD_NOT_EVALUATE, note="repo has no gnome ledger file"
     )
     assert rv.note == "repo has no gnome ledger file"
+
+
+def test_not_applicable_without_note_rejected() -> None:
+    # Issue #100: not-applicable was the one verdict that cost nothing to
+    # emit. A rule set aside without a stated precondition is a rule nobody
+    # can check the reasoning of, and it used to be the cheapest way to make
+    # a whole domain disappear from the report.
+    with pytest.raises(ValidationError) as excinfo:
+        RuleVerdict(rule_id="D01-R01", verdict=Verdict.NOT_APPLICABLE)
+    assert "D01-R01" in str(excinfo.value)
+    assert "not-applicable" in str(excinfo.value)
+
+
+def test_not_applicable_with_note_accepted() -> None:
+    rv = RuleVerdict(
+        rule_id="D01-R01",
+        verdict=Verdict.NOT_APPLICABLE,
+        note="this repository keeps no gnome ledger at all",
+    )
+    assert rv.note == "this repository keeps no gnome ledger at all"
+
+
+def test_not_applicable_with_a_whitespace_only_note_rejected() -> None:
+    # A note of spaces satisfies "a note was sent" and says nothing, which is
+    # the same gap the requirement exists to close.
+    with pytest.raises(ValidationError):
+        RuleVerdict(rule_id="D01-R01", verdict=Verdict.NOT_APPLICABLE, note="   ")
+
+
+def test_pass_and_finding_verdicts_still_need_no_note() -> None:
+    # The new requirement is confined to not-applicable: a pass or a finding
+    # carries its evidence elsewhere (the finding's own body and location),
+    # and demanding a note here would be a different change nobody asked for.
+    assert RuleVerdict(rule_id="D01-R01", verdict=Verdict.pass_).note is None
+    assert RuleVerdict(rule_id="D01-R02", verdict=Verdict.FINDING).note is None
+
+
+def _run_state_json_with_unjustified_not_applicable(schema_version: int) -> str:
+    """A run-state document carrying one note-less not-applicable verdict, as
+    a build that predates the note requirement would have written it."""
+    state = RunState(
+        meta=_meta(),
+        config=_config(),
+        domain_results={
+            "d01": DomainResult(
+                domain_id="d01",
+                status="completed",
+                rule_verdicts=[
+                    RuleVerdict(
+                        rule_id="D01-R01",
+                        verdict=Verdict.NOT_APPLICABLE,
+                        note="placeholder, stripped below",
+                    )
+                ],
+            )
+        },
+    )
+    raw = json.loads(state.to_json())
+    raw["schema_version"] = schema_version
+    raw["domain_results"]["d01"]["rule_verdicts"][0]["note"] = None
+    return json.dumps(raw)
+
+
+def test_run_state_from_json_tolerates_an_unjustified_not_applicable_below_version_4() -> None:
+    # Every run-state saved before the note requirement landed carries these,
+    # and engineering-audit-render must still re-render them. Refusing the
+    # file would turn a tightened rule into lost reports, and inventing the
+    # missing reason would be worse: the report shows it as unrecorded.
+    restored = RunState.from_json(_run_state_json_with_unjustified_not_applicable(3))
+    assert restored.domain_results["d01"].rule_verdicts[0].note is None
+
+
+def test_run_state_from_json_rejects_an_unjustified_not_applicable_at_version_4() -> None:
+    # The exemption is for files that predate the rule, not a way around it:
+    # a document claiming to be written by a build that enforced the note is
+    # held to it.
+    with pytest.raises(ValidationError) as excinfo:
+        RunState.from_json(_run_state_json_with_unjustified_not_applicable(4))
+    assert "D01-R01" in str(excinfo.value)
+
+
+def test_the_legacy_exemption_does_not_extend_to_could_not_evaluate() -> None:
+    # could-not-evaluate has always required its note, so no file can
+    # legitimately carry one without it. Relaxing the newer rule for old
+    # files must not quietly relax the older rule along with it.
+    state = RunState(
+        meta=_meta(),
+        config=_config(),
+        domain_results={
+            "d01": DomainResult(
+                domain_id="d01",
+                status="completed",
+                rule_verdicts=[
+                    RuleVerdict(
+                        rule_id="D01-R01",
+                        verdict=Verdict.COULD_NOT_EVALUATE,
+                        note="placeholder, stripped below",
+                    )
+                ],
+            )
+        },
+    )
+    raw = json.loads(state.to_json())
+    raw["schema_version"] = 1
+    raw["domain_results"]["d01"]["rule_verdicts"][0]["note"] = None
+    with pytest.raises(ValidationError):
+        RunState.from_json(json.dumps(raw))
+
+
+def test_run_progress_from_json_tolerates_an_unjustified_not_applicable_below_version_4() -> None:
+    # A run interrupted under an older build must still be resumable; the
+    # domains recorded after the resume go through the current rules in full.
+    progress = RunProgress(
+        meta=_meta(),
+        config=_config(),
+        domain_results={
+            "d01": DomainResult(
+                domain_id="d01",
+                status="completed",
+                rule_verdicts=[
+                    RuleVerdict(
+                        rule_id="D01-R01",
+                        verdict=Verdict.NOT_APPLICABLE,
+                        note="placeholder, stripped below",
+                    )
+                ],
+            )
+        },
+    )
+    raw = json.loads(progress.to_json())
+    raw["schema_version"] = 3
+    raw["domain_results"]["d01"]["rule_verdicts"][0]["note"] = None
+    restored = RunProgress.from_json(json.dumps(raw))
+    assert restored.domain_results["d01"].rule_verdicts[0].note is None
 
 
 def test_validate_completeness_raises_listing_missing_rule_ids_when_a_verdict_is_skipped() -> None:
@@ -431,15 +576,15 @@ def test_validate_consulted_sources_runs_independently_of_domain_result_status()
 
 def test_run_state_defaults_to_current_schema_version_when_freshly_built() -> None:
     state = RunState(meta=_meta(), config=_config())
-    assert state.schema_version == RUN_STATE_SCHEMA_VERSION == 3
+    assert state.schema_version == RUN_STATE_SCHEMA_VERSION == 4
     assert state.filed_issue_urls == {}
     assert state.feedback_issue_url is None
 
 
-def test_run_state_serialised_json_carries_schema_version_3() -> None:
+def test_run_state_serialised_json_carries_schema_version_4() -> None:
     state = RunState(meta=_meta(), config=_config())
     dumped = json.loads(state.to_json())
-    assert dumped["schema_version"] == 3
+    assert dumped["schema_version"] == 4
 
 
 def test_run_state_from_json_missing_schema_version_is_treated_as_version_1() -> None:
@@ -464,7 +609,7 @@ def test_run_state_from_json_accepts_current_version() -> None:
         feedback_issue_url="https://example.invalid/issues/2",
     )
     restored = RunState.from_json(state.to_json())
-    assert restored.schema_version == 3
+    assert restored.schema_version == 4
     assert restored == state
 
 
@@ -551,25 +696,25 @@ def test_run_state_from_json_rejects_a_higher_schema_version_naming_both_numbers
     assert "upgrade" in message.lower()
 
 
-def test_run_state_version_gate_accepts_3_and_rejects_4_naming_both_numbers() -> None:
-    # 3 is the current version (the filed_issue_urls per-finding key switch);
-    # 4 does not exist yet. Named with literal numbers, not just
+def test_run_state_version_gate_accepts_4_and_rejects_5_naming_both_numbers() -> None:
+    # 4 is the current version (not-applicable verdicts must carry a note);
+    # 5 does not exist yet. Named with literal numbers, not just
     # RUN_STATE_SCHEMA_VERSION +/- 1, so a future bump that forgets to update
     # this test is caught rather than silently sliding the goalposts with it.
-    assert RUN_STATE_SCHEMA_VERSION == 3
+    assert RUN_STATE_SCHEMA_VERSION == 4
     state = RunState(meta=_meta(), config=_config())
     raw = json.loads(state.to_json())
 
-    raw["schema_version"] = 3
-    accepted = RunState.from_json(json.dumps(raw))
-    assert accepted.schema_version == 3
-
     raw["schema_version"] = 4
+    accepted = RunState.from_json(json.dumps(raw))
+    assert accepted.schema_version == 4
+
+    raw["schema_version"] = 5
     with pytest.raises(RunStateVersionError) as excinfo:
         RunState.from_json(json.dumps(raw))
     message = str(excinfo.value)
+    assert "5" in message
     assert "4" in message
-    assert "3" in message
 
 
 def test_run_state_still_requires_a_config_after_run_progress_was_added() -> None:
@@ -624,25 +769,25 @@ def test_run_progress_from_json_rejects_a_higher_schema_version() -> None:
     assert str(RUN_STATE_SCHEMA_VERSION) in str(excinfo.value)
 
 
-def test_run_progress_version_gate_accepts_3_and_rejects_4_naming_both_numbers() -> None:
+def test_run_progress_version_gate_accepts_4_and_rejects_5_naming_both_numbers() -> None:
     # RunProgress shares RUN_STATE_SCHEMA_VERSION with RunState deliberately
-    # (see its own docstring), so the version bump to 3 applies here too even
-    # though filed_issues itself needed no key change. Named with literal
-    # numbers for the same reason as RunState's equivalent test: catching a
-    # future bump that forgets to update the pinned values.
-    assert RUN_STATE_SCHEMA_VERSION == 3
+    # (see its own docstring), so the version bump to 4 applies here too even
+    # though filed_issues itself needed no change. Named with literal numbers
+    # for the same reason as RunState's equivalent test: catching a future
+    # bump that forgets to update the pinned values.
+    assert RUN_STATE_SCHEMA_VERSION == 4
     raw = json.loads(RunProgress(meta=_meta(), config=_config()).to_json())
 
-    raw["schema_version"] = 3
-    accepted = RunProgress.from_json(json.dumps(raw))
-    assert accepted.schema_version == 3
-
     raw["schema_version"] = 4
+    accepted = RunProgress.from_json(json.dumps(raw))
+    assert accepted.schema_version == 4
+
+    raw["schema_version"] = 5
     with pytest.raises(RunStateVersionError) as excinfo:
         RunProgress.from_json(json.dumps(raw))
     message = str(excinfo.value)
+    assert "5" in message
     assert "4" in message
-    assert "3" in message
 
 
 def test_run_progress_rejects_a_domain_results_key_that_is_not_its_domain_id() -> None:
