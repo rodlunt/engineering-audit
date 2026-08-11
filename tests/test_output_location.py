@@ -16,6 +16,7 @@ from engineering_audit.output_location import (
     REPORT_FILENAME,
     RUN_STATE_FILENAME,
     deliverables_dir_for,
+    existing_deliverables_warning,
     resolve_deliverables_dir,
     validate_deliverables_dir,
 )
@@ -91,6 +92,50 @@ def test_validate_deliverables_dir_rejects_a_directory_already_holding_a_report(
     assert error is not None
     assert existing_name in error
     assert "already contains" in error
+
+
+def test_existing_deliverables_warning_none_for_a_directory_that_does_not_exist_yet(
+    tmp_path,
+) -> None:
+    target = tmp_path / "audit-output"
+    assert existing_deliverables_warning(target) is None
+
+
+def test_existing_deliverables_warning_none_for_an_empty_existing_directory(
+    tmp_path,
+) -> None:
+    target = tmp_path / "audit-output"
+    target.mkdir()
+    assert existing_deliverables_warning(target) is None
+
+
+@pytest.mark.parametrize("existing_name", [REPORT_FILENAME, RUN_STATE_FILENAME])
+def test_existing_deliverables_warning_warns_without_refusing(
+    tmp_path, existing_name
+) -> None:
+    target = tmp_path / "audit-output"
+    target.mkdir()
+    (target / existing_name).write_text("an earlier run", encoding="utf-8")
+    warning = existing_deliverables_warning(target)
+    assert warning is not None
+    assert existing_name in warning
+    assert "already contains" in warning
+    # Issue #133: this must warn, never refuse. validate_deliverables_dir is
+    # the function that refuses; this one only ever returns a string or None.
+    assert "replace" in warning.lower()
+
+
+def test_existing_deliverables_warning_names_both_files_when_both_are_present(
+    tmp_path,
+) -> None:
+    target = tmp_path / "audit-output"
+    target.mkdir()
+    (target / REPORT_FILENAME).write_text("an earlier run", encoding="utf-8")
+    (target / RUN_STATE_FILENAME).write_text("{}", encoding="utf-8")
+    warning = existing_deliverables_warning(target)
+    assert warning is not None
+    assert REPORT_FILENAME in warning
+    assert RUN_STATE_FILENAME in warning
 
 
 def test_deliverables_dir_for_defaults_to_output_dir_when_none_chosen(tmp_path) -> None:

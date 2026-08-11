@@ -396,58 +396,117 @@ def test_update_check_disabled_by_flag_alongside_rules_dir(tmp_path: Path) -> No
     assert disabled is True
 
 
-def test_update_check_enabled_true_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_update_check_enabled_from_env_true_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.delenv("ENGINEERING_AUDIT_NO_UPDATE_CHECK", raising=False)
-    assert server_module._update_check_enabled() is True
+    assert server_module._update_check_enabled_from_env() is True
 
 
-def test_update_check_enabled_false_when_env_var_set(
+def test_update_check_enabled_from_env_false_when_env_var_set(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("ENGINEERING_AUDIT_NO_UPDATE_CHECK", "1")
-    assert server_module._update_check_enabled() is False
+    assert server_module._update_check_enabled_from_env() is False
 
 
-def test_update_check_enabled_true_when_env_var_empty(
+def test_update_check_enabled_from_env_true_when_env_var_empty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # An empty string counts as unset, not as an explicit "off": a
     # config-management tool that leaves the variable declared but blank
     # must not silently disable the check.
     monkeypatch.setenv("ENGINEERING_AUDIT_NO_UPDATE_CHECK", "")
-    assert server_module._update_check_enabled() is True
+    assert server_module._update_check_enabled_from_env() is True
 
 
-def test_main_folds_no_update_check_flag_into_the_env_var(
+def test_main_resolves_disabled_update_check_when_flag_passed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # main() is the one place that reconciles --no-update-check with
-    # ENGINEERING_AUDIT_NO_UPDATE_CHECK; this proves the flag actually
-    # reaches the environment variable begin_run reads at call time,
-    # without needing to run the real (blocking) mcp.run().
+    # ENGINEERING_AUDIT_NO_UPDATE_CHECK; this proves the flag reaches
+    # build_server as an explicit update_check_enabled=False, without
+    # needing to run the real (blocking) mcp.run() and without main()
+    # ever writing to the environment (see the next test).
     monkeypatch.delenv("ENGINEERING_AUDIT_NO_UPDATE_CHECK", raising=False)
     monkeypatch.setattr(
         server_module.sys,
         "argv",
         ["engineering-audit-mcp", "--rules-dir", str(tmp_path), "--no-update-check"],
     )
-    seen_env_value = {}
+    seen = {}
 
     class _FakeMCP:
         def run(self) -> None:
             pass
 
-    def _fake_build_server(rules_dir: Path):
-        seen_env_value["value"] = server_module.os.environ.get(
-            "ENGINEERING_AUDIT_NO_UPDATE_CHECK"
-        )
+    def _fake_build_server(rules_dir: Path, *, update_check_enabled=None):
+        seen["update_check_enabled"] = update_check_enabled
         return _FakeMCP(), None
 
     monkeypatch.setattr(server_module, "build_server", _fake_build_server)
 
     server_module.main()
 
-    assert seen_env_value["value"] == "1"
+    assert seen["update_check_enabled"] is False
+
+
+def test_main_leaves_update_check_resolution_to_build_server_when_flag_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # No --no-update-check on the command line: main() passes None, which
+    # tells build_server to resolve the setting itself from the environment
+    # variable (see build_server's docstring), rather than main() having to
+    # read that variable a second time.
+    monkeypatch.setattr(
+        server_module.sys,
+        "argv",
+        ["engineering-audit-mcp", "--rules-dir", str(tmp_path)],
+    )
+    seen = {}
+
+    class _FakeMCP:
+        def run(self) -> None:
+            pass
+
+    def _fake_build_server(rules_dir: Path, *, update_check_enabled=None):
+        seen["update_check_enabled"] = update_check_enabled
+        return _FakeMCP(), None
+
+    monkeypatch.setattr(server_module, "build_server", _fake_build_server)
+
+    server_module.main()
+
+    assert seen["update_check_enabled"] is None
+
+
+def test_main_never_mutates_the_no_update_check_environment_variable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Issue #132: the old implementation set ENGINEERING_AUDIT_NO_UPDATE_CHECK
+    # in main()'s own process environment, which every git/gh subprocess this
+    # tool spawns would then inherit. The resolved setting is now carried as
+    # an explicit value instead, so main() must never write this variable.
+    monkeypatch.delenv("ENGINEERING_AUDIT_NO_UPDATE_CHECK", raising=False)
+    monkeypatch.setattr(
+        server_module.sys,
+        "argv",
+        ["engineering-audit-mcp", "--rules-dir", str(tmp_path), "--no-update-check"],
+    )
+
+    class _FakeMCP:
+        def run(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        server_module,
+        "build_server",
+        lambda rules_dir, *, update_check_enabled=None: (_FakeMCP(), None),
+    )
+
+    server_module.main()
+
+    assert "ENGINEERING_AUDIT_NO_UPDATE_CHECK" not in server_module.os.environ
 
 
 # ---------------------------------------------------------------------------
@@ -518,12 +577,52 @@ def test_begin_run_update_checks_disabled_via_env_var(
     )
 
 
-def test_begin_run_update_check_disabled_status_is_distinct_from_current(
+def test_begin_run_update_checks_disabled_via_flag(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("ENGINEERING_AUDIT_NO_UPDATE_CHECK", "1")
+    # The third of the three states (see issue #132): the CLI flag, carried
+    # as build_server's update_check_enabled=False rather than the
+    # environment variable. The environment variable is deliberately left
+    # unset (and would otherwise leave the check enabled), so this proves
+    # the flag disables the check on its own, not via the env var.
+    monkeypatch.delenv("ENGINEERING_AUDIT_NO_UPDATE_CHECK", raising=False)
 
-    mcp, _state = build_server(FIXTURE_PACK)
+    mcp, state = build_server(FIXTURE_PACK, update_check_enabled=False)
+    assert state.update_check_enabled is False
+    result = _begin_run(mcp, tmp_path / "audit-output")
+
+    assert (
+        result["meta"]["update_check"]
+        == "not-checked: update check disabled by configuration"
+    )
+    assert (
+        result["meta"]["pack_update_check"]
+        == "not-checked: rules pack update check disabled by configuration"
+    )
+
+
+@pytest.mark.parametrize(
+    "build_kwargs, env_var",
+    [
+        pytest.param({}, "1", id="disabled-by-env-var"),
+        pytest.param({"update_check_enabled": False}, None, id="disabled-by-flag"),
+    ],
+)
+def test_begin_run_update_check_disabled_status_is_distinct_from_current(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    build_kwargs: dict[str, bool],
+    env_var: str | None,
+) -> None:
+    # Load bearing: a status that could read as "current" when the check
+    # never ran is exactly the bug this module exists to prevent, whichever
+    # of the two inputs (env var or flag) did the disabling.
+    if env_var is None:
+        monkeypatch.delenv("ENGINEERING_AUDIT_NO_UPDATE_CHECK", raising=False)
+    else:
+        monkeypatch.setenv("ENGINEERING_AUDIT_NO_UPDATE_CHECK", env_var)
+
+    mcp, _state = build_server(FIXTURE_PACK, **build_kwargs)
     result = _begin_run(mcp, tmp_path / "audit-output")
 
     for field in ("update_check", "pack_update_check"):

@@ -56,7 +56,7 @@
   .consent-row.locked { color: var(--muted); }
   .form-error { color: #b3261e; font-weight: 600; margin: 0 0 0.75rem; }
   .draft-notice { color: var(--muted); font-size: 0.9rem; margin: 0 0 0.75rem; }
-  .gitignore-warning {
+  .gitignore-warning, .output-location-warning {
     color: #8a5a00;
     font-size: 0.9rem;
     margin: 0.4rem 0 0.75rem 1.6rem;
@@ -93,7 +93,7 @@
   @media (prefers-color-scheme: dark) {
     .form-error { color: #ff8a80; }
     .dead-banner { background: #2b1614; border-color: #ff8a80; color: #ffd4cf; }
-    .gitignore-warning { color: #e0a94a; }
+    .gitignore-warning, .output-location-warning { color: #e0a94a; }
     .path-resolved.path-error { color: #ff8a80; }
   }
   button[disabled] { opacity: 0.5; cursor: not-allowed; }
@@ -149,6 +149,7 @@
     <input type="radio" name="output_location" value="default" id="output-location-default" $output_location_default_checked>
     Default: inside the repository, at <code>$output_dir_display</code>
   </label>
+  $existing_deliverables_warning
   $gitignore_warning
   <label class="radio-row">
     <input type="radio" name="output_location" value="custom" id="output-location-custom" $output_location_custom_checked>
