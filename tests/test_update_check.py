@@ -93,7 +93,9 @@ def test_no_version_tags_is_could_not_check() -> None:
 
 
 def test_malformed_output_is_could_not_check() -> None:
-    result = _resolve_update_status("not a valid ls-remote line at all", "headsha11", "1.0.0")
+    result = _resolve_update_status(
+        "not a valid ls-remote line at all", "headsha11", "1.0.0"
+    )
     assert result.startswith("could-not-check:")
 
 
@@ -176,7 +178,9 @@ def test_check_for_update_when_git_exits_non_zero_is_could_not_check_with_stderr
     assert "could not resolve host" in result
 
 
-def test_check_for_update_uses_the_given_repo_url(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_check_for_update_uses_the_given_repo_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     seen_urls: list[str] = []
 
     def _fake_run(repo_url: str) -> subprocess.CompletedProcess[str]:
@@ -190,7 +194,9 @@ def test_check_for_update_uses_the_given_repo_url(monkeypatch: pytest.MonkeyPatc
 
     monkeypatch.setattr(update_check_module, "_run_ls_remote", _fake_run)
 
-    result = check_for_update("aaaa0000", "1.0.0", repo_url="https://example.invalid/repo")
+    result = check_for_update(
+        "aaaa0000", "1.0.0", repo_url="https://example.invalid/repo"
+    )
 
     assert seen_urls == ["https://example.invalid/repo"]
     assert result == "current (v1.0.0)"
@@ -225,7 +231,9 @@ def test_check_for_update_enabled_by_default_still_runs_git(
     assert result == "current (v1.0.0)"
 
 
-def test_check_for_update_disabled_never_invokes_git(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_check_for_update_disabled_never_invokes_git(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     def _fail_if_called(*args, **kwargs):
         raise AssertionError("git ls-remote must not run when the check is disabled")
 
@@ -239,7 +247,11 @@ def test_check_for_update_disabled_never_invokes_git(monkeypatch: pytest.MonkeyP
 def test_check_pack_for_update_enabled_by_default_still_runs_git(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
-    monkeypatch.setattr(update_check_module, "_pack_remote_url", lambda pack_dir: "https://example.invalid/pack")
+    monkeypatch.setattr(
+        update_check_module,
+        "_pack_remote_url",
+        lambda pack_dir: "https://example.invalid/pack",
+    )
 
     def _fake_run(repo_url: str) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(
@@ -265,24 +277,34 @@ def test_check_pack_for_update_disabled_never_invokes_git(
     monkeypatch.setattr(update_check_module, "_pack_remote_url", _fail_if_called)
     monkeypatch.setattr(update_check_module, "_run_ls_remote", _fail_if_called)
 
-    result = check_pack_for_update(str(tmp_path), "deadbeef1234", "1.0.0", enabled=False)
+    result = check_pack_for_update(
+        str(tmp_path), "deadbeef1234", "1.0.0", enabled=False
+    )
 
     assert result == "not-checked: rules pack update check disabled by configuration"
 
 
-def test_disabled_status_is_distinct_from_every_success_and_could_not_check_string() -> None:
+def test_disabled_status_is_distinct_from_every_success_and_could_not_check_string() -> (
+    None
+):
     # The bug this whole feature must not reintroduce: a disabled check
     # reporting something a reader could mistake for "current" or for a
     # completed, failed attempt. Collect every string this module can
     # produce and check the disabled ones stand apart from all the rest.
     success_and_failure_strings = [
-        _resolve_update_status("aaaa0000\tHEAD\naaaa0000\trefs/tags/v1.0.0\n", "aaaa0000", "1.0.0"),
-        _resolve_update_status("headsha11\tHEAD\nlatestsha22\trefs/tags/v1.5.0\n", "oldsha3333", "1.4.0"),
+        _resolve_update_status(
+            "aaaa0000\tHEAD\naaaa0000\trefs/tags/v1.0.0\n", "aaaa0000", "1.0.0"
+        ),
+        _resolve_update_status(
+            "headsha11\tHEAD\nlatestsha22\trefs/tags/v1.5.0\n", "oldsha3333", "1.4.0"
+        ),
         _resolve_update_status("headsha11\tHEAD\n", "headsha11", "1.0.0"),
         _resolve_update_status("anything at all", None, "1.0.0"),
     ]
     disabled_tool = check_for_update("deadbeef1234", "1.0.0", enabled=False)
-    disabled_pack = check_pack_for_update("/nonexistent", "deadbeef1234", "1.0.0", enabled=False)
+    disabled_pack = check_pack_for_update(
+        "/nonexistent", "deadbeef1234", "1.0.0", enabled=False
+    )
 
     for disabled in (disabled_tool, disabled_pack):
         assert disabled.startswith("not-checked")
@@ -334,7 +356,9 @@ def test_report_meta_block_shows_not_checked_when_none() -> None:
 def test_report_meta_block_shows_stale_status_when_set() -> None:
     from engineering_audit.schema import AuditConfig, RunState
 
-    meta = _meta(update_check="stale: latest release is v0.5.0 (aaaa1111), installed build is 0.4.0 @ bbbb2222")
+    meta = _meta(
+        update_check="stale: latest release is v0.5.0 (aaaa1111), installed build is 0.4.0 @ bbbb2222"
+    )
     run_state = RunState(
         meta=meta,
         config=AuditConfig(selected_domain_ids=["d01"], issue_mode="report"),

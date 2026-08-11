@@ -20,7 +20,13 @@ from datetime import datetime
 from urllib.parse import quote
 
 from engineering_audit.rules import Rule, citation
-from engineering_audit.schema import DomainResult, Finding, RunMeta, TelemetryConsent, Verdict
+from engineering_audit.schema import (
+    DomainResult,
+    Finding,
+    RunMeta,
+    TelemetryConsent,
+    Verdict,
+)
 
 __all__ = [
     "FEEDBACK_REPO",
@@ -49,7 +55,7 @@ _VERDICT_ORDER = (
 
 
 def feedback_subject(meta: RunMeta) -> str:
-    """"Feedback: audit run <date> (<assistant>)", used both as the filed
+    """ "Feedback: audit run <date> (<assistant>)", used both as the filed
     issue's title and the mailto fallback's subject, so a filed issue and
     its unsent-email fallback are recognisably the same piece of feedback."""
     date = meta.started[:10]
@@ -258,16 +264,16 @@ def build_feedback_sections(
     run_metadata = "Run metadata\n" + "\n".join(f"- {line}" for line in meta_lines)
 
     inspected = sum(
-        r.coverage.files_inspected for r in domain_results.values() if r.coverage is not None
+        r.coverage.files_inspected
+        for r in domain_results.values()
+        if r.coverage is not None
     )
     skipped = sum(
-        r.coverage.files_skipped for r in domain_results.values() if r.coverage is not None
+        r.coverage.files_skipped
+        for r in domain_results.values()
+        if r.coverage is not None
     )
-    coverage = (
-        "Coverage\n"
-        f"- Files inspected: {inspected}\n"
-        f"- Files skipped: {skipped}"
-    )
+    coverage = f"Coverage\n- Files inspected: {inspected}\n- Files skipped: {skipped}"
 
     all_findings = [f for r in domain_results.values() for f in r.findings]
     severity_counts = Counter(f.severity.value for f in all_findings)
@@ -283,7 +289,8 @@ def build_feedback_sections(
     # from a domain that never ran at all.
     domain_lines = (
         "\n".join(
-            f"- {domain_id}: {domain_counts.get(domain_id, 0)}" for domain_id in domain_results
+            f"- {domain_id}: {domain_counts.get(domain_id, 0)}"
+            for domain_id in domain_results
         )
         or "- No domains audited."
     )
@@ -297,11 +304,15 @@ def build_feedback_sections(
     self_assessment_lines = []
     for domain_id, result in domain_results.items():
         if result.status == "could-not-run":
-            self_assessment_lines.append(f"- {domain_id}: could not run, {result.reason}")
+            self_assessment_lines.append(
+                f"- {domain_id}: could not run, {result.reason}"
+            )
         elif result.self_assessment is not None:
             sa = result.self_assessment
             limits = f" Limits: {sa.limits}." if sa.limits else ""
-            self_assessment_lines.append(f"- {domain_id}: confidence {sa.confidence}.{limits}")
+            self_assessment_lines.append(
+                f"- {domain_id}: confidence {sa.confidence}.{limits}"
+            )
         else:
             self_assessment_lines.append(f"- {domain_id}: no self-assessment reported")
     self_assessment = "Self-assessment by domain\n" + "\n".join(self_assessment_lines)
@@ -322,7 +333,9 @@ def build_feedback_sections(
     consulted_source_lines: list[str] = []
     for result in domain_results.values():
         for source in result.consulted_sources:
-            consulted_source_lines.append(f"- {source.rule_id}: {source.url} (why: {source.why})")
+            consulted_source_lines.append(
+                f"- {source.rule_id}: {source.url} (why: {source.why})"
+            )
     consulted_sources = (
         "Sources consulted\n" + "\n".join(consulted_source_lines)
         if consulted_source_lines
@@ -349,14 +362,14 @@ def build_feedback_sections(
         )
         verdict_domain_lines.append(f"- {domain_id}: {counts_text}")
     verdict_totals_lines = "\n".join(
-        f"- {verdict.value}: {verdict_totals.get(verdict.value, 0)}" for verdict in _VERDICT_ORDER
+        f"- {verdict.value}: {verdict_totals.get(verdict.value, 0)}"
+        for verdict in _VERDICT_ORDER
     )
     verdict_distribution = (
         "Rule verdict distribution\n"
         f"Total verdicts: {sum(verdict_totals.values())}\n"
         f"By verdict:\n{verdict_totals_lines}\n"
-        "By domain:\n"
-        + ("\n".join(verdict_domain_lines) or "- No domains audited.")
+        "By domain:\n" + ("\n".join(verdict_domain_lines) or "- No domains audited.")
     )
 
     # Both spans and the divergence verdict between them, in the exact

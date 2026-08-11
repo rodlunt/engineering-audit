@@ -39,7 +39,14 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field, ValidationError, computed_field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    ValidationError,
+    computed_field,
+    field_validator,
+    model_validator,
+)
 
 from engineering_audit.rules import RulesPack, RulesPackError, load_pack
 from engineering_audit.run_state_io import RunStateLoadError, load_run_state_file
@@ -178,7 +185,8 @@ class ExpectationOutcome(BaseModel):
     outcome: _Outcome
     why: str
     detail: str | None = Field(
-        default=None, description="What was actually found (or not), for the human reading the report."
+        default=None,
+        description="What was actually found (or not), for the human reading the report.",
     )
 
 
@@ -223,7 +231,9 @@ class EvalResult(BaseModel):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def expected_hit(self) -> int:
-        return sum(1 for o in self.outcomes if o.expect == "finding" and o.outcome == "hit")
+        return sum(
+            1 for o in self.outcomes if o.expect == "finding" and o.outcome == "hit"
+        )
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -308,7 +318,9 @@ def _location_matches(expected: str, location: str) -> bool:
             return False
         left_ok = idx == 0 or stripped[idx - 1] == "/"
         end = idx + len(expected)
-        right_ok = expected.endswith("/") or end == len(stripped) or stripped[end] == "/"
+        right_ok = (
+            expected.endswith("/") or end == len(stripped) or stripped[end] == "/"
+        )
         if left_ok and right_ok:
             return True
         search_from = idx + 1
@@ -375,7 +387,9 @@ def _check_structural_gates(
             raise EvalStructuralError(str(exc)) from exc
 
     orphan_rule_ids = sorted(
-        e.rule_id for e in spec.expectations if pack.domain_id_for_rule(e.rule_id) not in spec.domains
+        e.rule_id
+        for e in spec.expectations
+        if pack.domain_id_for_rule(e.rule_id) not in spec.domains
     )
     if orphan_rule_ids:
         raise EvalStructuralError(
@@ -433,7 +447,8 @@ def score(
                 outcome = "missed"
                 detail = "no finding recorded for this rule id"
             elif expectation.location_contains is None or any(
-                _location_matches(expectation.location_contains, f.location) for f in matches
+                _location_matches(expectation.location_contains, f.location)
+                for f in matches
             ):
                 outcome = "hit"
                 detail = "; ".join(f.location for f in matches)
@@ -486,7 +501,9 @@ def score(
     # asked about) it exists to surface.
     expected_ids = {e.rule_id for e in spec.expectations}
     unexpected_findings = [
-        UnexpectedFinding(rule_id=finding.rule_id, title=finding.title, location=finding.location)
+        UnexpectedFinding(
+            rule_id=finding.rule_id, title=finding.title, location=finding.location
+        )
         for result in run_state.domain_results.values()
         for finding in result.findings
         if finding.rule_id not in expected_ids
@@ -520,7 +537,9 @@ def _render_summary(result: EvalResult) -> str:
         if outcome.outcome in ("hit", "held"):
             continue
         detail = f" ({outcome.detail})" if outcome.detail else ""
-        lines.append(f"{outcome.outcome.upper()}  {outcome.rule_id}{detail}  {outcome.why}")
+        lines.append(
+            f"{outcome.outcome.upper()}  {outcome.rule_id}{detail}  {outcome.why}"
+        )
 
     if result.unexpected_findings:
         lines.append("")
@@ -572,7 +591,9 @@ def _load_pack(rules_dir_arg: str | None) -> RulesPack | None:
         return None
     rules_dir = Path(rules_dir_arg).expanduser()
     if not rules_dir.is_dir():
-        _fail_structural(f"rules pack directory does not exist or is not a directory: {rules_dir}")
+        _fail_structural(
+            f"rules pack directory does not exist or is not a directory: {rules_dir}"
+        )
     try:
         return load_pack(rules_dir)
     except RulesPackError as exc:
@@ -586,7 +607,9 @@ def main(argv: list[str] | None = None) -> None:
         description="Score a run-state.json against a set of eval expectations.",
     )
     parser.add_argument("run_state_path", help="Path to a run-state.json to score.")
-    parser.add_argument("--expected", required=True, help="Path to an eval spec (expected.json).")
+    parser.add_argument(
+        "--expected", required=True, help="Path to an eval spec (expected.json)."
+    )
     parser.add_argument(
         "--rules-dir",
         default=None,

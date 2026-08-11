@@ -48,7 +48,9 @@ def test_rule_ids_and_titles_parsed_correctly() -> None:
     rule_ids = [r.id for r in d01.rules]
     assert rule_ids == ["D01-R01", "D01-R02", "D01-R03", "D01-R04"]
     first = d01.rules[0]
-    assert first.title == "Record every gnome's hat colour before assigning a garden bed."
+    assert (
+        first.title == "Record every gnome's hat colour before assigning a garden bed."
+    )
     assert first.volatility == "durable"
     assert d01.rules[1].volatility == "volatile"
 
@@ -121,7 +123,9 @@ def test_skip_report_contains_the_no_trigger_file() -> None:
     pack = load_pack(FIXTURE_PACK)
     skipped_names = [s.path.name for s in pack.skipped]
     assert "03-no-trigger-draft.md" in skipped_names
-    reason = next(s.reason for s in pack.skipped if s.path.name == "03-no-trigger-draft.md")
+    reason = next(
+        s.reason for s in pack.skipped if s.path.name == "03-no-trigger-draft.md"
+    )
     assert "Trigger" in reason
     # The no-trigger file's rule must never sneak into a loaded domain.
     for domain in pack.domains:
@@ -303,7 +307,7 @@ def test_citation_caps_at_the_sentence_boundary_before_the_excerpt() -> None:
     # cap lands cleanly at the end of that sentence, dropping the sentence
     # that introduces the quote entirely rather than cutting it mid-clause.
     source = (
-        'The ISTQB Foundation Level syllabus, v4.0.1. Sections 3.1.2 and 3.1.3 '
+        "The ISTQB Foundation Level syllabus, v4.0.1. Sections 3.1.2 and 3.1.3 "
         'state: "Static testing can detect defects early."'
     )
     assert citation(source) == "The ISTQB Foundation Level syllabus, v4.0.1."
@@ -318,13 +322,15 @@ def test_citation_with_no_sentence_boundary_before_the_excerpt_is_not_cut() -> N
     # source is published whole (subject only to the hard character
     # ceiling) rather than fragmented.
     source = (
-        'ISTQB Certified Tester Foundation Level syllabus v4.0.1, sections 3.1.2 '
+        "ISTQB Certified Tester Foundation Level syllabus v4.0.1, sections 3.1.2 "
         'and 3.1.3: "Static testing can detect defects early"'
     )
     assert citation(source) == source
 
 
-def test_citation_keeps_a_quoted_work_title_when_no_sentence_boundary_precedes_it() -> None:
+def test_citation_keeps_a_quoted_work_title_when_no_sentence_boundary_precedes_it() -> (
+    None
+):
     # A title quoted after a comma has no sentence-ending punctuation before
     # the excerpt colon either, so (per the rule above) nothing is cut.
     source = (
@@ -356,7 +362,7 @@ def test_citation_skips_excerpt_capping_for_a_v2_pack() -> None:
     # sentence-boundary excerpt cap must not fire: the colon-then-quote here
     # is part of the citation, not the start of a supporting excerpt.
     source = (
-        'ISTQB Certified Tester Foundation Level syllabus v4.0.1, sections 3.1.2 '
+        "ISTQB Certified Tester Foundation Level syllabus v4.0.1, sections 3.1.2 "
         'and 3.1.3: "Static testing can detect defects early"'
     )
     assert citation(source, pack_is_v2=True) == source
@@ -405,7 +411,9 @@ def test_rules_pack_is_v2_false_when_no_verification_marker_anywhere() -> None:
     assert pack.is_v2 is False
 
 
-def test_rules_pack_is_v2_true_when_any_domain_carries_the_marker(tmp_path: Path) -> None:
+def test_rules_pack_is_v2_true_when_any_domain_carries_the_marker(
+    tmp_path: Path,
+) -> None:
     scratch = _write_pack(
         tmp_path,
         "# Domain 01: Verification Marker Domain\n\n"

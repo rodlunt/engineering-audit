@@ -16,7 +16,9 @@ MALFORMED_DIR = Path(__file__).parent / "fixtures_malformed"
 _FRAGMENT_NAMES = ("AGENTS-fragment.md", "GEMINI-fragment.md")
 
 
-def test_fragments_contain_every_domain_trigger_and_get_domain_id(tmp_path: Path) -> None:
+def test_fragments_contain_every_domain_trigger_and_get_domain_id(
+    tmp_path: Path,
+) -> None:
     out_dir = tmp_path / "out"
     pack = generate_fragments(FIXTURE_PACK, out_dir)
 
@@ -37,8 +39,12 @@ def test_fragments_end_with_a_newline(tmp_path: Path) -> None:
 def test_agents_and_gemini_fragments_differ_only_in_header_line(tmp_path: Path) -> None:
     out_dir = tmp_path / "out"
     generate_fragments(FIXTURE_PACK, out_dir)
-    agents_lines = (out_dir / "AGENTS-fragment.md").read_text(encoding="utf-8").splitlines()
-    gemini_lines = (out_dir / "GEMINI-fragment.md").read_text(encoding="utf-8").splitlines()
+    agents_lines = (
+        (out_dir / "AGENTS-fragment.md").read_text(encoding="utf-8").splitlines()
+    )
+    gemini_lines = (
+        (out_dir / "GEMINI-fragment.md").read_text(encoding="utf-8").splitlines()
+    )
 
     assert agents_lines[0] != gemini_lines[0]
     assert "AGENTS.md" in agents_lines[0]
@@ -53,7 +59,9 @@ def test_generation_is_deterministic_across_runs(tmp_path: Path) -> None:
     generate_fragments(FIXTURE_PACK, out_dir_b)
 
     for filename in _FRAGMENT_NAMES:
-        assert (out_dir_a / filename).read_bytes() == (out_dir_b / filename).read_bytes()
+        assert (out_dir_a / filename).read_bytes() == (
+            out_dir_b / filename
+        ).read_bytes()
 
 
 def test_no_trigger_fixture_file_is_excluded_from_the_fragments(tmp_path: Path) -> None:
@@ -64,7 +72,9 @@ def test_no_trigger_fixture_file_is_excluded_from_the_fragments(tmp_path: Path) 
     assert 'get_domain("d03")' not in text
 
 
-def test_skipped_files_are_reported_to_stderr(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_skipped_files_are_reported_to_stderr(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     out_dir = tmp_path / "out"
     main(["--rules-dir", str(FIXTURE_PACK), "--out-dir", str(out_dir)])
     err = capsys.readouterr().err

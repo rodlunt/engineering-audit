@@ -91,7 +91,9 @@ AT_PIN_RE = re.compile(r"@v(\d+\.\d+\.\d+)")
 # reconstruct the lead-in unchanged.
 PROSE_LEAD_INS = ("--ref v", "currently v", "placeholder: v")
 PROSE_PIN_RE = re.compile(
-    "(" + "|".join(re.escape(lead_in) for lead_in in PROSE_LEAD_INS) + r")(\d+\.\d+\.\d+)"
+    "("
+    + "|".join(re.escape(lead_in) for lead_in in PROSE_LEAD_INS)
+    + r")(\d+\.\d+\.\d+)"
 )
 
 # A valid `[project] version` value: three dot-separated non-negative
@@ -147,7 +149,7 @@ def read_pyproject_version(pyproject: Path = PYPROJECT) -> str:
     match = re.search(r'^version = "([^"]+)"$', text, re.MULTILINE)
     if match is None:
         raise SystemExit(
-            f"could not find a `version = \"...\"` line in {pyproject}; "
+            f'could not find a `version = "..."` line in {pyproject}; '
             "check extraction is broken, not that the project has no version"
         )
     return match.group(1)
@@ -168,7 +170,7 @@ def write_pyproject_version(target: str, pyproject: Path = PYPROJECT) -> None:
     )
     if count == 0:
         raise SystemExit(
-            f"could not find a `version = \"...\"` line in {pyproject}; "
+            f'could not find a `version = "..."` line in {pyproject}; '
             "refusing to write a version pyproject.toml apparently has no "
             "place to hold"
         )
@@ -201,16 +203,24 @@ def _find_text_pins(
             continue
         for line_no, line in enumerate(text.splitlines(), start=1):
             for m in pattern.finditer(line):
-                found.append(TextPin(path=path, line_no=line_no, version=m.group(m.lastindex or 1)))
+                found.append(
+                    TextPin(
+                        path=path, line_no=line_no, version=m.group(m.lastindex or 1)
+                    )
+                )
     return found
 
 
-def find_at_pins(tracked_files: list[Path], repo_root: Path = REPO_ROOT) -> list[TextPin]:
+def find_at_pins(
+    tracked_files: list[Path], repo_root: Path = REPO_ROOT
+) -> list[TextPin]:
     """Return every `@vX.Y.Z` found in a tracked text file."""
     return _find_text_pins(tracked_files, repo_root, AT_PIN_RE)
 
 
-def find_prose_pins(tracked_files: list[Path], repo_root: Path = REPO_ROOT) -> list[TextPin]:
+def find_prose_pins(
+    tracked_files: list[Path], repo_root: Path = REPO_ROOT
+) -> list[TextPin]:
     """Return every known prose version mention (PROSE_LEAD_INS) found in a
     tracked text file."""
     return _find_text_pins(tracked_files, repo_root, PROSE_PIN_RE)
@@ -260,7 +270,9 @@ def discover(repo_root: Path = REPO_ROOT) -> Discovery:
     )
 
 
-def rewrite_text_pin_file(text: str, pattern: re.Pattern[str], target: str) -> tuple[str, int]:
+def rewrite_text_pin_file(
+    text: str, pattern: re.Pattern[str], target: str
+) -> tuple[str, int]:
     """Rewrite every match of pattern in text so its version group becomes
     target, preserving everything else in the match (the `@v` or the prose
     lead-in) unchanged. Works for both AT_PIN_RE and PROSE_PIN_RE because in
@@ -276,7 +288,9 @@ def rewrite_text_pin_file(text: str, pattern: re.Pattern[str], target: str) -> t
     return pattern.subn(repl, text)
 
 
-def rewrite_manifest_version(text: str, old_version: str, target: str) -> tuple[str, int]:
+def rewrite_manifest_version(
+    text: str, old_version: str, target: str
+) -> tuple[str, int]:
     """Rewrite a JSON manifest's top-level "version": "OLD" field to target,
     as a targeted line-anchored text substitution rather than a
     json.load/json.dump round trip, so the file's existing formatting

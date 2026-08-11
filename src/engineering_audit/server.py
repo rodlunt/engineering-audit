@@ -73,7 +73,13 @@ from engineering_audit.output_location import (
     validate_deliverables_dir,
 )
 from engineering_audit.report import ReportError, write_report
-from engineering_audit.rules import Rule, RulesPack, RulesPackError, get_domain_text, load_pack
+from engineering_audit.rules import (
+    Rule,
+    RulesPack,
+    RulesPackError,
+    get_domain_text,
+    load_pack,
+)
 from engineering_audit.run_state_io import (
     PROGRESS_FILENAME,
     RunStateLoadError,
@@ -172,7 +178,9 @@ def _default_tool_commit() -> str | None:
     commit the tool cannot actually vouch for.
     """
     try:
-        direct_url_json = _pkg_distribution("engineering-audit").read_text("direct_url.json")
+        direct_url_json = _pkg_distribution("engineering-audit").read_text(
+            "direct_url.json"
+        )
     except Exception:
         return None
     if direct_url_json is None:
@@ -473,7 +481,9 @@ def _rules_fetch_summary(run: RunTracker) -> dict[str, list[str]]:
     the audit hears about only if they open it.
     """
     with_verdicts = sorted(
-        domain_id for domain_id, result in run.domain_results.items() if result.rule_verdicts
+        domain_id
+        for domain_id, result in run.domain_results.items()
+        if result.rule_verdicts
     )
     return {
         "fetched_domain_ids": sorted(run.rules_fetched),
@@ -483,7 +493,9 @@ def _rules_fetch_summary(run: RunTracker) -> dict[str, list[str]]:
             if _rules_fetched_state(run, domain_id) is False
         ],
         "fetch_not_recorded_domain_ids": [
-            domain_id for domain_id in with_verdicts if _rules_fetched_state(run, domain_id) is None
+            domain_id
+            for domain_id in with_verdicts
+            if _rules_fetched_state(run, domain_id) is None
         ],
     }
 
@@ -542,7 +554,10 @@ def _with_warnings(run: RunTracker, response: dict[str, Any]) -> dict[str, Any]:
     if not run.persist_warnings:
         return response
     existing = response.get("warnings")
-    response["warnings"] = [*(existing if isinstance(existing, list) else []), *run.persist_warnings]
+    response["warnings"] = [
+        *(existing if isinstance(existing, list) else []),
+        *run.persist_warnings,
+    ]
     run.persist_warnings.clear()
     return response
 
@@ -626,7 +641,9 @@ def _prior_run_summary(progress: RunProgress, path: Path) -> dict[str, Any]:
         "assistant": progress.meta.assistant,
         "model": progress.meta.model,
         "configured": config is not None,
-        "selected_domain_ids": config.selected_domain_ids if config is not None else None,
+        "selected_domain_ids": config.selected_domain_ids
+        if config is not None
+        else None,
         "recorded_domain_ids": recorded,
         "missing_domain_ids": (
             [d for d in config.selected_domain_ids if d not in progress.domain_results]
@@ -650,7 +667,11 @@ def _resume_offer(prior: PriorRun, repo_name: str) -> dict[str, Any]:
         return {
             "run_started": False,
             "resumable": False,
-            "prior_run": {"path": str(prior.path), "readable": False, "error": prior.error},
+            "prior_run": {
+                "path": str(prior.path),
+                "readable": False,
+                "error": prior.error,
+            },
             "reason": (
                 f"A previous unfinished audit run is saved at {prior.path}, but its state "
                 f"cannot be read: {prior.error}"
@@ -702,9 +723,7 @@ def _resume_offer(prior: PriorRun, repo_name: str) -> dict[str, Any]:
 
 def _require_run(state: AppState) -> RunTracker:
     if state.run is None:
-        raise ValueError(
-            "No audit run in progress. Call begin_run first."
-        )
+        raise ValueError("No audit run in progress. Call begin_run first.")
     return state.run
 
 
@@ -721,9 +740,7 @@ def _feedback_target(state: AppState) -> tuple[RunTracker, FinishedRun | None]:
         return state.run, None
     if state.finished is not None:
         return state.finished.tracker, state.finished
-    raise ValueError(
-        "No audit run in progress. Call begin_run first."
-    )
+    raise ValueError("No audit run in progress. Call begin_run first.")
 
 
 def _require_config(run: RunTracker) -> AuditConfig:
@@ -917,9 +934,13 @@ def _resume_run(
             "resumed": True,
             "meta": run.meta.model_dump(mode="json"),
             "output_dir": str(output_dir),
-            "repo_dir": str(resolved_repo_dir) if resolved_repo_dir is not None else None,
+            "repo_dir": str(resolved_repo_dir)
+            if resolved_repo_dir is not None
+            else None,
             "config": config.model_dump(mode="json") if config is not None else None,
-            "selected_domain_ids": config.selected_domain_ids if config is not None else None,
+            "selected_domain_ids": config.selected_domain_ids
+            if config is not None
+            else None,
             "recorded_domain_ids": recorded,
             "missing_domain_ids": missing,
             "filed_issues": dict(run.filed_issues),
@@ -1196,7 +1217,9 @@ def _register_pack_tools(mcp: MCPServer, state: AppState) -> None:
         """
         domain = state.pack.get_domain(domain_id)
         if domain is None:
-            valid_ids = ", ".join(d.id for d in state.pack.domains) or "(no domains loaded)"
+            valid_ids = (
+                ", ".join(d.id for d in state.pack.domains) or "(no domains loaded)"
+            )
             raise ValueError(f"Unknown domain id '{domain_id}'. Valid ids: {valid_ids}")
         run = state.run
         if run is not None and domain_id not in run.rules_fetched:
@@ -1568,7 +1591,9 @@ def _register_config_tools(mcp: MCPServer, state: AppState) -> None:
         if run.config is not None:
             return {"status": "configured", **_config_summary(run)}
 
-        assert run.config_server is not None  # config_mode == "interactive" implies this
+        assert (
+            run.config_server is not None
+        )  # config_mode == "interactive" implies this
         assert run.config_wait_started_at is not None  # set alongside config_server
 
         waited_s = time.monotonic() - run.config_wait_started_at
@@ -1624,7 +1649,9 @@ def _register_result_tools(mcp: MCPServer, state: AppState) -> None:
     """Recording per-domain results, and reporting progress over them."""
 
     @mcp.tool()
-    def record_domain_result(result: DomainResult, replace: bool = False) -> dict[str, Any]:
+    def record_domain_result(
+        result: DomainResult, replace: bool = False
+    ) -> dict[str, Any]:
         """Record the audit result for one domain.
 
         The payload itself is pydantic-validated by DomainResult (finding and
@@ -1663,7 +1690,9 @@ def _register_result_tools(mcp: MCPServer, state: AppState) -> None:
         if result.status == "completed":
             domain = state.pack.get_domain(domain_id)
             if domain is None:
-                raise ValueError(f"domain '{domain_id}' is not in the loaded rules pack")
+                raise ValueError(
+                    f"domain '{domain_id}' is not in the loaded rules pack"
+                )
             validate_completeness(domain, result)
 
         if result.consulted_sources:
@@ -1673,7 +1702,9 @@ def _register_result_tools(mcp: MCPServer, state: AppState) -> None:
             # above already fetched.
             domain = state.pack.get_domain(domain_id)
             if domain is None:
-                raise ValueError(f"domain '{domain_id}' is not in the loaded rules pack")
+                raise ValueError(
+                    f"domain '{domain_id}' is not in the loaded rules pack"
+                )
             validate_consulted_sources(domain, result)
 
         if domain_id in run.domain_results and not replace:
@@ -1712,8 +1743,10 @@ def _register_result_tools(mcp: MCPServer, state: AppState) -> None:
         recorded = [d for d in selected if d in run.domain_results]
         missing = [d for d in selected if d not in run.domain_results]
         could_not_run = [
-            d for d in selected
-            if d in run.domain_results and run.domain_results[d].status == "could-not-run"
+            d
+            for d in selected
+            if d in run.domain_results
+            and run.domain_results[d].status == "could-not-run"
         ]
         finding_count = sum(len(r.findings) for r in run.domain_results.values())
         return _with_warnings(
@@ -1790,7 +1823,9 @@ def _register_issue_tools(mcp: MCPServer, state: AppState) -> None:
             run,
             {
                 "repo": target_repo,
-                **_file_pending_issues(run, target_repo, pending, state.pack.rule_index),
+                **_file_pending_issues(
+                    run, target_repo, pending, state.pack.rule_index
+                ),
             },
         )
 
@@ -1882,7 +1917,12 @@ def _register_feedback_tools(mcp: MCPServer, state: AppState) -> None:
             # completed run as unfinished work to resume.
             _persist_run(run)
             return _with_warnings(
-                run, {"mode": "issue", "url": created.url, "warnings": list(created.warnings)}
+                run,
+                {
+                    "mode": "issue",
+                    "url": created.url,
+                    "warnings": list(created.warnings),
+                },
             )
 
         warnings = list(created.warnings)
@@ -2008,7 +2048,9 @@ def _register_report_tools(mcp: MCPServer, state: AppState) -> None:
         severity_counts = Counter(f.severity.value for f in all_findings)
         findings_summary = {
             "total_findings": len(all_findings),
-            "by_severity": {sev: severity_counts.get(sev, 0) for sev in _SEVERITY_ORDER},
+            "by_severity": {
+                sev: severity_counts.get(sev, 0) for sev in _SEVERITY_ORDER
+            },
         }
 
         # A rendered report is a finished run: free the slot so the next
@@ -2086,7 +2128,9 @@ def _strip_ambient_otel_middleware(mcp: MCPServer) -> None:
     """
     before = list(mcp.middleware)
     stripped = [m for m in before if isinstance(m, OpenTelemetryMiddleware)]
-    mcp.middleware[:] = [m for m in before if not isinstance(m, OpenTelemetryMiddleware)]
+    mcp.middleware[:] = [
+        m for m in before if not isinstance(m, OpenTelemetryMiddleware)
+    ]
 
     if not stripped:
         raise TelemetryStripError(
@@ -2095,7 +2139,9 @@ def _strip_ambient_otel_middleware(mcp: MCPServer) -> None:
             "and this tool can no longer confirm ambient telemetry is disabled"
         )
 
-    survivors = [type(m).__name__ for m in mcp.middleware if _looks_like_otel_middleware(m)]
+    survivors = [
+        type(m).__name__ for m in mcp.middleware if _looks_like_otel_middleware(m)
+    ]
     if survivors:
         raise TelemetryStripError(
             "telemetry middleware still present after stripping "
@@ -2146,7 +2192,9 @@ def main() -> None:
     try:
         mcp, _state = build_server(rules_dir)
     except RulesPackError as exc:
-        raise SystemExit(f"engineering-audit-mcp: could not load rules pack: {exc}") from exc
+        raise SystemExit(
+            f"engineering-audit-mcp: could not load rules pack: {exc}"
+        ) from exc
     except TelemetryStripError as exc:
         raise SystemExit(
             f"engineering-audit-mcp: refusing to start, ambient telemetry could not "

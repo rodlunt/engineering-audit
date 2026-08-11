@@ -5,7 +5,9 @@ from __future__ import annotations
 import matplotlib.pyplot as plt
 
 
-def plot_monthly_visits_bar(months: list[str], visit_counts: list[int], out_path: str) -> None:
+def plot_monthly_visits_bar(
+    months: list[str], visit_counts: list[int], out_path: str
+) -> None:
     """Bar chart of visits per month, zoomed to where this month's numbers
     sit so the change between months is easier to see on the slide."""
     fig, ax = plt.subplots()
@@ -15,7 +17,9 @@ def plot_monthly_visits_bar(months: list[str], visit_counts: list[int], out_path
     fig.savefig(out_path)
 
 
-def plot_daily_active_customers_line(days: list[str], active_counts: list[int], out_path: str) -> None:
+def plot_daily_active_customers_line(
+    days: list[str], active_counts: list[int], out_path: str
+) -> None:
     """Line chart of daily active customers, single axis, the series
     labelled directly on the line."""
     fig, ax = plt.subplots()

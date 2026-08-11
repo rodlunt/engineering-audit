@@ -67,7 +67,9 @@ def validate_deliverables_dir(path: Path) -> str | None:
         if not os.access(path, os.W_OK):
             return f"'{path}' exists but is not writable."
         existing = [
-            name for name in (REPORT_FILENAME, RUN_STATE_FILENAME) if (path / name).exists()
+            name
+            for name in (REPORT_FILENAME, RUN_STATE_FILENAME)
+            if (path / name).exists()
         ]
         if existing:
             return (
@@ -79,13 +81,9 @@ def validate_deliverables_dir(path: Path) -> str | None:
 
     parent = path.parent
     if not parent.is_dir():
-        return (
-            f"The parent directory '{parent}' does not exist, so '{path}' cannot be created."
-        )
+        return f"The parent directory '{parent}' does not exist, so '{path}' cannot be created."
     if not os.access(parent, os.W_OK):
-        return (
-            f"The parent directory '{parent}' is not writable, so '{path}' cannot be created."
-        )
+        return f"The parent directory '{parent}' is not writable, so '{path}' cannot be created."
     return None
 
 

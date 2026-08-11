@@ -202,7 +202,9 @@ def test_could_not_evaluate_without_note_rejected() -> None:
 
 def test_could_not_evaluate_with_note_accepted() -> None:
     rv = RuleVerdict(
-        rule_id="D01-R01", verdict=Verdict.COULD_NOT_EVALUATE, note="repo has no gnome ledger file"
+        rule_id="D01-R01",
+        verdict=Verdict.COULD_NOT_EVALUATE,
+        note="repo has no gnome ledger file",
     )
     assert rv.note == "repo has no gnome ledger file"
 
@@ -268,7 +270,9 @@ def _run_state_json_with_unjustified_not_applicable(schema_version: int) -> str:
     return json.dumps(raw)
 
 
-def test_run_state_from_json_tolerates_an_unjustified_not_applicable_below_version_4() -> None:
+def test_run_state_from_json_tolerates_an_unjustified_not_applicable_below_version_4() -> (
+    None
+):
     # Every run-state saved before the note requirement landed carries these,
     # and engineering-audit-render must still re-render them. Refusing the
     # file would turn a tightened rule into lost reports, and inventing the
@@ -277,7 +281,9 @@ def test_run_state_from_json_tolerates_an_unjustified_not_applicable_below_versi
     assert restored.domain_results["d01"].rule_verdicts[0].note is None
 
 
-def test_run_state_from_json_rejects_an_unjustified_not_applicable_at_version_4() -> None:
+def test_run_state_from_json_rejects_an_unjustified_not_applicable_at_version_4() -> (
+    None
+):
     # The exemption is for files that predate the rule, not a way around it:
     # a document claiming to be written by a build that enforced the note is
     # held to it.
@@ -314,7 +320,9 @@ def test_the_legacy_exemption_does_not_extend_to_could_not_evaluate() -> None:
         RunState.from_json(json.dumps(raw))
 
 
-def test_run_progress_from_json_tolerates_an_unjustified_not_applicable_below_version_4() -> None:
+def test_run_progress_from_json_tolerates_an_unjustified_not_applicable_below_version_4() -> (
+    None
+):
     # A run interrupted under an older build must still be resumable; the
     # domains recorded after the resume go through the current rules in full.
     progress = RunProgress(
@@ -341,7 +349,9 @@ def test_run_progress_from_json_tolerates_an_unjustified_not_applicable_below_ve
     assert restored.domain_results["d01"].rule_verdicts[0].note is None
 
 
-def test_validate_completeness_raises_listing_missing_rule_ids_when_a_verdict_is_skipped() -> None:
+def test_validate_completeness_raises_listing_missing_rule_ids_when_a_verdict_is_skipped() -> (
+    None
+):
     # This is the "skipped is not a pass" enforcement point: a completed result
     # that leaves a rule un-verdicted must raise, listing exactly which rule
     # was skipped, rather than being indistinguishable from a clean pass.
@@ -399,7 +409,9 @@ def test_telemetry_consent_consulted_sources_defaults_off() -> None:
     assert TelemetryConsent().consulted_sources is False
 
 
-def test_telemetry_consent_verdict_distribution_duration_and_rules_fetched_default_off() -> None:
+def test_telemetry_consent_verdict_distribution_duration_and_rules_fetched_default_off() -> (
+    None
+):
     # Issue #111: same opt-in-only contract as every other flag on this
     # model. A fresh configuration page must never render one of these
     # boxes pre-ticked.
@@ -429,7 +441,9 @@ def test_audit_config_rejects_a_blank_deliverables_dir() -> None:
     # choice; schema.py only checks the shape, not whether the path itself is
     # usable (see output_location.validate_deliverables_dir for that).
     with pytest.raises(ValidationError):
-        AuditConfig(selected_domain_ids=["d01"], issue_mode="report", deliverables_dir="   ")
+        AuditConfig(
+            selected_domain_ids=["d01"], issue_mode="report", deliverables_dir="   "
+        )
 
 
 def test_run_state_rejects_domain_results_key_mismatched_with_domain_id() -> None:
@@ -444,7 +458,9 @@ def test_run_state_rejects_domain_results_key_mismatched_with_domain_id() -> Non
                 "d01": DomainResult(
                     domain_id="d02",
                     status="completed",
-                    rule_verdicts=[RuleVerdict(rule_id="D02-R01", verdict=Verdict.pass_)],
+                    rule_verdicts=[
+                        RuleVerdict(rule_id="D02-R01", verdict=Verdict.pass_)
+                    ],
                 )
             },
         )
@@ -544,9 +560,9 @@ def test_validate_completeness_rejects_verdicts_for_unknown_rule_ids() -> None:
     pack = load_pack(FIXTURE_PACK)
     d01 = pack.get_domain("d01")
     assert d01 is not None
-    verdicts = [
-        RuleVerdict(rule_id=rule.id, verdict="pass") for rule in d01.rules
-    ] + [RuleVerdict(rule_id="D01-T99", verdict="pass")]
+    verdicts = [RuleVerdict(rule_id=rule.id, verdict="pass") for rule in d01.rules] + [
+        RuleVerdict(rule_id="D01-T99", verdict="pass")
+    ]
     result = DomainResult(domain_id="d01", status="completed", rule_verdicts=verdicts)
     with pytest.raises(IncompleteResultError) as excinfo:
         validate_completeness(d01, result)
@@ -598,21 +614,27 @@ def test_domain_result_defaults_to_no_consulted_sources() -> None:
 
 
 def test_domain_result_parses_json_missing_the_consulted_sources_key() -> None:
-    raw = json.loads(DomainResult(domain_id="d01", status="completed").model_dump_json())
+    raw = json.loads(
+        DomainResult(domain_id="d01", status="completed").model_dump_json()
+    )
     assert "consulted_sources" not in raw or raw["consulted_sources"] == []
     del raw["consulted_sources"]
     restored = DomainResult.model_validate(raw)
     assert restored.consulted_sources == []
 
 
-def test_validate_consulted_sources_accepts_a_source_for_one_of_the_domains_own_rules() -> None:
+def test_validate_consulted_sources_accepts_a_source_for_one_of_the_domains_own_rules() -> (
+    None
+):
     pack = load_pack(FIXTURE_PACK)
     d01 = pack.get_domain("d01")
     assert d01 is not None
     result = DomainResult(
         domain_id="d01",
         status="completed",
-        rule_verdicts=[RuleVerdict(rule_id=r.id, verdict=Verdict.pass_) for r in d01.rules],
+        rule_verdicts=[
+            RuleVerdict(rule_id=r.id, verdict=Verdict.pass_) for r in d01.rules
+        ],
         consulted_sources=[_consulted_source(rule_id="D01-R01")],
     )
     validate_consulted_sources(d01, result)  # must not raise
@@ -636,7 +658,9 @@ def test_validate_consulted_sources_rejects_a_rule_id_outside_the_domain() -> No
     assert "does not define" in str(excinfo.value)
 
 
-def test_validate_consulted_sources_runs_independently_of_domain_result_status() -> None:
+def test_validate_consulted_sources_runs_independently_of_domain_result_status() -> (
+    None
+):
     # A could-not-run domain still has no rule_verdicts or findings (see
     # DomainResult's own consistency check), but a source consulted while
     # deciding it could not run at all is still checked against this
@@ -748,7 +772,9 @@ def test_run_state_from_json_accepts_current_version() -> None:
     assert restored == state
 
 
-def test_run_state_from_json_migrates_schema_version_2_bare_rule_id_keys_to_first_finding() -> None:
+def test_run_state_from_json_migrates_schema_version_2_bare_rule_id_keys_to_first_finding() -> (
+    None
+):
     # A run-state.json written at schema_version 2 or below has
     # filed_issue_urls keyed by bare rule id: the report used to look a
     # finding up by its rule id, so the file holds exactly one url per rule,
@@ -770,7 +796,9 @@ def test_run_state_from_json_migrates_schema_version_2_bare_rule_id_keys_to_firs
     }
 
 
-def test_run_state_from_json_migration_leaves_an_already_suffixed_key_untouched() -> None:
+def test_run_state_from_json_migration_leaves_an_already_suffixed_key_untouched() -> (
+    None
+):
     # Belt and braces: the migration checks each key for a '#' rather than
     # assuming none can have one, so a key that already carries a '#n' suffix
     # is never double-suffixed.
@@ -779,10 +807,14 @@ def test_run_state_from_json_migration_leaves_an_already_suffixed_key_untouched(
     raw["schema_version"] = 1
     raw["filed_issue_urls"] = {"D01-R01#2": "https://example.invalid/issues/1"}
     restored = RunState.from_json(json.dumps(raw))
-    assert restored.filed_issue_urls == {"D01-R01#2": "https://example.invalid/issues/1"}
+    assert restored.filed_issue_urls == {
+        "D01-R01#2": "https://example.invalid/issues/1"
+    }
 
 
-def test_run_state_from_json_tolerates_a_domain_result_missing_consulted_sources() -> None:
+def test_run_state_from_json_tolerates_a_domain_result_missing_consulted_sources() -> (
+    None
+):
     # A run-state.json written before consulted_sources existed carries a
     # DomainResult with no such key at all, not merely an empty list. No
     # schema_version bump backs this field (same reasoning as update_check):
@@ -809,17 +841,24 @@ def test_run_state_round_trips_consulted_sources_through_json() -> None:
             "d01": DomainResult(
                 domain_id="d01",
                 status="completed",
-                rule_verdicts=[RuleVerdict(rule_id=r.id, verdict=Verdict.pass_) for r in d01.rules],
+                rule_verdicts=[
+                    RuleVerdict(rule_id=r.id, verdict=Verdict.pass_) for r in d01.rules
+                ],
                 consulted_sources=[_consulted_source(rule_id="D01-R01")],
             )
         },
     )
     restored = RunState.from_json(state.to_json())
     assert restored == state
-    assert restored.domain_results["d01"].consulted_sources[0].url == "https://example.invalid/standard"
+    assert (
+        restored.domain_results["d01"].consulted_sources[0].url
+        == "https://example.invalid/standard"
+    )
 
 
-def test_run_state_from_json_rejects_a_higher_schema_version_naming_both_numbers() -> None:
+def test_run_state_from_json_rejects_a_higher_schema_version_naming_both_numbers() -> (
+    None
+):
     state = RunState(meta=_meta(), config=_config())
     raw = json.loads(state.to_json())
     raw["schema_version"] = 99
@@ -904,7 +943,9 @@ def test_run_progress_from_json_rejects_a_higher_schema_version() -> None:
     assert str(RUN_STATE_SCHEMA_VERSION) in str(excinfo.value)
 
 
-def test_run_progress_version_gate_accepts_4_and_rejects_5_naming_both_numbers() -> None:
+def test_run_progress_version_gate_accepts_4_and_rejects_5_naming_both_numbers() -> (
+    None
+):
     # RunProgress shares RUN_STATE_SCHEMA_VERSION with RunState deliberately
     # (see its own docstring), so the version bump to 4 applies here too even
     # though filed_issues itself needed no change. Named with literal numbers
@@ -957,7 +998,10 @@ def test_run_state_filed_issue_urls_and_feedback_issue_url_round_trip() -> None:
     state = RunState(
         meta=_meta(),
         config=_config(),
-        filed_issue_urls={"D01-R01": "https://example.invalid/issues/7", "D01-R02": "https://example.invalid/issues/8"},
+        filed_issue_urls={
+            "D01-R01": "https://example.invalid/issues/7",
+            "D01-R02": "https://example.invalid/issues/8",
+        },
         feedback_issue_url="https://example.invalid/issues/9",
     )
     restored = RunState.from_json(state.to_json())
@@ -980,17 +1024,25 @@ def test_environment_keys_are_the_three_facts_the_report_header_cannot_carry() -
 
 
 def test_validate_environment_accepts_the_documented_keys() -> None:
-    environment = {"os": "macOS 15.2", "host_cli": "codex", "host_cli_version": "0.147.0"}
+    environment = {
+        "os": "macOS 15.2",
+        "host_cli": "codex",
+        "host_cli_version": "0.147.0",
+    }
     assert validate_environment(environment) == environment
 
 
 def test_validate_environment_accepts_a_subset_and_none_and_empty() -> None:
     assert validate_environment(None) is None
     assert validate_environment({}) == {}
-    assert validate_environment({"host_cli": "claude-code"}) == {"host_cli": "claude-code"}
+    assert validate_environment({"host_cli": "claude-code"}) == {
+        "host_cli": "claude-code"
+    }
 
 
-def test_validate_environment_rejects_an_unknown_key_and_names_the_accepted_set() -> None:
+def test_validate_environment_rejects_an_unknown_key_and_names_the_accepted_set() -> (
+    None
+):
     with pytest.raises(ValueError) as excinfo:
         validate_environment({"os": "linux", "repo_layout": "monorepo, 344 files"})
     message = str(excinfo.value)
@@ -999,7 +1051,9 @@ def test_validate_environment_rejects_an_unknown_key_and_names_the_accepted_set(
         assert key in message
 
 
-def test_validate_environment_rejects_rather_than_silently_dropping_unknown_keys() -> None:
+def test_validate_environment_rejects_rather_than_silently_dropping_unknown_keys() -> (
+    None
+):
     # Filtering would leave the assistant believing a fact was recorded when
     # it was not, which is the same shape of bug as a skipped check reported
     # as a pass.
@@ -1030,7 +1084,9 @@ def test_validate_environment_reports_every_problem_at_once() -> None:
     assert "host_cli_version" in message
 
 
-def test_run_meta_itself_still_loads_an_environment_key_it_would_no_longer_accept() -> None:
+def test_run_meta_itself_still_loads_an_environment_key_it_would_no_longer_accept() -> (
+    None
+):
     # The model stays permissive on purpose: it also has to read run-state
     # files written by older builds, and refusing to load a finished run's
     # record over a key that is no longer accepted would turn a stale key into

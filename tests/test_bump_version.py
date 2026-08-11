@@ -35,7 +35,9 @@ def _load_module(base_name: str, path: Path) -> ModuleType:
     # stale cached module instead of a fresh exec.
     global _module_counter
     _module_counter += 1
-    spec = importlib.util.spec_from_file_location(f"{base_name}_{_module_counter}", path)
+    spec = importlib.util.spec_from_file_location(
+        f"{base_name}_{_module_counter}", path
+    )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

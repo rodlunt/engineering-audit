@@ -94,7 +94,9 @@ def _resolve_update_status(
     rank "0.9.0" above "0.10.0".
     """
     if installed_commit is None:
-        return "could-not-check: installed build's commit is unknown (not a git install)"
+        return (
+            "could-not-check: installed build's commit is unknown (not a git install)"
+        )
 
     head_sha: str | None = None
     tag_shas: dict[tuple[int, int, int], str] = {}
@@ -180,12 +182,16 @@ def check_for_update(
     if result is None:
         return "could-not-check: git is not available or the remote check timed out"
     if result.returncode != 0:
-        stderr_snippet = result.stderr.strip().splitlines()[0] if result.stderr.strip() else ""
+        stderr_snippet = (
+            result.stderr.strip().splitlines()[0] if result.stderr.strip() else ""
+        )
         suffix = f": {stderr_snippet}" if stderr_snippet else ""
         return f"could-not-check: git ls-remote failed{suffix}"
 
     try:
-        return _resolve_update_status(result.stdout, installed_commit, installed_version)
+        return _resolve_update_status(
+            result.stdout, installed_commit, installed_version
+        )
     except Exception as exc:  # noqa: BLE001 - telemetry only, never fatal; see module docstring
         return f"could-not-check: unexpected error parsing remote refs ({exc})"
 
@@ -258,13 +264,21 @@ def check_pack_for_update(
         return f"could-not-check: unexpected error running git ls-remote on the pack ({exc})"
 
     if result is None:
-        return "could-not-check: git is not available or the pack's remote check timed out"
+        return (
+            "could-not-check: git is not available or the pack's remote check timed out"
+        )
     if result.returncode != 0:
-        stderr_snippet = result.stderr.strip().splitlines()[0] if result.stderr.strip() else ""
+        stderr_snippet = (
+            result.stderr.strip().splitlines()[0] if result.stderr.strip() else ""
+        )
         suffix = f": {stderr_snippet}" if stderr_snippet else ""
         return f"could-not-check: git ls-remote on the pack failed{suffix}"
 
     try:
-        return _resolve_update_status(result.stdout, pack_commit, pack_version or "unknown")
+        return _resolve_update_status(
+            result.stdout, pack_commit, pack_version or "unknown"
+        )
     except Exception as exc:  # noqa: BLE001 - telemetry only, never fatal; see module docstring
-        return f"could-not-check: unexpected error parsing the pack's remote refs ({exc})"
+        return (
+            f"could-not-check: unexpected error parsing the pack's remote refs ({exc})"
+        )

@@ -37,7 +37,9 @@ __all__ = [
 ]
 
 _TRIGGER_RE = re.compile(r"^\*\*Trigger:\*\*\s*(?P<trigger>.+)$", re.MULTILINE)
-_H1_RE = re.compile(r"^#\s*Domain\s+(?P<number>\d+)\s*:\s*(?P<title>.+?)\s*$", re.MULTILINE)
+_H1_RE = re.compile(
+    r"^#\s*Domain\s+(?P<number>\d+)\s*:\s*(?P<title>.+?)\s*$", re.MULTILINE
+)
 _LOAD_WHEN_RE = re.compile(
     r"\*\*Load this when:\*\*\s*(?P<load_when>.*?)(?:\n\s*\n|\Z)", re.DOTALL
 )
@@ -208,7 +210,7 @@ def _extract_source(block: str, rule_id_start: int) -> str | None:
     if not source_matches:
         return None
 
-    source_text = footer_segment[source_matches[-1].end():]
+    source_text = footer_segment[source_matches[-1].end() :]
     verification_match = _VERIFICATION_MARKER_RE.search(source_text)
     if verification_match is not None:
         source_text = source_text[: verification_match.start()]
@@ -300,7 +302,9 @@ def _parse_domain(path: Path, text: str, trigger: str) -> Domain:
     title = h1_match.group("title").strip()
 
     load_when_match = _LOAD_WHEN_RE.search(text)
-    load_when = " ".join(load_when_match.group("load_when").split()) if load_when_match else ""
+    load_when = (
+        " ".join(load_when_match.group("load_when").split()) if load_when_match else ""
+    )
 
     rules = _parse_rules(path, text)
 
@@ -326,7 +330,9 @@ def load_pack(rules_dir: Path) -> RulesPack:
     """
     rules_dir = Path(rules_dir)
     if not rules_dir.is_dir():
-        raise RulesPackError(f"Rules pack directory does not exist or is not a directory: {rules_dir}")
+        raise RulesPackError(
+            f"Rules pack directory does not exist or is not a directory: {rules_dir}"
+        )
 
     domain_paths = sorted(rules_dir.glob("*.md"))
     if not domain_paths:

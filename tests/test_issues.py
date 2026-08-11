@@ -21,8 +21,12 @@ from engineering_audit.issues import (
 )
 
 
-def _proc(returncode: int, stdout: str = "", stderr: str = "") -> "subprocess.CompletedProcess[str]":
-    return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr=stderr)
+def _proc(
+    returncode: int, stdout: str = "", stderr: str = ""
+) -> "subprocess.CompletedProcess[str]":
+    return subprocess.CompletedProcess(
+        args=[], returncode=returncode, stdout=stdout, stderr=stderr
+    )
 
 
 class _FakeRunner:
@@ -33,7 +37,9 @@ class _FakeRunner:
         self._results = list(results)
         self.calls: list[dict] = []
 
-    def __call__(self, args: list[str], cwd: Path | None = None) -> "subprocess.CompletedProcess[str]":
+    def __call__(
+        self, args: list[str], cwd: Path | None = None
+    ) -> "subprocess.CompletedProcess[str]":
         self.calls.append({"args": args, "cwd": cwd})
         return self._results.pop(0)
 
@@ -71,7 +77,9 @@ def test_detect_repo_returns_none_when_no_github_remote(tmp_path: Path) -> None:
     assert detect_repo(tmp_path, runner) is None
 
 
-def test_detect_repo_returns_none_on_empty_stdout_with_zero_exit(tmp_path: Path) -> None:
+def test_detect_repo_returns_none_on_empty_stdout_with_zero_exit(
+    tmp_path: Path,
+) -> None:
     # Defensive: an unexpected empty-but-successful result must not be
     # mistaken for a real repo slug.
     runner = _FakeRunner([_proc(0, stdout="  \n")])
@@ -101,7 +109,9 @@ def test_ensure_label_creates_the_label_when_it_is_missing() -> None:
     assert "--color" in create_args and "--description" in create_args
 
 
-def test_ensure_label_reports_unavailable_with_one_warning_when_creation_fails() -> None:
+def test_ensure_label_reports_unavailable_with_one_warning_when_creation_fails() -> (
+    None
+):
     runner = _FakeRunner(
         [
             _proc(0, stdout=""),
@@ -142,9 +152,15 @@ def test_ensure_label_warning_names_the_exit_code_when_gh_says_nothing() -> None
 
 
 def test_create_issue_returns_url_on_success() -> None:
-    runner = _FakeRunner([_proc(0, stdout="https://github.com/rodlunt/widgets-app/issues/1\n")])
-    result = create_issue("rodlunt/widgets-app", "Title", "Body", ["engineering-audit"], runner)
-    assert result == CreatedIssue(url="https://github.com/rodlunt/widgets-app/issues/1", warnings=[])
+    runner = _FakeRunner(
+        [_proc(0, stdout="https://github.com/rodlunt/widgets-app/issues/1\n")]
+    )
+    result = create_issue(
+        "rodlunt/widgets-app", "Title", "Body", ["engineering-audit"], runner
+    )
+    assert result == CreatedIssue(
+        url="https://github.com/rodlunt/widgets-app/issues/1", warnings=[]
+    )
     args = runner.calls[0]["args"]
     assert args[:3] == ["gh", "issue", "create"]
     assert "--label" in args and "engineering-audit" in args
@@ -172,7 +188,9 @@ def test_create_issue_retries_once_without_labels_on_unknown_label_error() -> No
             _proc(0, stdout="https://github.com/rodlunt/widgets-app/issues/2\n"),
         ]
     )
-    result = create_issue("rodlunt/widgets-app", "Title", "Body", ["engineering-audit"], runner)
+    result = create_issue(
+        "rodlunt/widgets-app", "Title", "Body", ["engineering-audit"], runner
+    )
     assert result.url == "https://github.com/rodlunt/widgets-app/issues/2"
     assert result.warnings and "engineering-audit" in result.warnings[0]
 
@@ -190,12 +208,16 @@ def test_create_issue_raises_if_retry_without_labels_also_fails() -> None:
         ]
     )
     with pytest.raises(IssueFilingError) as excinfo:
-        create_issue("rodlunt/widgets-app", "Title", "Body", ["engineering-audit"], runner)
+        create_issue(
+            "rodlunt/widgets-app", "Title", "Body", ["engineering-audit"], runner
+        )
     assert "HTTP 500" in str(excinfo.value)
 
 
 def test_create_issue_does_not_retry_on_an_unrelated_error() -> None:
     runner = _FakeRunner([_proc(1, stderr="HTTP 403: Forbidden")])
     with pytest.raises(IssueFilingError):
-        create_issue("rodlunt/widgets-app", "Title", "Body", ["engineering-audit"], runner)
+        create_issue(
+            "rodlunt/widgets-app", "Title", "Body", ["engineering-audit"], runner
+        )
     assert len(runner.calls) == 1

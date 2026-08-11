@@ -10,7 +10,12 @@ import pytest
 
 from engineering_audit import report as report_module
 from engineering_audit.feedback import build_feedback_body, build_feedback_sections
-from engineering_audit.report import _INLINE_SCRIPT, ReportError, render_report, write_report
+from engineering_audit.report import (
+    _INLINE_SCRIPT,
+    ReportError,
+    render_report,
+    write_report,
+)
 from engineering_audit.rules import load_pack
 from engineering_audit.schema import (
     AuditConfig,
@@ -39,7 +44,9 @@ def _extract_json_script(rendered: str, element_id: str) -> dict:
         rendered,
         re.DOTALL,
     )
-    assert match is not None, f"no <script type=application/json id={element_id!r}> block found"
+    assert match is not None, (
+        f"no <script type=application/json id={element_id!r}> block found"
+    )
     return json.loads(match.group(1))
 
 
@@ -96,14 +103,18 @@ def _base_run_state(pack, extra_domain_results: dict | None = None) -> RunState:
                 )
             ],
             self_assessment=SelfAssessment(confidence="high", limits=""),
-            coverage=Coverage(files_inspected=12, files_skipped=1, note="one binary asset skipped"),
+            coverage=Coverage(
+                files_inspected=12, files_skipped=1, note="one binary asset skipped"
+            ),
         ),
         "d02": DomainResult(
             domain_id="d02",
             status="completed",
             rule_verdicts=_all_pass_verdicts(d02),
             findings=[],
-            self_assessment=SelfAssessment(confidence="medium", limits="did not check archived routes"),
+            self_assessment=SelfAssessment(
+                confidence="medium", limits="did not check archived routes"
+            ),
             coverage=Coverage(files_inspected=5, files_skipped=0),
         ),
     }
@@ -124,7 +135,9 @@ def test_render_report_contains_finding_titles_and_could_not_evaluate_entries() 
 
     assert "Two gnomes share bed-14 without the shared-bed flag" in rendered
     assert "D01-R03" in rendered
-    assert "the garden bed ledger file could not be located in this repository" in rendered
+    assert (
+        "the garden bed ledger file could not be located in this repository" in rendered
+    )
 
 
 def test_header_names_earlier_contributors_on_a_handed_over_run() -> None:
@@ -251,7 +264,11 @@ def test_could_not_evaluate_verdict_for_unknown_rule_id_raises() -> None:
     run_state = RunState(
         meta=_meta(),
         config=AuditConfig(selected_domain_ids=["d01"], issue_mode="report"),
-        domain_results={"d01": DomainResult(domain_id="d01", status="completed", rule_verdicts=verdicts)},
+        domain_results={
+            "d01": DomainResult(
+                domain_id="d01", status="completed", rule_verdicts=verdicts
+            )
+        },
     )
     with pytest.raises(ReportError):
         render_report(run_state, pack)
@@ -265,12 +282,20 @@ def test_could_not_evaluate_groups_rows_by_reason_sorted_by_descending_count() -
     # ordered by descending rule count.
     pack = _pack()
     common_reason = "no requirements documentation found in this repository"
-    rare_reason = "the persistence schema is managed by a separate database-migrations repository"
+    rare_reason = (
+        "the persistence schema is managed by a separate database-migrations repository"
+    )
 
     d01_verdicts = [
-        RuleVerdict(rule_id="D01-R01", verdict=Verdict.COULD_NOT_EVALUATE, note=common_reason),
-        RuleVerdict(rule_id="D01-R02", verdict=Verdict.COULD_NOT_EVALUATE, note=common_reason),
-        RuleVerdict(rule_id="D01-R03", verdict=Verdict.COULD_NOT_EVALUATE, note=rare_reason),
+        RuleVerdict(
+            rule_id="D01-R01", verdict=Verdict.COULD_NOT_EVALUATE, note=common_reason
+        ),
+        RuleVerdict(
+            rule_id="D01-R02", verdict=Verdict.COULD_NOT_EVALUATE, note=common_reason
+        ),
+        RuleVerdict(
+            rule_id="D01-R03", verdict=Verdict.COULD_NOT_EVALUATE, note=rare_reason
+        ),
         RuleVerdict(rule_id="D01-R04", verdict=Verdict.pass_),
     ]
     d02 = pack.get_domain("d02")
@@ -282,8 +307,12 @@ def test_could_not_evaluate_groups_rows_by_reason_sorted_by_descending_count() -
         meta=_meta(),
         config=AuditConfig(selected_domain_ids=["d01", "d02"], issue_mode="report"),
         domain_results={
-            "d01": DomainResult(domain_id="d01", status="completed", rule_verdicts=d01_verdicts),
-            "d02": DomainResult(domain_id="d02", status="completed", rule_verdicts=d02_verdicts),
+            "d01": DomainResult(
+                domain_id="d01", status="completed", rule_verdicts=d01_verdicts
+            ),
+            "d02": DomainResult(
+                domain_id="d02", status="completed", rule_verdicts=d02_verdicts
+            ),
         },
     )
     rendered = render_report(run_state, pack)
@@ -301,7 +330,8 @@ def test_could_not_evaluate_groups_rows_by_reason_sorted_by_descending_count() -
 
 def _all_not_applicable_verdicts(domain, note: str) -> list[RuleVerdict]:
     return [
-        RuleVerdict(rule_id=r.id, verdict=Verdict.NOT_APPLICABLE, note=note) for r in domain.rules
+        RuleVerdict(rule_id=r.id, verdict=Verdict.NOT_APPLICABLE, note=note)
+        for r in domain.rules
     ]
 
 
@@ -313,27 +343,37 @@ def test_not_applicable_verdicts_are_counted_and_their_reasons_listed() -> None:
     d02 = pack.get_domain("d02")
     reason = "this repository ships no gnome roster, only teacups"
     d01_verdicts = _all_pass_verdicts(d01)
-    d01_verdicts[0] = RuleVerdict(rule_id="D01-R01", verdict=Verdict.NOT_APPLICABLE, note=reason)
+    d01_verdicts[0] = RuleVerdict(
+        rule_id="D01-R01", verdict=Verdict.NOT_APPLICABLE, note=reason
+    )
     run_state = RunState(
         meta=_meta(),
         config=AuditConfig(selected_domain_ids=["d01", "d02"], issue_mode="report"),
         domain_results={
-            "d01": DomainResult(domain_id="d01", status="completed", rule_verdicts=d01_verdicts),
+            "d01": DomainResult(
+                domain_id="d01", status="completed", rule_verdicts=d01_verdicts
+            ),
             "d02": DomainResult(
-                domain_id="d02", status="completed", rule_verdicts=_all_pass_verdicts(d02)
+                domain_id="d02",
+                status="completed",
+                rule_verdicts=_all_pass_verdicts(d02),
             ),
         },
     )
     rendered = render_report(run_state, pack)
 
     assert "Not applicable (1)" in rendered
-    assert "d01: Gnome Husbandry Record Keeping: 1 of 4 rule(s) not applicable" in rendered
+    assert (
+        "d01: Gnome Husbandry Record Keeping: 1 of 4 rule(s) not applicable" in rendered
+    )
     assert "d02: Teacup Logistics Handling: 0 of 3 rule(s) not applicable" in rendered
     assert reason in rendered
     assert "D01-R01 (1 rule)" in rendered
 
 
-def test_a_wholly_not_applicable_domain_is_distinguishable_from_one_swept_clean() -> None:
+def test_a_wholly_not_applicable_domain_is_distinguishable_from_one_swept_clean() -> (
+    None
+):
     # The defect in one assertion: d01 had every rule waved away and d02 was
     # actually swept, and both rendered as "0 findings" with nothing else to
     # tell them apart.
@@ -351,7 +391,9 @@ def test_a_wholly_not_applicable_domain_is_distinguishable_from_one_swept_clean(
                 rule_verdicts=_all_not_applicable_verdicts(d01, reason),
             ),
             "d02": DomainResult(
-                domain_id="d02", status="completed", rule_verdicts=_all_pass_verdicts(d02)
+                domain_id="d02",
+                status="completed",
+                rule_verdicts=_all_pass_verdicts(d02),
             ),
         },
     )
@@ -385,16 +427,26 @@ def test_not_applicable_groups_rows_by_reason_sorted_by_descending_count() -> No
     common_reason = "this repository has no gnome ledger of any kind"
     rare_reason = "beard-length averages are computed in a separate roster service"
     d01_verdicts = [
-        RuleVerdict(rule_id="D01-R01", verdict=Verdict.NOT_APPLICABLE, note=common_reason),
-        RuleVerdict(rule_id="D01-R02", verdict=Verdict.NOT_APPLICABLE, note=common_reason),
-        RuleVerdict(rule_id="D01-R03", verdict=Verdict.NOT_APPLICABLE, note=common_reason),
-        RuleVerdict(rule_id="D01-R04", verdict=Verdict.NOT_APPLICABLE, note=rare_reason),
+        RuleVerdict(
+            rule_id="D01-R01", verdict=Verdict.NOT_APPLICABLE, note=common_reason
+        ),
+        RuleVerdict(
+            rule_id="D01-R02", verdict=Verdict.NOT_APPLICABLE, note=common_reason
+        ),
+        RuleVerdict(
+            rule_id="D01-R03", verdict=Verdict.NOT_APPLICABLE, note=common_reason
+        ),
+        RuleVerdict(
+            rule_id="D01-R04", verdict=Verdict.NOT_APPLICABLE, note=rare_reason
+        ),
     ]
     run_state = RunState(
         meta=_meta(),
         config=AuditConfig(selected_domain_ids=["d01"], issue_mode="report"),
         domain_results={
-            "d01": DomainResult(domain_id="d01", status="completed", rule_verdicts=d01_verdicts)
+            "d01": DomainResult(
+                domain_id="d01", status="completed", rule_verdicts=d01_verdicts
+            )
         },
     )
     rendered = render_report(run_state, pack)
@@ -412,7 +464,9 @@ def test_not_applicable_groups_rows_by_reason_sorted_by_descending_count() -> No
 # The sentence the block must always carry, in every state that reports an
 # answer: fetching is not reading. Pinned as a constant so a rewording of the
 # block cannot quietly drop the limit and leave the claim behind.
-_LIMIT_SENTENCE = "This says the rule text was fetched from the server, and nothing more."
+_LIMIT_SENTENCE = (
+    "This says the rule text was fetched from the server, and nothing more."
+)
 
 
 def test_rules_fetched_names_a_domain_that_recorded_verdicts_without_them() -> None:
@@ -446,7 +500,10 @@ def test_rules_fetched_clean_result_states_what_it_cannot_show() -> None:
         "server first." in rendered
     )
     assert _LIMIT_SENTENCE in rendered
-    assert "a run that fetched every domain and then guessed would look the same here" in rendered
+    assert (
+        "a run that fetched every domain and then guessed would look the same here"
+        in rendered
+    )
     # Never the stronger claim. The block can say the rule text was fetched;
     # it can never say the rules were read or applied, and it says so.
     assert "It is not evidence that the rules were read, or applied" in rendered
@@ -467,7 +524,9 @@ def test_rules_fetched_reports_an_older_run_state_as_not_recorded() -> None:
     assert "had their rule text fetched from this server first" not in rendered
 
 
-def test_rules_fetched_keeps_a_resumed_legacy_domain_separate_from_a_skipped_one() -> None:
+def test_rules_fetched_keeps_a_resumed_legacy_domain_separate_from_a_skipped_one() -> (
+    None
+):
     # A resumed run that carried d01 in from a record written before any of
     # this was tracked, and then recorded d02 without fetching it. The two are
     # different facts and the report keeps them apart.
@@ -495,7 +554,9 @@ def test_rules_fetched_says_a_domain_fetched_after_a_resume_is_simply_fetched() 
     run_state.rules_fetch_unknown_domain_ids = ["d01"]
     rendered = render_report(run_state, pack)
 
-    assert "All 2 domain(s) that recorded verdicts had their rule text fetched" in rendered
+    assert (
+        "All 2 domain(s) that recorded verdicts had their rule text fetched" in rendered
+    )
     assert "carried into this run" not in rendered
 
 
@@ -538,14 +599,18 @@ def test_not_applicable_verdict_for_unknown_rule_id_raises() -> None:
         meta=_meta(),
         config=AuditConfig(selected_domain_ids=["d01"], issue_mode="report"),
         domain_results={
-            "d01": DomainResult(domain_id="d01", status="completed", rule_verdicts=verdicts)
+            "d01": DomainResult(
+                domain_id="d01", status="completed", rule_verdicts=verdicts
+            )
         },
     )
     with pytest.raises(ReportError):
         render_report(run_state, pack)
 
 
-def test_a_legacy_run_state_renders_its_unjustified_not_applicable_as_unrecorded() -> None:
+def test_a_legacy_run_state_renders_its_unjustified_not_applicable_as_unrecorded() -> (
+    None
+):
     # A run-state saved before the note requirement (schema_version 3 or
     # below) must still re-render, and its note-less verdicts must read as
     # reasons nobody recorded rather than being folded in with the real ones.
@@ -558,7 +623,9 @@ def test_a_legacy_run_state_renders_its_unjustified_not_applicable_as_unrecorded
             "d01": DomainResult(
                 domain_id="d01",
                 status="completed",
-                rule_verdicts=_all_not_applicable_verdicts(d01, "placeholder, stripped below"),
+                rule_verdicts=_all_not_applicable_verdicts(
+                    d01, "placeholder, stripped below"
+                ),
             )
         },
     )
@@ -583,10 +650,14 @@ def test_could_not_evaluate_all_clear_message_survives_the_grouping_change() -> 
         config=AuditConfig(selected_domain_ids=["d01", "d02"], issue_mode="report"),
         domain_results={
             "d01": DomainResult(
-                domain_id="d01", status="completed", rule_verdicts=_all_pass_verdicts(d01)
+                domain_id="d01",
+                status="completed",
+                rule_verdicts=_all_pass_verdicts(d01),
             ),
             "d02": DomainResult(
-                domain_id="d02", status="completed", rule_verdicts=_all_pass_verdicts(d02)
+                domain_id="d02",
+                status="completed",
+                rule_verdicts=_all_pass_verdicts(d02),
             ),
         },
     )
@@ -660,7 +731,7 @@ def test_v2_pack_reference_line_publishes_the_source_whole_with_no_capping(
 
     assert (
         "Reference: D01-R01: A self-contained citation. It quotes the standard "
-        'directly: &quot;here is the quoted text&quot;' in rendered
+        "directly: &quot;here is the quoted text&quot;" in rendered
     )
 
 
@@ -671,7 +742,9 @@ def test_an_oversized_v2_source_is_truncated_rather_than_failing_the_render(
     # in Source: must still produce a report. citation() applies its ceiling
     # on both branches precisely so a partly migrated pack degrades to a
     # visibly truncated reference instead of taking the whole render down.
-    pack = _write_single_rule_pack(tmp_path, "A" * 1200 + ". Verification: checked recently.")
+    pack = _write_single_rule_pack(
+        tmp_path, "A" * 1200 + ". Verification: checked recently."
+    )
     assert pack.is_v2 is True
 
     rendered = render_report(_single_finding_run_state("D01-R01"), pack)
@@ -736,8 +809,13 @@ def test_consulted_sources_section_shows_title_link_why_and_accessed() -> None:
     rendered = render_report(run_state, pack)
     assert "Sources consulted this run" in rendered
     assert "D01-R01" in rendered
-    assert '<a href="https://example.invalid/standard">An external standard</a>' in rendered
-    assert "checked the standard&#x27;s definition before verdicting this rule" in rendered
+    assert (
+        '<a href="https://example.invalid/standard">An external standard</a>'
+        in rendered
+    )
+    assert (
+        "checked the standard&#x27;s definition before verdicting this rule" in rendered
+    )
     assert "accessed 2026-08-09T09:02:00Z" in rendered
 
 
@@ -752,8 +830,16 @@ def test_consulted_sources_section_groups_multiple_sources_under_one_rule_id() -
                 status="completed",
                 rule_verdicts=_all_pass_verdicts(d01),
                 consulted_sources=[
-                    _consulted_source(rule_id="D01-R01", url="https://example.invalid/a", title="Source A"),
-                    _consulted_source(rule_id="D01-R01", url="https://example.invalid/b", title="Source B"),
+                    _consulted_source(
+                        rule_id="D01-R01",
+                        url="https://example.invalid/a",
+                        title="Source A",
+                    ),
+                    _consulted_source(
+                        rule_id="D01-R01",
+                        url="https://example.invalid/b",
+                        title="Source B",
+                    ),
                 ],
             )
         },
@@ -766,7 +852,9 @@ def test_consulted_sources_section_groups_multiple_sources_under_one_rule_id() -
     assert "Source B" in rendered
 
 
-def test_consulted_source_with_a_non_http_url_degrades_to_text_instead_of_raising() -> None:
+def test_consulted_source_with_a_non_http_url_degrades_to_text_instead_of_raising() -> (
+    None
+):
     # consulted_sources is self-reported by the driving agent, not produced
     # by this tool's own gh integration like a filed-issue or feedback-issue
     # url; a scheme this page will not link must not take the whole report
@@ -781,7 +869,9 @@ def test_consulted_source_with_a_non_http_url_degrades_to_text_instead_of_raisin
                 status="completed",
                 rule_verdicts=_all_pass_verdicts(d01),
                 consulted_sources=[
-                    _consulted_source(url="file:///etc/hosts", title="a local file reference")
+                    _consulted_source(
+                        url="file:///etc/hosts", title="a local file reference"
+                    )
                 ],
             )
         },
@@ -791,7 +881,9 @@ def test_consulted_source_with_a_non_http_url_degrades_to_text_instead_of_raisin
     assert '<a href="file:///etc/hosts">' not in rendered
 
 
-def test_report_error_when_consulted_source_references_a_rule_id_outside_its_domain() -> None:
+def test_report_error_when_consulted_source_references_a_rule_id_outside_its_domain() -> (
+    None
+):
     pack = _pack()
     d01 = pack.get_domain("d01")
     run_state = _base_run_state(
@@ -869,9 +961,9 @@ def test_markdownish_splits_paragraphs_on_crlf() -> None:
     # one place it still runs: a finding's body_md.
     pack = _pack()
     run_state = _base_run_state(pack)
-    run_state.domain_results["d01"].findings[0].body_md = (
-        "First paragraph.\r\n\r\nSecond paragraph."
-    )
+    run_state.domain_results["d01"].findings[
+        0
+    ].body_md = "First paragraph.\r\n\r\nSecond paragraph."
     rendered = render_report(run_state, pack)
     assert "<p>First paragraph.</p><p>Second paragraph.</p>" in rendered
 
@@ -947,14 +1039,18 @@ def test_could_not_run_domain_renders_reason_without_verdicts() -> None:
         meta=_meta(),
         config=AuditConfig(selected_domain_ids=["d02"], issue_mode="report"),
         domain_results={
-            "d02": DomainResult(domain_id="d02", status="could-not-run", reason="repository was empty")
+            "d02": DomainResult(
+                domain_id="d02", status="could-not-run", reason="repository was empty"
+            )
         },
     )
     rendered = render_report(run_state, pack)
     assert "repository was empty" in rendered
 
 
-def test_could_not_run_domain_stops_the_completeness_banner_claiming_full_coverage() -> None:
+def test_could_not_run_domain_stops_the_completeness_banner_claiming_full_coverage() -> (
+    None
+):
     # A could-not-run domain has no rule_verdicts by design, so it satisfies
     # "no rule left could-not-evaluate" by construction even though zero
     # rules were actually evaluated for it. The banner must never claim full
@@ -964,7 +1060,9 @@ def test_could_not_run_domain_stops_the_completeness_banner_claiming_full_covera
         meta=_meta(),
         config=AuditConfig(selected_domain_ids=["d02"], issue_mode="report"),
         domain_results={
-            "d02": DomainResult(domain_id="d02", status="could-not-run", reason="repository was empty")
+            "d02": DomainResult(
+                domain_id="d02", status="could-not-run", reason="repository was empty"
+            )
         },
     )
     rendered = render_report(run_state, pack)
@@ -1035,7 +1133,9 @@ def test_feedback_section_shows_filed_issue_link_and_still_offers_the_form() -> 
     pack = _pack()
     run_state = _base_run_state(pack)
     run_state.config.feedback_text = "The gnome roster export was slow on large repos."
-    run_state.feedback_issue_url = "https://github.com/rodlunt/engineering-audit/issues/9"
+    run_state.feedback_issue_url = (
+        "https://github.com/rodlunt/engineering-audit/issues/9"
+    )
     rendered = render_report(run_state, pack)
 
     assert 'href="https://github.com/rodlunt/engineering-audit/issues/9"' in rendered
@@ -1062,7 +1162,8 @@ def test_finding_reference_line_cites_the_rule_pack_source() -> None:
     run_state = _base_run_state(pack)
     rendered = render_report(run_state, pack)
     assert (
-        "Reference: D01-R02: invented for test fixtures only, no external source" in rendered
+        "Reference: D01-R02: invented for test fixtures only, no external source"
+        in rendered
     )
 
 
@@ -1147,10 +1248,12 @@ def test_meta_block_shows_unknown_for_rules_and_tool_commit_when_none() -> None:
     rendered = render_report(run_state, pack)
 
     assert (
-        '<div class="meta-label">Tool commit</div><div class="meta-value">unknown</div>' in rendered
+        '<div class="meta-label">Tool commit</div><div class="meta-value">unknown</div>'
+        in rendered
     )
     assert (
-        '<div class="meta-label">Rules commit</div><div class="meta-value">unknown</div>' in rendered
+        '<div class="meta-label">Rules commit</div><div class="meta-value">unknown</div>'
+        in rendered
     )
 
 
@@ -1159,13 +1262,17 @@ def test_meta_block_shows_unknown_for_rules_and_tool_commit_when_none() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_duration_row_shows_server_measurement_alongside_assistant_figure_when_they_agree() -> None:
+def test_duration_row_shows_server_measurement_alongside_assistant_figure_when_they_agree() -> (
+    None
+):
     pack = _pack()
     run_state = _base_run_state(pack)
     run_state.meta.started = "2026-08-09T09:00:00Z"
     run_state.meta.finished = "2026-08-09T09:10:00Z"  # assistant-reported: 10m0s
     run_state.meta.server_started = "2026-08-09T09:00:02Z"
-    run_state.meta.server_finished = "2026-08-09T09:09:55Z"  # server-measured: 9m53s, close enough
+    run_state.meta.server_finished = (
+        "2026-08-09T09:09:55Z"  # server-measured: 9m53s, close enough
+    )
     rendered = render_report(run_state, pack)
 
     assert '<div class="meta-label">Duration</div>' in rendered
@@ -1208,7 +1315,9 @@ def test_duration_row_does_not_flag_ordinary_clock_skew_on_a_short_run() -> None
     assert "5s (server-measured: 7s)" in rendered
 
 
-def test_duration_row_says_unmeasured_when_server_timestamps_predate_the_field() -> None:
+def test_duration_row_says_unmeasured_when_server_timestamps_predate_the_field() -> (
+    None
+):
     # A run-state.json written before this fix has server_started and
     # server_finished as None (never a field it could have populated), not
     # as a zero or an agreeing figure. The row must say the duration could
@@ -1224,7 +1333,9 @@ def test_duration_row_says_unmeasured_when_server_timestamps_predate_the_field()
     assert "disagree" not in rendered
 
 
-def test_duration_row_on_a_resumed_run_does_not_flag_the_legitimate_wall_clock_gap() -> None:
+def test_duration_row_on_a_resumed_run_does_not_flag_the_legitimate_wall_clock_gap() -> (
+    None
+):
     # A resumed run's server_started is kept from the original begin_run,
     # not reset at resume time (see _resume_run in server.py), so it spans
     # the same real interval as the assistant-reported started/finished,
@@ -1236,8 +1347,12 @@ def test_duration_row_on_a_resumed_run_does_not_flag_the_legitimate_wall_clock_g
     run_state = _base_run_state(pack)
     run_state.meta.started = "2026-08-09T09:00:00Z"
     run_state.meta.finished = "2026-08-09T11:00:00Z"  # 2 hours, spans the resume gap
-    run_state.meta.server_started = "2026-08-09T09:00:01Z"  # stamped at the original begin_run
-    run_state.meta.server_finished = "2026-08-09T11:00:04Z"  # stamped at the final render_report
+    run_state.meta.server_started = (
+        "2026-08-09T09:00:01Z"  # stamped at the original begin_run
+    )
+    run_state.meta.server_finished = (
+        "2026-08-09T11:00:04Z"  # stamped at the final render_report
+    )
     rendered = render_report(run_state, pack)
 
     assert "disagree" not in rendered
@@ -1306,7 +1421,9 @@ def test_feedback_consent_checkboxes_prefilled_false_from_config() -> None:
     ):
         match = re.search(rf'<input type="checkbox" id="{input_id}"([^>]*)>', rendered)
         assert match is not None, f"checkbox {input_id!r} not found"
-        assert "checked" not in match.group(1), f"checkbox {input_id!r} expected unchecked"
+        assert "checked" not in match.group(1), (
+            f"checkbox {input_id!r} expected unchecked"
+        )
 
 
 def test_feedback_consulted_sources_consent_label_states_the_privacy_note() -> None:
@@ -1359,8 +1476,13 @@ def test_feedback_embedded_json_parses_and_matches_build_feedback_sections() -> 
     # run-metadata chunk plus that one section, joined the same way the
     # report's own JS joins ticked sections.
     base_consent = {
-        "coverage": False, "rollup": False, "self_assessment": False, "environment": False,
-        "consulted_sources": False, "verdict_distribution": False, "duration": False,
+        "coverage": False,
+        "rollup": False,
+        "self_assessment": False,
+        "environment": False,
+        "consulted_sources": False,
+        "verdict_distribution": False,
+        "duration": False,
         "rules_fetched": False,
     }
     for key in (
@@ -1394,7 +1516,7 @@ def test_feedback_json_escapes_closing_script_tag_in_section_text() -> None:
     run_state = _base_run_state(pack)
     run_state.config.telemetry_consent = TelemetryConsent(self_assessment=True)
     run_state.domain_results["d01"].self_assessment = SelfAssessment(
-        confidence="high", limits='</script><script>alert(1)</script>'
+        confidence="high", limits="</script><script>alert(1)</script>"
     )
     rendered = render_report(run_state, pack)
 
@@ -1403,7 +1525,9 @@ def test_feedback_json_escapes_closing_script_tag_in_section_text() -> None:
     # of the feedback JSON block. If the malicious text had broken out, a
     # second literal "</script>" would appear earlier, right after the
     # injected payload.
-    start = rendered.index('<script type="application/json" id="feedback-sections-data">')
+    start = rendered.index(
+        '<script type="application/json" id="feedback-sections-data">'
+    )
     first_close = rendered.index("</script>", start)
     second_probe = rendered.find("</script>", first_close + len("</script>"))
     # There are other <script> blocks on the page (issues-data, the inline
@@ -1431,7 +1555,9 @@ def test_issue_checkbox_rendered_and_ticked_by_default() -> None:
     assert '<input type="checkbox" id="issue-check-0" checked' in rendered
 
 
-def test_issue_already_filed_via_run_state_renders_unticked_disabled_with_link() -> None:
+def test_issue_already_filed_via_run_state_renders_unticked_disabled_with_link() -> (
+    None
+):
     # filed_issue_urls is a field on RunState itself (set by render_report's
     # caller from a previous file_issues call, or carried over from a saved
     # run-state.json), so a finding already filed renders disabled with its
@@ -1500,7 +1626,9 @@ def test_two_findings_on_one_rule_each_get_their_own_already_filed_link() -> Non
     assert 'href="https://example.invalid/issues/2">already filed</a>' in rendered
 
 
-def test_schema_version_2_file_with_bare_rule_id_key_migrates_and_report_links_the_first_finding() -> None:
+def test_schema_version_2_file_with_bare_rule_id_key_migrates_and_report_links_the_first_finding() -> (
+    None
+):
     # A run-state.json written before schema_version 3 has filed_issue_urls
     # keyed by bare rule id, holding exactly one url per rule: whichever was
     # filed first (see the old projection this replaced, pinned by a test in
@@ -1514,7 +1642,9 @@ def test_schema_version_2_file_with_bare_rule_id_key_migrates_and_report_links_t
     raw["filed_issue_urls"] = {"D01-R02": "https://example.invalid/issues/1"}
     restored = RunState.from_json(json.dumps(raw))
 
-    assert restored.filed_issue_urls == {"D01-R02#1": "https://example.invalid/issues/1"}
+    assert restored.filed_issue_urls == {
+        "D01-R02#1": "https://example.invalid/issues/1"
+    }
 
     rendered = render_report(restored, pack)
     assert '<input type="checkbox" id="issue-check-0" disabled>' in rendered
@@ -1527,14 +1657,18 @@ def test_issue_button_rows_present_at_top_and_bottom() -> None:
     rendered = render_report(run_state, pack)
 
     assert rendered.count("Add selected issues to GitHub (requires GitHub PAT)") == 2
-    assert rendered.count("Copy selected issues (for pasting into an LLM or editor)") == 2
+    assert (
+        rendered.count("Copy selected issues (for pasting into an LLM or editor)") == 2
+    )
     # The GitHub-filing form itself appears exactly once, not once per row.
     assert rendered.count('id="github-file-form"') == 1
     assert rendered.count('id="gh-repo"') == 1
     assert rendered.count('id="gh-pat"') == 1
 
 
-def test_issue_embedded_body_ends_with_shared_trailing_line_byte_identical_to_file_issues() -> None:
+def test_issue_embedded_body_ends_with_shared_trailing_line_byte_identical_to_file_issues() -> (
+    None
+):
     # This is the exact body file_issues sends to gh issue create for this
     # same finding (see test_server.py's
     # test_file_issues_confirm_files_one_issue_per_finding), reused here to
@@ -1573,10 +1707,15 @@ def test_print_button_calls_window_print() -> None:
     pack = _pack()
     run_state = _base_run_state(pack)
     rendered = render_report(run_state, pack)
-    assert '<button type="button" class="print-button" onclick="window.print()">' in rendered
+    assert (
+        '<button type="button" class="print-button" onclick="window.print()">'
+        in rendered
+    )
 
 
-def test_print_stylesheet_hides_interactive_filing_ui_and_forces_light_palette() -> None:
+def test_print_stylesheet_hides_interactive_filing_ui_and_forces_light_palette() -> (
+    None
+):
     pack = _pack()
     run_state = _base_run_state(pack)
     rendered = render_report(run_state, pack)

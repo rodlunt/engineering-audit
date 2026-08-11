@@ -64,9 +64,19 @@ def main(argv: list[str] | None = None) -> None:
         prog="engineering-audit-render",
         description="Re-render report.html from a saved run-state.json.",
     )
-    parser.add_argument("run_state_path", help="Path to a run-state.json produced by render_report.")
-    parser.add_argument("--rules-dir", default=None, help="Rules pack directory (or set ENGINEERING_AUDIT_RULES_DIR).")
-    parser.add_argument("--out", default=None, help="Output path for report.html (default: beside the state file).")
+    parser.add_argument(
+        "run_state_path", help="Path to a run-state.json produced by render_report."
+    )
+    parser.add_argument(
+        "--rules-dir",
+        default=None,
+        help="Rules pack directory (or set ENGINEERING_AUDIT_RULES_DIR).",
+    )
+    parser.add_argument(
+        "--out",
+        default=None,
+        help="Output path for report.html (default: beside the state file).",
+    )
     args = parser.parse_args(argv if argv is not None else sys.argv[1:])
 
     run_state_path = Path(args.run_state_path).expanduser()
@@ -76,14 +86,22 @@ def main(argv: list[str] | None = None) -> None:
     try:
         pack = load_pack(rules_dir)
     except RulesPackError as exc:
-        raise SystemExit(f"engineering-audit-render: could not load rules pack: {exc}") from exc
+        raise SystemExit(
+            f"engineering-audit-render: could not load rules pack: {exc}"
+        ) from exc
 
-    out_path = Path(args.out).expanduser() if args.out else run_state_path.parent / "report.html"
+    out_path = (
+        Path(args.out).expanduser()
+        if args.out
+        else run_state_path.parent / "report.html"
+    )
 
     try:
         written = write_report(run_state, pack, out_path)
     except ReportError as exc:
-        raise SystemExit(f"engineering-audit-render: could not render report: {exc}") from exc
+        raise SystemExit(
+            f"engineering-audit-render: could not render report: {exc}"
+        ) from exc
 
     print(written)
 

@@ -52,7 +52,9 @@ def test_committed_demo_report_matches_a_fresh_run(tmp_path: Path) -> None:
     )
 
 
-def test_demo_run_state_shows_the_disabled_filed_rendering_and_could_not_evaluate_note() -> None:
+def test_demo_run_state_shows_the_disabled_filed_rendering_and_could_not_evaluate_note() -> (
+    None
+):
     # Cheap, direct assertions on the built RunState (not the rendered HTML)
     # that the demo actually exercises the scenarios it is meant to
     # demonstrate: a pre-filed issue, a could-not-evaluate verdict and a
@@ -76,6 +78,8 @@ def test_demo_run_state_shows_the_disabled_filed_rendering_and_could_not_evaluat
     assert len(could_not_evaluate) == 1
     assert could_not_evaluate[0].note
 
-    not_applicable = [rv for rv in d01.rule_verdicts if rv.verdict.value == "not-applicable"]
+    not_applicable = [
+        rv for rv in d01.rule_verdicts if rv.verdict.value == "not-applicable"
+    ]
     assert len(not_applicable) == 1
     assert not_applicable[0].note
