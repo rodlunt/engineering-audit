@@ -34,7 +34,7 @@ if the two ever disagree, `AUDIT.md` wins.
      plainly that the audit is waiting on them and stop. Do not proceed with a guessed domain
      selection. Call `get_config` again, with a larger `timeout_s`, once they confirm.
 4. For each selected domain id: call `get_domain`, read the full rule text, sweep the repository
-   giving every rule an honest verdict (`pass`, `finding`, `not-applicable`, or
+   giving every rule an honest verdict (`pass`, `finding`, or `not-applicable` or
    `could-not-evaluate` with a reason: never a guessed `pass`), then call
    `record_domain_result`. If it rejects the payload as incomplete, the error lists the missing
    rule ids; fix and resubmit. Write every finding and issue body terse, in three parts and

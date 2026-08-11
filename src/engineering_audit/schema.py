@@ -17,7 +17,7 @@ from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
 if TYPE_CHECKING:
     from engineering_audit.rules import Domain
@@ -37,6 +37,8 @@ __all__ = [
     "RunState",
     "RunProgress",
     "RUN_STATE_SCHEMA_VERSION",
+    "NOT_APPLICABLE_NOTE_SCHEMA_VERSION",
+    "LEGACY_NOT_APPLICABLE_CONTEXT_KEY",
     "RunStateVersionError",
     "IncompleteResultError",
     "UnknownRuleIdError",
@@ -62,7 +64,39 @@ __all__ = [
 # used: RunState.from_json migrates a schema_version <= 2 file's bare
 # rule-id keys to "<rule id>#1" (see below), which only a reader that knows
 # about the change can do safely.
-RUN_STATE_SCHEMA_VERSION = 3
+#
+# Bumped to 4 when a not-applicable verdict began requiring a note, the same
+# way could-not-evaluate always has (see RuleVerdict below, and issue #100).
+# No field changed shape for that one: the version number is what tells a
+# reader whether a file was written before or after the constraint existed,
+# and there is nothing else in the document that could. A file at 3 or below
+# genuinely predates the requirement and is loaded with it relaxed, so a
+# saved run-state stays re-renderable by engineering-audit-render; a file at
+# 4 or above was written by a build that enforced it and is held to it.
+RUN_STATE_SCHEMA_VERSION = 4
+
+# The first schema version whose not-applicable verdicts must carry a note.
+# Named rather than written as a bare 4 in the two from_json methods, so the
+# next bump cannot silently move this line with it.
+NOT_APPLICABLE_NOTE_SCHEMA_VERSION = 4
+
+# Validation-context key that relaxes the not-applicable note requirement.
+# Set only by RunState.from_json and RunProgress.from_json, only for a file
+# that predates NOT_APPLICABLE_NOTE_SCHEMA_VERSION, and never by the tools
+# that record a fresh verdict: a note that was never demanded cannot be
+# invented on load, and refusing to read the file instead would break
+# re-rendering every run-state saved before this constraint landed.
+LEGACY_NOT_APPLICABLE_CONTEXT_KEY = "allow_unjustified_not_applicable"
+
+
+def _not_applicable_note_relaxed(context: object) -> bool:
+    """True when the current validation was handed the legacy context flag.
+
+    Anything other than a mapping carrying that key set truthy is treated as
+    "enforce the requirement": an unrecognised context must fail closed, not
+    open a hole in the constraint by accident.
+    """
+    return bool(isinstance(context, dict) and context.get(LEGACY_NOT_APPLICABLE_CONTEXT_KEY))
 
 
 class Verdict(str, Enum):
@@ -88,7 +122,11 @@ class RuleVerdict(BaseModel):
     verdict: Verdict
     note: str | None = Field(
         default=None,
-        description="Free text. Required when verdict is could-not-evaluate: the reason.",
+        description=(
+            "Free text. Required when verdict is could-not-evaluate: the reason. "
+            "Required when verdict is not-applicable: the precondition of the rule "
+            "that does not hold in this repository."
+        ),
     )
 
     @model_validator(mode="after")
@@ -96,6 +134,31 @@ class RuleVerdict(BaseModel):
         if self.verdict == Verdict.COULD_NOT_EVALUATE and not (self.note and self.note.strip()):
             raise ValueError(
                 f"rule {self.rule_id}: verdict is could-not-evaluate but no note (reason) was given"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _note_required_for_not_applicable(self, info: ValidationInfo) -> "RuleVerdict":
+        # not-applicable used to be the one verdict that cost nothing to
+        # emit: no reason demanded here, and nothing rendered in the report
+        # either. A 16-domain run came back with 172 of 260 rules waved away
+        # with "note": null, nine whole domains of it, and the report showed
+        # those domains as "0 findings", exactly like a domain that was
+        # swept and came back clean (issue #100). The precondition that does
+        # not hold is a specific, cheap claim to write down, so it is now
+        # demanded, the same way could-not-evaluate's reason is above.
+        #
+        # The one exemption is a run-state or run-progress file written
+        # before this requirement existed; see
+        # LEGACY_NOT_APPLICABLE_CONTEXT_KEY for why loading such a file must
+        # not fail, and note that it is the loader that opts in, never a
+        # caller recording a fresh verdict.
+        if self.verdict == Verdict.NOT_APPLICABLE and not (self.note and self.note.strip()):
+            if _not_applicable_note_relaxed(info.context):
+                return self
+            raise ValueError(
+                f"rule {self.rule_id}: verdict is not-applicable but no note (reason) was "
+                "given; say which precondition of the rule does not hold in this repository"
             )
         return self
 
@@ -475,18 +538,26 @@ class AuditConfig(BaseModel):
         return value
 
 
-def _parse_versioned(data: str, label: str) -> object:
+def _parse_versioned(data: str, label: str) -> tuple[object, int]:
     """Parse a run-state or run-progress JSON document and enforce the
-    schema-version gate, returning the raw object for the caller to validate.
+    schema-version gate, returning the raw object for the caller to validate
+    along with the version the document declared.
 
     Shared by :meth:`RunState.from_json` and :meth:`RunProgress.from_json` so
     the two files on disk cannot end up with two different ideas of what a
     version number means; ``label`` is the only difference between them, and
     only in the error text.
+
+    The version travels back to the caller because it decides more than
+    whether the file is readable: it also decides which validation rules the
+    file predates (see :data:`NOT_APPLICABLE_NOTE_SCHEMA_VERSION`). A
+    document whose top level is not an object has no version to read, and is
+    reported as the current one so that nothing is relaxed for it; the
+    caller's own ``model_validate`` rejects it on its own terms.
     """
     raw = json.loads(data)
     if isinstance(raw, dict):
-        version = raw.get("schema_version", 1)
+        version: int = raw.get("schema_version", 1)
         # bool is an int subclass, and `True > 2` is a valid comparison that
         # would sail through the gate below; a non-integer version is a
         # corrupt file, and must be named as one rather than raising a raw
@@ -504,7 +575,20 @@ def _parse_versioned(data: str, label: str) -> object:
                 f"supports this {label}."
             )
         raw.setdefault("schema_version", 1)
-    return raw
+        return raw, version
+    return raw, RUN_STATE_SCHEMA_VERSION
+
+
+def _legacy_validation_context(version: int) -> dict[str, bool] | None:
+    """The validation context for a document declaring ``version``, or None
+    when it is held to every current rule.
+
+    One place, used by both from_json methods, so a file that is legacy for
+    one model cannot be legacy for the other.
+    """
+    if version < NOT_APPLICABLE_NOTE_SCHEMA_VERSION:
+        return {LEGACY_NOT_APPLICABLE_CONTEXT_KEY: True}
+    return None
 
 
 class RunState(BaseModel):
@@ -574,8 +658,18 @@ class RunState(BaseModel):
         instead, which is exactly the kind of unhandled crash a caller
         expecting either a ``RunState`` or a named parse error should never
         see.
+
+        A document below schema_version 4 predates the requirement that a
+        not-applicable verdict carry a note, and is validated with that one
+        rule relaxed (see :data:`LEGACY_NOT_APPLICABLE_CONTEXT_KEY`).
+        Rejecting such a file would make every run-state saved before the
+        change unreadable to ``engineering-audit-render``, and inventing the
+        missing reasons on load would be worse still: the report renders
+        them as reasons nobody recorded, which is what they are. Every other
+        rule, including could-not-evaluate's own note requirement, still
+        applies in full.
         """
-        raw = _parse_versioned(data, "run-state file")
+        raw, version = _parse_versioned(data, "run-state file")
         if isinstance(raw, dict) and raw.get("schema_version", 1) <= 2:
             filed_issue_urls = raw.get("filed_issue_urls")
             if isinstance(filed_issue_urls, dict):
@@ -583,7 +677,7 @@ class RunState(BaseModel):
                     (key if "#" in key else f"{key}#1"): url
                     for key, url in filed_issue_urls.items()
                 }
-        return cls.model_validate(raw)
+        return cls.model_validate(raw, context=_legacy_validation_context(version))
 
 
 class RunProgress(BaseModel):
@@ -663,8 +757,15 @@ class RunProgress(BaseModel):
         as a partial run and resumed from: the domains it appears to be
         missing would be re-audited, and whatever the newer version recorded
         would be dropped without a word.
+
+        A file below schema_version 4 gets the same one relaxation
+        :meth:`RunState.from_json` grants, and for the same reason: a run
+        interrupted under an older build must still be resumable. Domains
+        recorded after the resume go through the current rules in full, so
+        the exemption stops at the verdicts that were already on disk.
         """
-        return cls.model_validate(_parse_versioned(data, "run-progress file"))
+        raw, version = _parse_versioned(data, "run-progress file")
+        return cls.model_validate(raw, context=_legacy_validation_context(version))
 
 
 class RunStateVersionError(Exception):

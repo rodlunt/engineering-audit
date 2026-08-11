@@ -239,8 +239,10 @@ Self-contained HTML, generated locally; nothing leaves your machine unless you c
 send or file it. It contains:
 
 - A **tool performance summary** about the audit run itself: coverage, findings rollup,
-  a prominent could-not-evaluate list with reasons, the assistant's own per-domain
-  confidence. An unchecked rule is never presented as a pass.
+  a prominent could-not-evaluate list with reasons, an equally prominent not-applicable
+  list (per-domain counts and the stated reasons, so a domain set aside in full cannot
+  read as a domain swept clean), the assistant's own per-domain confidence. An unchecked
+  rule is never presented as a pass.
 - **Findings**, each in three parts (the issue and location, why it matters, suggested
   fix) with the rule's citation appended automatically from the rules pack. The tool
   refuses to publish a finding whose rule carries no citation.

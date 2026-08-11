@@ -299,6 +299,165 @@ def test_could_not_evaluate_groups_rows_by_reason_sorted_by_descending_count() -
     assert rendered.index(common_reason) < rendered.index(rare_reason)
 
 
+def _all_not_applicable_verdicts(domain, note: str) -> list[RuleVerdict]:
+    return [
+        RuleVerdict(rule_id=r.id, verdict=Verdict.NOT_APPLICABLE, note=note) for r in domain.rules
+    ]
+
+
+def test_not_applicable_verdicts_are_counted_and_their_reasons_listed() -> None:
+    # Issue #100: the rendered report never mentioned not-applicable at all,
+    # so 172 waved-away rules left no trace in the output.
+    pack = _pack()
+    d01 = pack.get_domain("d01")
+    d02 = pack.get_domain("d02")
+    reason = "this repository ships no gnome roster, only teacups"
+    d01_verdicts = _all_pass_verdicts(d01)
+    d01_verdicts[0] = RuleVerdict(rule_id="D01-R01", verdict=Verdict.NOT_APPLICABLE, note=reason)
+    run_state = RunState(
+        meta=_meta(),
+        config=AuditConfig(selected_domain_ids=["d01", "d02"], issue_mode="report"),
+        domain_results={
+            "d01": DomainResult(domain_id="d01", status="completed", rule_verdicts=d01_verdicts),
+            "d02": DomainResult(
+                domain_id="d02", status="completed", rule_verdicts=_all_pass_verdicts(d02)
+            ),
+        },
+    )
+    rendered = render_report(run_state, pack)
+
+    assert "Not applicable (1)" in rendered
+    assert "d01: Gnome Husbandry Record Keeping: 1 of 4 rule(s) not applicable" in rendered
+    assert "d02: Teacup Logistics Handling: 0 of 3 rule(s) not applicable" in rendered
+    assert reason in rendered
+    assert "D01-R01 (1 rule)" in rendered
+
+
+def test_a_wholly_not_applicable_domain_is_distinguishable_from_one_swept_clean() -> None:
+    # The defect in one assertion: d01 had every rule waved away and d02 was
+    # actually swept, and both rendered as "0 findings" with nothing else to
+    # tell them apart.
+    pack = _pack()
+    d01 = pack.get_domain("d01")
+    d02 = pack.get_domain("d02")
+    reason = "this repository houses no gnomes, so the husbandry rules have no subject"
+    run_state = RunState(
+        meta=_meta(),
+        config=AuditConfig(selected_domain_ids=["d01", "d02"], issue_mode="report"),
+        domain_results={
+            "d01": DomainResult(
+                domain_id="d01",
+                status="completed",
+                rule_verdicts=_all_not_applicable_verdicts(d01, reason),
+            ),
+            "d02": DomainResult(
+                domain_id="d02", status="completed", rule_verdicts=_all_pass_verdicts(d02)
+            ),
+        },
+    )
+    rendered = render_report(run_state, pack)
+
+    # The rollup row that used to read exactly like a clean sweep.
+    assert (
+        "d01: Gnome Husbandry Record Keeping: 0 (every rule not applicable, nothing checked)"
+        in rendered
+    )
+    assert "d02: Teacup Logistics Handling: 0</li>" in rendered
+    # The domain is named as set aside in full, and the findings section says
+    # so too rather than reusing the clean result's "No findings."
+    assert "1 selected domain(s) had every rule set aside as not applicable" in rendered
+    assert "all 4 rule(s) in this domain were set aside as not applicable" in rendered
+    assert reason in rendered
+
+
+def test_not_applicable_all_clear_message_when_nothing_was_set_aside() -> None:
+    pack = _pack()
+    rendered = render_report(_base_run_state(pack), pack)
+    assert "No rule was set aside as not applicable." in rendered
+    assert "Not applicable (" not in rendered
+
+
+def test_not_applicable_groups_rows_by_reason_sorted_by_descending_count() -> None:
+    # The same grouping could-not-evaluate uses (issue #88), reached through
+    # the shared helper rather than a second copy of it: rows sharing a
+    # reason collapse into one group, biggest group first.
+    pack = _pack()
+    common_reason = "this repository has no gnome ledger of any kind"
+    rare_reason = "beard-length averages are computed in a separate roster service"
+    d01_verdicts = [
+        RuleVerdict(rule_id="D01-R01", verdict=Verdict.NOT_APPLICABLE, note=common_reason),
+        RuleVerdict(rule_id="D01-R02", verdict=Verdict.NOT_APPLICABLE, note=common_reason),
+        RuleVerdict(rule_id="D01-R03", verdict=Verdict.NOT_APPLICABLE, note=common_reason),
+        RuleVerdict(rule_id="D01-R04", verdict=Verdict.NOT_APPLICABLE, note=rare_reason),
+    ]
+    run_state = RunState(
+        meta=_meta(),
+        config=AuditConfig(selected_domain_ids=["d01"], issue_mode="report"),
+        domain_results={
+            "d01": DomainResult(domain_id="d01", status="completed", rule_verdicts=d01_verdicts)
+        },
+    )
+    rendered = render_report(run_state, pack)
+
+    assert "Not applicable (4)" in rendered
+    assert "D01-R01, D01-R02, D01-R03 (3 rules)" in rendered
+    assert "D01-R04 (1 rule)" in rendered
+    assert rendered.index(common_reason) < rendered.index(rare_reason)
+
+
+def test_not_applicable_verdict_for_unknown_rule_id_raises() -> None:
+    # Same loudness the could-not-evaluate path already has: a verdict for a
+    # rule id absent from the pack is a broken run, not a cosmetic gap.
+    pack = _pack()
+    d01 = pack.get_domain("d01")
+    verdicts = _all_pass_verdicts(d01)
+    verdicts.append(
+        RuleVerdict(
+            rule_id="D01-R99",
+            verdict=Verdict.NOT_APPLICABLE,
+            note="this rule id does not exist in the pack",
+        )
+    )
+    run_state = RunState(
+        meta=_meta(),
+        config=AuditConfig(selected_domain_ids=["d01"], issue_mode="report"),
+        domain_results={
+            "d01": DomainResult(domain_id="d01", status="completed", rule_verdicts=verdicts)
+        },
+    )
+    with pytest.raises(ReportError):
+        render_report(run_state, pack)
+
+
+def test_a_legacy_run_state_renders_its_unjustified_not_applicable_as_unrecorded() -> None:
+    # A run-state saved before the note requirement (schema_version 3 or
+    # below) must still re-render, and its note-less verdicts must read as
+    # reasons nobody recorded rather than being folded in with the real ones.
+    pack = _pack()
+    d01 = pack.get_domain("d01")
+    run_state = RunState(
+        meta=_meta(),
+        config=AuditConfig(selected_domain_ids=["d01"], issue_mode="report"),
+        domain_results={
+            "d01": DomainResult(
+                domain_id="d01",
+                status="completed",
+                rule_verdicts=_all_not_applicable_verdicts(d01, "placeholder, stripped below"),
+            )
+        },
+    )
+    raw = json.loads(run_state.to_json())
+    raw["schema_version"] = 3
+    for verdict in raw["domain_results"]["d01"]["rule_verdicts"]:
+        verdict["note"] = None
+    legacy = RunState.from_json(json.dumps(raw))
+
+    rendered = render_report(legacy, pack)
+    assert "Not applicable (4)" in rendered
+    assert "No reason recorded for this verdict" in rendered
+    assert "1 selected domain(s) had every rule set aside as not applicable" in rendered
+
+
 def test_could_not_evaluate_all_clear_message_survives_the_grouping_change() -> None:
     pack = _pack()
     d01 = pack.get_domain("d01")

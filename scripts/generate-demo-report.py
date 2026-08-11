@@ -73,6 +73,17 @@ def build_demo_run_state(pack: RulesPack) -> RunState:
         verdict=Verdict.COULD_NOT_EVALUATE,
         note="the garden bed ledger file could not be located in this demo repository",
     )
+    # One not-applicable verdict, carrying the reason every not-applicable
+    # verdict now has to carry, so the demo report shows the Not applicable
+    # block doing its job rather than only its all-clear message.
+    d01_verdicts[3] = RuleVerdict(
+        rule_id="D01-R04",
+        verdict=Verdict.NOT_APPLICABLE,
+        note=(
+            "this demo repository stores no beard-length average to recalculate: the "
+            "roster summary computes it on read"
+        ),
+    )
 
     d01_result = DomainResult(
         domain_id="d01",

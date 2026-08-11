@@ -344,10 +344,19 @@ def _findings_rollup(
     # by-severity breakdown above always shows all four severities including
     # zero counts: a domain that was audited and came back clean must still
     # appear here, not be indistinguishable from one that was never run.
+    #
+    # A domain whose every rule was set aside as not applicable is marked as
+    # such on its own row, because "0" is exactly what a domain that was
+    # swept clean also shows and the two are not the same result (issue
+    # #100). The full counts and reasons are in the Not applicable block.
+    fully_not_applicable = set(_fully_not_applicable_domain_ids(_not_applicable_counts(selected)))
+    set_aside_note = " (every rule not applicable, nothing checked)"
     domain_items = (
         "".join(
             f"<li>{_esc(domain_id)}: {_esc(domain_titles[domain_id])}: "
-            f"{domain_counts.get(domain_id, 0)}</li>"
+            f"{domain_counts.get(domain_id, 0)}"
+            f"{set_aside_note if domain_id in fully_not_applicable else ''}"
+            "</li>"
             for domain_id in selected
         )
         or "<li>No domains selected.</li>"
@@ -359,32 +368,83 @@ def _findings_rollup(
     )
 
 
+def _group_rule_ids_by_reason(
+    selected: dict[str, DomainResult],
+    rule_index: dict[str, Rule],
+    verdict: Verdict,
+    unrecorded_reason_label: str,
+) -> dict[str, list[str]]:
+    """Group every rule id carrying ``verdict`` by the reason recorded with it.
+
+    Grouped by the verdict's own reason text, not one row per rule: a real
+    16-domain run produced 122 could-not-evaluate rows carrying only 18
+    distinct reasons, eight of which accounted for 105 rows of near-identical
+    boilerplate ("no X in this repository"). That buried the handful of
+    genuinely rule-specific reasons and made a tool-performance section read
+    like 122 more defects (see issue #88). not-applicable is grouped the same
+    way for the same reason, and shares this function rather than copying it,
+    so the two sections cannot drift apart.
+
+    ``unrecorded_reason_label`` is the group a verdict with no note falls
+    into. Both verdicts require one now, so this only catches a run-state
+    written before that was true of not-applicable (see issue #100 and the
+    schema_version 4 gate): such a verdict is shown under a label saying no
+    reason was recorded, never quietly folded in with the ones that carry a
+    real reason.
+    """
+    reason_to_rule_ids: dict[str, list[str]] = {}
+    for domain_id, result in selected.items():
+        for rv in result.rule_verdicts:
+            if rv.verdict != verdict:
+                continue
+            if rv.rule_id not in rule_index:
+                # Consistent with the findings check in render_report: a
+                # verdict for a rule id absent from the pack is a broken run,
+                # not a cosmetic gap, and must raise rather than render a
+                # placeholder label.
+                raise ReportError(
+                    f"domain '{domain_id}' has a rule_verdict for rule id "
+                    f"'{rv.rule_id}', which is not in the rules pack"
+                )
+            note = rv.note.strip() if rv.note else ""
+            reason_to_rule_ids.setdefault(note or unrecorded_reason_label, []).append(rv.rule_id)
+    return reason_to_rule_ids
+
+
+def _reason_groups_html(reason_to_rule_ids: dict[str, list[str]]) -> str:
+    """Render grouped reasons as a list, largest group first.
+
+    Sorted by descending rule count, reason text as the tie-breaker for a
+    stable order: the reasons that account for the most rows (almost always
+    boilerplate) collapse to the top, leaving the rare, genuinely
+    rule-specific reasons visible near the bottom rather than buried inside a
+    hundred near-identical rows.
+    """
+    ordered_reasons = sorted(reason_to_rule_ids.items(), key=lambda item: (-len(item[1]), item[0]))
+    items = "".join(
+        f"<li><strong>{_esc(reason)}</strong><br>"
+        f"{_esc(', '.join(sorted(rule_ids)))} "
+        f"({len(rule_ids)} rule{'' if len(rule_ids) == 1 else 's'})</li>"
+        for reason, rule_ids in ordered_reasons
+    )
+    return f"<ul>{items}</ul>"
+
+
+# The group label for a verdict that records no reason at all. Only a
+# not-applicable verdict from a run-state written before schema_version 4 can
+# reach it (see _group_rule_ids_by_reason), and it is deliberately worded as
+# an absence rather than as a reason.
+_NO_REASON_RECORDED = "No reason recorded for this verdict"
+
+
 def _could_not_evaluate_list(
     selected: dict[str, DomainResult],
     rule_index: dict[str, Rule],
     domain_titles: dict[str, str],
 ) -> str:
-    # Grouped by the verdict's own reason text, not rendered one row per
-    # rule: a real 16-domain run produced 122 could-not-evaluate rows
-    # carrying only 18 distinct reasons, eight of which accounted for 105
-    # rows of near-identical boilerplate ("no X in this repository"). That
-    # buried the handful of genuinely rule-specific reasons and made a
-    # tool-performance section read like 122 more defects (see issue #88).
-    reason_to_rule_ids: dict[str, list[str]] = {}
-    for domain_id, result in selected.items():
-        for rv in result.rule_verdicts:
-            if rv.verdict != Verdict.COULD_NOT_EVALUATE:
-                continue
-            rule = rule_index.get(rv.rule_id)
-            if rule is None:
-                # Consistent with the findings check below: a verdict for a
-                # rule id absent from the pack is a broken run, not a cosmetic
-                # gap, and must raise rather than render a placeholder label.
-                raise ReportError(
-                    f"domain '{domain_id}' has a rule_verdict for rule id "
-                    f"'{rv.rule_id}', which is not in the rules pack"
-                )
-            reason_to_rule_ids.setdefault(rv.note or "", []).append(rv.rule_id)
+    reason_to_rule_ids = _group_rule_ids_by_reason(
+        selected, rule_index, Verdict.COULD_NOT_EVALUATE, _NO_REASON_RECORDED
+    )
 
     total = sum(len(rule_ids) for rule_ids in reason_to_rule_ids.values())
 
@@ -411,21 +471,7 @@ def _could_not_evaluate_list(
             "<p>These are rules the audit could not reach a verdict on, usually because "
             "the evidence lives outside the repository. They are not findings.</p>"
         )
-        # Sorted by descending rule count, reason text as the tie-breaker for
-        # a stable order: the reasons that account for the most rows (almost
-        # always boilerplate) collapse to the top, leaving the rare,
-        # genuinely rule-specific reasons visible near the bottom rather than
-        # buried inside a hundred near-identical rows.
-        ordered_reasons = sorted(
-            reason_to_rule_ids.items(), key=lambda item: (-len(item[1]), item[0])
-        )
-        items = "".join(
-            f"<li><strong>{_esc(reason)}</strong><br>"
-            f"{_esc(', '.join(sorted(rule_ids)))} "
-            f"({len(rule_ids)} rule{'' if len(rule_ids) == 1 else 's'})</li>"
-            for reason, rule_ids in ordered_reasons
-        )
-        parts.append(f"<ul>{items}</ul>")
+        parts.append(_reason_groups_html(reason_to_rule_ids))
     else:
         parts.append(
             "<p>No individual rule was left could-not-evaluate, but see below: "
@@ -440,6 +486,105 @@ def _could_not_evaluate_list(
             f"<p><strong>{len(not_run_domain_ids)} selected domain(s) did not run at all</strong> "
             f"and had no rules evaluated, which is not the same as a clean result: {names}.</p>"
         )
+    return "".join(parts)
+
+
+def _not_applicable_counts(selected: dict[str, DomainResult]) -> dict[str, tuple[int, int]]:
+    """Domain id -> (rules verdicted not-applicable, rules verdicted at all).
+
+    Both halves of the pair matter: "21 not applicable" says nothing on its
+    own, while "21 of 21" says the domain was set aside in full. Computed
+    once and shared by every place that needs it (the rollup, the findings
+    section and the not-applicable block), so the three cannot disagree with
+    each other about the same domain.
+    """
+    counts: dict[str, tuple[int, int]] = {}
+    for domain_id, result in selected.items():
+        not_applicable = sum(
+            1 for rv in result.rule_verdicts if rv.verdict == Verdict.NOT_APPLICABLE
+        )
+        counts[domain_id] = (not_applicable, len(result.rule_verdicts))
+    return counts
+
+
+def _fully_not_applicable_domain_ids(counts: dict[str, tuple[int, int]]) -> list[str]:
+    """The domains where every rule that got a verdict got not-applicable.
+
+    A domain with no verdicts at all is not one of these: it did not run,
+    which the could-not-evaluate block already reports, and folding the two
+    together would blur two different failures into one.
+    """
+    return [
+        domain_id
+        for domain_id, (not_applicable, verdicted) in counts.items()
+        if verdicted > 0 and not_applicable == verdicted
+    ]
+
+
+def _not_applicable_list(
+    selected: dict[str, DomainResult],
+    rule_index: dict[str, Rule],
+    domain_titles: dict[str, str],
+) -> str:
+    """The 'Not applicable' block: how many rules each domain set aside, and
+    the reasons given for setting them aside.
+
+    Rendered at all because it was not, and that was the bug (issue #100): a
+    16-domain run waved away 172 of 260 rules as not-applicable, nine whole
+    domains of them, and the report did not contain the phrase anywhere. A
+    domain nobody checked and a domain checked clean both rendered as "0
+    findings", and no reader could tell them apart.
+    """
+    counts = _not_applicable_counts(selected)
+    total = sum(not_applicable for not_applicable, _ in counts.values())
+
+    if total == 0:
+        return (
+            "<h3>Not applicable</h3>"
+            '<p class="ok">No rule was set aside as not applicable. Every rule that was '
+            "verdicted was verdicted against this repository.</p>"
+        )
+
+    rows = []
+    for domain_id, result in selected.items():
+        title = domain_titles[domain_id]
+        if result.status == "could-not-run":
+            rows.append(f"<li>{_esc(domain_id)}: {_esc(title)}: did not run at all</li>")
+            continue
+        not_applicable, verdicted = counts[domain_id]
+        rows.append(
+            f"<li>{_esc(domain_id)}: {_esc(title)}: {not_applicable} of {verdicted} "
+            "rule(s) not applicable</li>"
+        )
+
+    parts = [
+        f"<h3>Not applicable ({total})</h3>",
+        "<p>These are rules the audit set aside because the thing they are about is not "
+        "present in this repository. They were not checked against it, and they are not "
+        "findings: a rule set aside is a claim about the repository, so each one carries "
+        "the reason it was set aside.</p>",
+        f"<ul>{''.join(rows)}</ul>",
+    ]
+
+    fully_not_applicable = _fully_not_applicable_domain_ids(counts)
+    if fully_not_applicable:
+        names = ", ".join(
+            f"{_esc(domain_titles[domain_id])} ({_esc(domain_id)})"
+            for domain_id in fully_not_applicable
+        )
+        parts.append(
+            f"<p><strong>{len(fully_not_applicable)} selected domain(s) had every rule set "
+            "aside as not applicable</strong>, which is not the same as a clean result: "
+            f"{names}. Read the reasons below and judge whether they hold.</p>"
+        )
+
+    parts.append(
+        _reason_groups_html(
+            _group_rule_ids_by_reason(
+                selected, rule_index, Verdict.NOT_APPLICABLE, _NO_REASON_RECORDED
+            )
+        )
+    )
     return "".join(parts)
 
 
@@ -569,6 +714,8 @@ def _findings_section(
     pack_is_v2: bool,
 ) -> str:
     blocks = []
+    counts = _not_applicable_counts(selected)
+    fully_not_applicable = set(_fully_not_applicable_domain_ids(counts))
     for domain_id, result in selected.items():
         title = domain_titles[domain_id]
         if result.status == "could-not-run":
@@ -578,6 +725,19 @@ def _findings_section(
             )
             continue
         if not result.findings:
+            # "No findings" is the same sentence whether the sweep found
+            # nothing wrong or never happened, so a domain set aside in full
+            # says so here rather than borrowing the clean result's wording
+            # (issue #100).
+            if domain_id in fully_not_applicable:
+                not_applicable, _ = counts[domain_id]
+                blocks.append(
+                    f"<h3>{_esc(title)}</h3><p class='muted'>No findings, and nothing "
+                    f"checked: all {not_applicable} rule(s) in this domain were set aside "
+                    "as not applicable. See the Not applicable block above for the "
+                    "reasons given.</p>"
+                )
+                continue
             blocks.append(f"<h3>{_esc(title)}</h3><p>No findings.</p>")
             continue
         items = []
@@ -895,6 +1055,8 @@ def render_report(run_state: RunState, pack: RulesPack) -> str:
         f"{_findings_rollup(all_findings, selected, domain_titles)}</div>"
         f'<div class="perf-block prominent">'
         f"{_could_not_evaluate_list(selected, rule_index, domain_titles)}</div>"
+        f'<div class="perf-block prominent">'
+        f"{_not_applicable_list(selected, rule_index, domain_titles)}</div>"
         f'<div class="perf-block"><h3>Self-assessment by domain</h3>'
         f"{_self_assessment_list(selected, domain_titles)}</div>"
         f'<div class="perf-block"><h3>Environment</h3>{_environment_info(run_state)}</div>'

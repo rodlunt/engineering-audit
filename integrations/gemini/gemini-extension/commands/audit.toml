@@ -13,8 +13,8 @@ any interactive configuration URL as a clickable link, then call get_config
 repeatedly while its response status is "waiting" and go on only once the status
 is "configured", or proceed directly if a preset configuration was already
 loaded), sweep every selected domain by calling get_domain then
-record_domain_result with an honest verdict for every rule (pass, finding,
-not-applicable, or could-not-evaluate with a reason; never a guessed pass), check
+record_domain_result with an honest verdict for every rule (pass, finding, or
+not-applicable or could-not-evaluate with a reason; never a guessed pass), check
 run_status before rendering, optionally call file_issues if the user chose GitHub
 delivery and approves the preview, then call render_report and tell the user
 where report.html landed along with a one-line findings summary.
