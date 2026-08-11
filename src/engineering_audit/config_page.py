@@ -19,10 +19,11 @@ from http import HTTPStatus
 from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, unquote
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from pydantic import ValidationError
 
+from engineering_audit.output_location import resolve_deliverables_dir, validate_deliverables_dir
 from engineering_audit.rules import Domain
 from engineering_audit.schema import AuditConfig, TelemetryConsent
 
@@ -36,6 +37,19 @@ _SUBMITTED_TEMPLATE_PATH = Path(__file__).parent / "templates" / "config-submitt
 # seconds costs nothing, and it cannot be confused with a real page fetch in
 # anything that later reads this handler.
 _ALIVE_PATH = "/alive"
+
+# The path the page's custom-output-location field checks against as the user
+# types, so the resolved absolute path (and any problem with it) is shown
+# before the user ever submits the form, not after. Read-only and
+# side-effect-free (it only stats the filesystem), so unlike /submit it needs
+# no CSRF token: nothing it does can be forged into changing this run's
+# configuration.
+_CHECK_OUTPUT_LOCATION_PATH = "/check-output-location"
+
+# A hard cap on the path text this endpoint will even attempt to resolve.
+# Nothing a person types into this field legitimately approaches this length;
+# anything past it is refused without touching the filesystem at all.
+_MAX_OUTPUT_LOCATION_PATH_CHARS = 4096
 
 # How often the page polls _ALIVE_PATH, and how many consecutive failures it
 # takes before it declares the audit process gone. Two failures rather than
@@ -117,6 +131,8 @@ class _FormState:
     issue_mode: str
     feedback_text: str
     consent: TelemetryConsent
+    output_location_mode: str
+    output_location_path: str
 
 
 @dataclass(frozen=True)
@@ -184,18 +200,29 @@ def _is_empty_domain_selection_error(exc: ValidationError) -> bool:
     """True only for AuditConfig's 'select at least one domain' failure,
     never for any other validation problem.
 
-    This is the one validation failure a normal, unmodified submission of
-    the form can actually reach: every other field is constrained by the
-    HTML itself (a radio button, a fixed set of checkboxes), so an empty
-    domain selection is the only shape of bad request that deserves the
-    friendly, form-preserving re-render. Anything else still falls through
-    to the generic 400 response, on the assumption that it came from a
-    hand-crafted request, not a person using the page as built.
+    Every other field but two is constrained by the HTML itself (a radio
+    button, a fixed set of checkboxes), so an empty domain selection used to
+    be the only shape of bad request a normal, unmodified submission could
+    reach. The custom output location's free-text path field is the second:
+    see _InvalidOutputLocation, raised from _parse_submission and given the
+    same form-preserving re-render as this one, rather than routed through
+    pydantic at all, since validating a filesystem path is not a data-shape
+    question. Anything else here still falls through to the generic 400
+    response, on the assumption that it came from a hand-crafted request,
+    not a person using the page as built.
     """
     return any(
         error["loc"] == ("selected_domain_ids",) and error["type"] == "value_error"
         for error in exc.errors()
     )
+
+
+class _InvalidOutputLocation(ValueError):
+    """Raised by _parse_submission when the submitted custom deliverables
+    path fails validation, so do_POST can give it the same friendly,
+    form-preserving re-render the empty-domain-selection error gets, rather
+    than a bare 400 that loses everything else the user had already filled
+    in."""
 
 
 def _form_state_from_fields(fields: dict[str, list[str]]) -> _FormState:
@@ -213,17 +240,40 @@ def _form_state_from_fields(fields: dict[str, list[str]]) -> _FormState:
             environment="consent_environment" in fields,
             consulted_sources="consent_consulted_sources" in fields,
         ),
+        output_location_mode=fields.get("output_location", ["default"])[0],
+        output_location_path=fields.get("output_location_path", [""])[0].strip(),
     )
 
 
 class ConfigServer:
     """Serves the audit configuration form and captures exactly one submission."""
 
-    def __init__(self, domains: list[Domain], defaults: AuditConfig | None = None) -> None:
+    def __init__(
+        self,
+        domains: list[Domain],
+        defaults: AuditConfig | None = None,
+        *,
+        output_dir: Path | None = None,
+        gitignore_warning: str | None = None,
+    ) -> None:
         if not domains:
             raise ValueError("ConfigServer needs at least one domain to offer")
         self._domains = list(domains)
         self._defaults = defaults
+        # The run's own output_dir, shown next to the default choice so the
+        # user sees exactly where the report lands rather than trusting a
+        # word like "default" to mean something. None only in tests that
+        # construct a ConfigServer directly without a real run behind it;
+        # every production call site (server.py's start_config) always has
+        # one.
+        self._output_dir = output_dir
+        # Precomputed by the caller (server.py, which already owns every
+        # other git subprocess call) rather than shelled out to from here:
+        # see _run_git and _output_dir_ignore_warning in server.py. None
+        # means either the check found nothing to warn about, or it could
+        # not be made at all (no repo_dir, git unavailable); either way this
+        # page says nothing rather than guessing.
+        self._gitignore_warning = gitignore_warning
         self._template_text = _TEMPLATE_PATH.read_text(encoding="utf-8")
         self._submitted_text = _SUBMITTED_TEMPLATE_PATH.read_text(encoding="utf-8")
         # One token per run, generated fresh for every ConfigServer instance
@@ -267,10 +317,14 @@ class ConfigServer:
                 super().end_headers()
 
             def do_GET(self) -> None:  # noqa: N802 - stdlib handler method name
-                if self.path == _ALIVE_PATH:
+                split = urlsplit(self.path)
+                if split.path == _ALIVE_PATH:
                     self._serve_heartbeat()
                     return
-                if self.path not in ("/", ""):
+                if split.path == _CHECK_OUTPUT_LOCATION_PATH:
+                    self._serve_output_location_check(split.query)
+                    return
+                if split.path not in ("/", ""):
                     self.send_error(HTTPStatus.NOT_FOUND)
                     return
                 draft = _parse_draft_cookie(
@@ -308,6 +362,40 @@ class ConfigServer:
                 self.send_header("Cache-Control", "no-store")
                 self.send_header("Content-Length", "0")
                 self.end_headers()
+
+            def _serve_output_location_check(self, query: str) -> None:
+                """Answer the custom-output-location field's live preview:
+                the resolved absolute path for whatever it currently holds,
+                and a plain-language error if that path could not hold this
+                run's deliverables.
+
+                Read-only and best-effort by design: this is the convenience
+                that lets the user see where files will land before they
+                submit, not the validation itself. The real check runs
+                again, from scratch, in _parse_submission when the form is
+                actually submitted, because a page is not the only possible
+                caller (see _InvalidOutputLocation) and because a path can
+                stop existing, or start existing, in the gap between a
+                preview and a submission.
+                """
+                raw_path = parse_qs(query).get("path", [""])[0]
+                if not raw_path.strip():
+                    payload: dict[str, str | None] = {"resolved": "", "error": None}
+                elif len(raw_path) > _MAX_OUTPUT_LOCATION_PATH_CHARS:
+                    payload = {"resolved": "", "error": "That path is too long."}
+                else:
+                    resolved = resolve_deliverables_dir(raw_path)
+                    payload = {
+                        "resolved": str(resolved),
+                        "error": validate_deliverables_dir(resolved),
+                    }
+                body = json.dumps(payload).encode("utf-8")
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
 
             def do_POST(self) -> None:  # noqa: N802 - stdlib handler method name
                 if self.path != "/submit":
@@ -362,6 +450,23 @@ class ConfigServer:
                         self.wfile.write(body)
                         return
                     self.send_error(HTTPStatus.BAD_REQUEST, str(exc))
+                    return
+                except _InvalidOutputLocation as exc:
+                    # Same treatment as the empty-domain-selection error
+                    # above: this is the second shape of bad request a normal
+                    # person can reach honestly (a mistyped path), so it gets
+                    # the form back with the problem named, not a bare 400.
+                    self._script_nonce = secrets.token_urlsafe(16)
+                    body = server._render_form(
+                        output_location_error=str(exc),
+                        state=_form_state_from_fields(fields),
+                        script_nonce=self._script_nonce,
+                    ).encode("utf-8")
+                    self.send_response(HTTPStatus.BAD_REQUEST)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
                     return
                 except ValueError as exc:
                     self.send_error(HTTPStatus.BAD_REQUEST, str(exc))
@@ -419,6 +524,7 @@ class ConfigServer:
         self,
         *,
         error: str | None = None,
+        output_location_error: str | None = None,
         state: _FormState | None = None,
         draft: _ConfigDraft | None = None,
         script_nonce: str = "",
@@ -428,6 +534,8 @@ class ConfigServer:
             issue_mode = state.issue_mode
             consent = state.consent
             feedback_text = state.feedback_text
+            output_location_mode = state.output_location_mode
+            output_location_path = state.output_location_path
         else:
             defaults = self._defaults
             selected_ids = (
@@ -436,6 +544,15 @@ class ConfigServer:
             issue_mode = defaults.issue_mode if defaults else "report"
             consent = defaults.telemetry_consent if defaults else TelemetryConsent()
             feedback_text = (defaults.feedback_text or "") if defaults else ""
+            # A fresh form always opens on the default location: a saved
+            # draft never carries a custom path (see _ConfigDraft's
+            # docstring for why the cookie stays narrow), and there is no
+            # other source of a prior choice for a form that has not been
+            # submitted yet.
+            output_location_mode = (
+                "custom" if defaults and defaults.deliverables_dir else "default"
+            )
+            output_location_path = (defaults.deliverables_dir or "") if defaults else ""
             if draft is not None:
                 # A recovered draft beats the all-domains default, because it
                 # is a choice the user actually made, and it beats the run's
@@ -455,10 +572,25 @@ class ConfigServer:
                 "</label>"
             )
         domain_error = f'<p class="form-error">{html.escape(error)}</p>' if error else ""
+        output_location_error_html = (
+            f'<p class="form-error">{html.escape(output_location_error)}</p>'
+            if output_location_error
+            else ""
+        )
         draft_notice = (
             '<p class="draft-notice">Your previous domain selection has been restored. '
             "The consent boxes below start unticked: those are yours to choose again.</p>"
             if draft is not None
+            else ""
+        )
+        output_dir_display = (
+            html.escape(str(self._output_dir))
+            if self._output_dir is not None
+            else "this run's output directory"
+        )
+        gitignore_warning_html = (
+            f'<p class="gitignore-warning">{html.escape(self._gitignore_warning)}</p>'
+            if self._gitignore_warning
             else ""
         )
 
@@ -469,6 +601,7 @@ class ConfigServer:
             draft_notice=draft_notice,
             csp_nonce=html.escape(script_nonce),
             alive_path=_ALIVE_PATH,
+            check_output_location_path=_CHECK_OUTPUT_LOCATION_PATH,
             draft_cookie_name=_DRAFT_COOKIE_NAME,
             draft_cookie_max_age=str(_DRAFT_COOKIE_MAX_AGE_S),
             heartbeat_interval_ms=str(_HEARTBEAT_INTERVAL_MS),
@@ -482,6 +615,12 @@ class ConfigServer:
             consent_environment_checked="checked" if consent.environment else "",
             consent_consulted_sources_checked="checked" if consent.consulted_sources else "",
             csrf_token=html.escape(self._csrf_token),
+            output_location_error=output_location_error_html,
+            output_dir_display=output_dir_display,
+            gitignore_warning=gitignore_warning_html,
+            output_location_default_checked="checked" if output_location_mode == "default" else "",
+            output_location_custom_checked="checked" if output_location_mode == "custom" else "",
+            output_location_path=html.escape(output_location_path or ""),
         )
 
     def _parse_submission(self, fields: dict[str, list[str]]) -> AuditConfig:
@@ -495,6 +634,22 @@ class ConfigServer:
             environment="consent_environment" in fields,
             consulted_sources="consent_consulted_sources" in fields,
         )
+
+        output_location_mode = fields.get("output_location", ["default"])[0]
+        deliverables_dir: str | None = None
+        if output_location_mode == "custom":
+            raw_path = fields.get("output_location_path", [""])[0].strip()
+            if not raw_path:
+                raise _InvalidOutputLocation(
+                    "Enter a custom path, or choose the default location inside the "
+                    "repository."
+                )
+            resolved = resolve_deliverables_dir(raw_path)
+            path_error = validate_deliverables_dir(resolved)
+            if path_error:
+                raise _InvalidOutputLocation(path_error)
+            deliverables_dir = str(resolved)
+
         # No fallback to "all domains" here: an empty selection is a real user
         # choice (or a broken form) and AuditConfig rejects it below, loudly,
         # rather than this function quietly inventing a selection nobody made.
@@ -503,6 +658,7 @@ class ConfigServer:
             issue_mode=issue_mode,
             feedback_text=feedback_text,
             telemetry_consent=consent,
+            deliverables_dir=deliverables_dir,
         )
 
     def poll(self) -> "str | AuditConfig":
