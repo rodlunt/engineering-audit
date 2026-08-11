@@ -50,6 +50,22 @@ def _extract_json_script(rendered: str, element_id: str) -> dict:
     return json.loads(match.group(1))
 
 
+def _domain_row(rendered: str, domain_id: str) -> str:
+    """The per-domain table's row for one domain id, as raw HTML.
+
+    Keyed on the domain id in the row header, never on the domain title:
+    two domains from different rules-pack files can share a title, and the
+    table must keep them apart (see
+    test_domain_table_rows_keyed_by_domain_id_not_title)."""
+    match = re.search(
+        rf'<tr><th scope="row"><span class="domain-id">{re.escape(domain_id)}</span>.*?</tr>',
+        rendered,
+        re.DOTALL,
+    )
+    assert match is not None, f"no per-domain table row found for {domain_id!r}"
+    return match.group(0)
+
+
 def _meta(**overrides) -> RunMeta:
     defaults = dict(
         tool_version="0.1.0",
@@ -168,20 +184,33 @@ def test_rollup_counts_match_computed_sums() -> None:
     rendered = render_report(run_state, pack)
 
     # One finding total, severity high, all in domain "Gnome Husbandry Record Keeping".
-    assert "Total findings: <strong>1</strong>" in rendered
-    assert "high: 1" in rendered
-    assert "critical: 0" in rendered
-    assert "Gnome Husbandry Record Keeping: 1" in rendered
+    # Every count ships with the base it came out of (issue #123): a bare
+    # "Total findings: 1" left the reader to supply their own denominator.
+    assert (
+        "<strong>1</strong> finding across 7 rules verdicted in 2 of 2 domains."
+        in rendered
+    )
+    assert "<li>high: 1 of 1</li>" in rendered
+    assert "<li>critical: 0 of 1</li>" in rendered
+    # The pass count is now visible in the report, not only in the feedback
+    # payload: 5 of the 7 verdicts are passes (d01 has one finding and one
+    # could-not-evaluate).
+    assert "<li>pass: 5 of 7</li>" in rendered
+    assert "<li>could not evaluate: 1 of 7</li>" in rendered
+    assert "1 of 1" in _domain_row(rendered, "d01")
 
 
 def test_rollup_by_domain_includes_a_domain_audited_and_found_clean() -> None:
     # d02 in _base_run_state has zero findings but did complete; it must
-    # show up in "By domain" at zero, distinguishable from a domain that was
-    # never selected or never run at all.
+    # show up in the per-domain table at zero, distinguishable from a domain
+    # that was never selected or never run at all.
     pack = _pack()
     run_state = _base_run_state(pack)
     rendered = render_report(run_state, pack)
-    assert "d02: Teacup Logistics Handling: 0" in rendered
+    row = _domain_row(rendered, "d02")
+    assert "Teacup Logistics Handling" in row
+    assert "0 of 1" in row
+    assert "pass: 3, finding: 0, not applicable: 0, could not evaluate: 0, of 3 " in row
 
 
 def test_coverage_section_lists_per_domain_counts_with_no_cross_domain_totals() -> None:
@@ -189,7 +218,8 @@ def test_coverage_section_lists_per_domain_counts_with_no_cross_domain_totals() 
     # selected domains double-counted every file once per domain that
     # declined to open it (a 344-file repository rendered "5320 skipped"
     # across 16 domains). The totals are dropped entirely; the per-domain
-    # list is already correct and unambiguous on its own.
+    # figures (now the table's Files column) are correct on their own, and
+    # the totals row says why it is not summing them rather than going blank.
     pack = _pack()
     run_state = _base_run_state(pack)
     rendered = render_report(run_state, pack)
@@ -197,10 +227,11 @@ def test_coverage_section_lists_per_domain_counts_with_no_cross_domain_totals() 
     assert "Total files inspected" not in rendered
     assert "Total files skipped" not in rendered
     assert (
-        "Gnome Husbandry Record Keeping: 12 file(s) inspected, 1 skipped "
-        "(one binary asset skipped)" in rendered
+        '12 inspected, 1 skipped <span class="muted">(one binary asset skipped)</span>'
+        in _domain_row(rendered, "d01")
     )
-    assert "Teacup Logistics Handling: 5 file(s) inspected, 0 skipped" in rendered
+    assert "5 inspected, 0 skipped" in _domain_row(rendered, "d02")
+    assert "not summed: a file two domains both opened would count twice" in rendered
 
 
 def test_report_error_when_selected_domain_has_no_result() -> None:
@@ -317,8 +348,9 @@ def test_could_not_evaluate_groups_rows_by_reason_sorted_by_descending_count() -
     )
     rendered = render_report(run_state, pack)
 
-    # Heading keeps the total row count (4), not the distinct-reason count (2).
-    assert "Could not evaluate (4)" in rendered
+    # Heading keeps the total row count (4), not the distinct-reason count
+    # (2), and carries the base it is a count out of (issue #123).
+    assert "Could not evaluate: 4 of 7 rules verdicted" in rendered
     assert "These are rules the audit could not reach a verdict on" in rendered
     assert "not findings" in rendered
 
@@ -362,11 +394,15 @@ def test_not_applicable_verdicts_are_counted_and_their_reasons_listed() -> None:
     )
     rendered = render_report(run_state, pack)
 
-    assert "Not applicable (1)" in rendered
-    assert (
-        "d01: Gnome Husbandry Record Keeping: 1 of 4 rule(s) not applicable" in rendered
+    assert "Not applicable: 1 of 7 rules verdicted" in rendered
+    # The per-domain counts moved into the table (issue #123), denominators
+    # and all: a domain that set nothing aside still shows its zero there.
+    assert "not applicable: 1, could not evaluate: 0, of 4 rules verdicted" in (
+        _domain_row(rendered, "d01")
     )
-    assert "d02: Teacup Logistics Handling: 0 of 3 rule(s) not applicable" in rendered
+    assert "not applicable: 0, could not evaluate: 0, of 3 rules verdicted" in (
+        _domain_row(rendered, "d02")
+    )
     assert reason in rendered
     assert "D01-R01 (1 rule)" in rendered
 
@@ -399,12 +435,17 @@ def test_a_wholly_not_applicable_domain_is_distinguishable_from_one_swept_clean(
     )
     rendered = render_report(run_state, pack)
 
-    # The rollup row that used to read exactly like a clean sweep.
+    # The rollup row that used to read exactly like a clean sweep is a table
+    # row now, and the two domains' verdict cells cannot be confused: d01
+    # set every one of its four rules aside, d02 passed all three of its.
     assert (
-        "d01: Gnome Husbandry Record Keeping: 0 (every rule not applicable, nothing checked)"
-        in rendered
+        "pass: 0, finding: 0, not applicable: 4, could not evaluate: 0, of 4 rules"
+        in _domain_row(rendered, "d01")
     )
-    assert "d02: Teacup Logistics Handling: 0</li>" in rendered
+    assert (
+        "pass: 3, finding: 0, not applicable: 0, could not evaluate: 0, of 3 rules"
+        in _domain_row(rendered, "d02")
+    )
     # The domain is named as set aside in full, and the findings section says
     # so too rather than reusing the clean result's "No findings."
     assert "1 selected domain(s) had every rule set aside as not applicable" in rendered
@@ -459,7 +500,7 @@ def test_not_applicable_groups_rows_by_reason_sorted_by_descending_count() -> No
     )
     rendered = render_report(run_state, pack)
 
-    assert "Not applicable (4)" in rendered
+    assert "Not applicable: 4 of 4 rules verdicted" in rendered
     assert "D01-R01, D01-R02, D01-R03 (3 rules)" in rendered
     assert "D01-R04 (1 rule)" in rendered
     assert rendered.index(common_reason) < rendered.index(rare_reason)
@@ -644,7 +685,7 @@ def test_a_legacy_run_state_renders_its_unjustified_not_applicable_as_unrecorded
     legacy = RunState.from_json(json.dumps(raw))
 
     rendered = render_report(legacy, pack)
-    assert "Not applicable (4)" in rendered
+    assert "Not applicable: 4 of 4 rules verdicted" in rendered
     assert "No reason recorded for this verdict" in rendered
     assert "1 selected domain(s) had every rule set aside as not applicable" in rendered
 
@@ -910,9 +951,9 @@ def test_report_error_when_consulted_source_references_a_rule_id_outside_its_dom
         render_report(run_state, pack)
 
 
-def test_findings_rollup_rows_keyed_by_domain_id_not_title(tmp_path: Path) -> None:
+def test_domain_table_rows_keyed_by_domain_id_not_title(tmp_path: Path) -> None:
     # Build a two-domain pack where both domains share an identical title,
-    # each with one finding, and confirm two distinct rollup rows appear.
+    # each with one finding, and confirm two distinct table rows appear.
     scratch = tmp_path / "pack"
     scratch.mkdir()
     domain_md = (
@@ -959,8 +1000,11 @@ def test_findings_rollup_rows_keyed_by_domain_id_not_title(tmp_path: Path) -> No
         },
     )
     rendered = render_report(run_state, pack)
-    assert "d01: Same Title Domain: 1" in rendered
-    assert "d02: Same Title Domain: 1" in rendered
+    for domain_id in ("d01", "d02"):
+        row = _domain_row(rendered, domain_id)
+        assert "Same Title Domain" in row
+        assert "1 of 2" in row
+        assert "finding: 1" in row
 
 
 def test_markdownish_splits_paragraphs_on_crlf() -> None:
@@ -2162,7 +2206,8 @@ def test_a_could_not_run_domain_is_not_a_bare_zero_in_the_rollup() -> None:
     # #122 point 5. _fully_not_applicable_domain_ids deliberately excludes a
     # domain with no verdicts, so the could-not-run branch used to fall
     # through and render "d02: Teacup Logistics Handling: 0", the exact
-    # string a domain swept clean renders.
+    # string a domain swept clean renders. The rollup row is a table row
+    # since #123; the numeral is still suppressed there.
     pack = _pack()
     run_state = _base_run_state(pack)
     run_state.domain_results["d02"] = DomainResult(
@@ -2172,11 +2217,15 @@ def test_a_could_not_run_domain_is_not_a_bare_zero_in_the_rollup() -> None:
     )
     rendered = render_report(run_state, pack)
 
-    assert (
-        "<li>d02: Teacup Logistics Handling: did not run, nothing checked</li>"
-        in rendered
-    )
-    assert "d02: Teacup Logistics Handling: 0" not in rendered
+    row = _domain_row(rendered, "d02")
+    assert "<strong>did not run, nothing checked</strong>" in row
+    assert "did not run</td>" in row
+    assert "no coverage reported" in row
+    assert "no verdicts to check" in row
+    # No count of any kind on this row: there is no denominator one could be
+    # a count out of.
+    assert "of 0 rules" not in row
+    assert "0 of" not in row
 
 
 def test_domains_with_no_findings_separates_set_aside_from_never_ran() -> None:
@@ -2221,4 +2270,190 @@ def test_domains_with_no_findings_separates_set_aside_from_never_ran() -> None:
     assert (
         "d02: Teacup Logistics Handling: <strong>did not run, nothing "
         "checked</strong>: ran out of context" in findings_html
+    )
+
+
+# ---------------------------------------------------------------------------
+# #123: one per-domain table with inline bars, and a base on every number.
+# ---------------------------------------------------------------------------
+
+
+def _domain_table_html(rendered: str) -> str:
+    match = re.search(r'<div class="domain-table-wrap">.*?</div>', rendered, re.DOTALL)
+    assert match is not None, "no per-domain table found"
+    return match.group(0)
+
+
+def test_one_table_replaces_the_five_per_domain_lists() -> None:
+    # The five one-column lists a reader used to join by domain title by eye:
+    # coverage, findings by domain, not applicable by domain, self-assessment
+    # by domain, rules fetched by domain.
+    pack = _pack()
+    rendered = render_report(_base_run_state(pack), pack)
+
+    assert "<h3>Coverage</h3>" not in rendered
+    assert "<h3>By domain</h3>" not in rendered
+    assert "<h3>Self-assessment by domain</h3>" not in rendered
+
+    table = _domain_table_html(rendered)
+    for header in (
+        "Domain",
+        "Rule verdicts",
+        "Findings",
+        "Files",
+        "Confidence",
+        "Rules fetched",
+    ):
+        assert f'<th scope="col">{header}</th>' in table
+
+
+def test_every_domain_gets_exactly_one_row_including_the_clean_one() -> None:
+    pack = _pack()
+    rendered = render_report(_base_run_state(pack), pack)
+    table = _domain_table_html(rendered)
+
+    assert table.count('<span class="domain-id">') == 2
+    assert '<span class="domain-id">d01</span>' in table
+    assert '<span class="domain-id">d02</span>' in table
+
+
+def test_verdict_cell_carries_a_bar_and_the_same_numbers_in_words() -> None:
+    # The decision recorded on #123: length carries the quantity (D16-R05),
+    # not colour intensity, and the numerals sit in the same cell so nothing
+    # in the table is discoverable by colour alone (D16-R16) and the chart
+    # has its text alternative for free (D16-R17).
+    pack = _pack()
+    rendered = render_report(_base_run_state(pack), pack)
+    row = _domain_row(rendered, "d01")
+
+    assert '<span class="vbar-track" aria-hidden="true">' in row
+    for css_class in ("seg-pass", "seg-finding", "seg-cne"):
+        assert f'<span class="vseg {css_class}" style="width:' in row
+    # d01: 2 pass, 1 finding, 0 not applicable, 1 could not evaluate, of 4.
+    assert (
+        "pass: 2, finding: 1, not applicable: 0, could not evaluate: 1, "
+        "of 4 rules verdicted" in row
+    )
+
+
+def test_bars_are_drawn_to_one_scale_so_a_smaller_domain_draws_a_shorter_bar() -> None:
+    # Stretching every bar to full width would make a 3-rule domain and a
+    # 4-rule domain the same length, which is the one thing the bar is there
+    # to show.
+    pack = _pack()
+    rendered = render_report(_base_run_state(pack), pack)
+
+    widths = {}
+    for domain_id in ("d01", "d02"):
+        match = re.search(
+            r'<span class="vbar" style="width:([\d.]+)%"',
+            _domain_row(rendered, domain_id),
+        )
+        assert match is not None, f"no bar drawn for {domain_id}"
+        widths[domain_id] = float(match.group(1))
+
+    # d01 verdicted 4 rules, d02 verdicted 3, and 4 is the run's largest.
+    assert widths["d01"] == 100.0
+    assert widths["d02"] == pytest.approx(75.0)
+
+
+def test_no_separate_chart_block_is_added_above_the_table() -> None:
+    # The inline bar is the chart, placed in the row it describes. A second
+    # chart block would need its own text alternative and would be one more
+    # thing to keep in step with the table.
+    pack = _pack()
+    rendered = render_report(_base_run_state(pack), pack)
+    assert rendered.count('class="vbar-track"') == 2
+    assert "<svg" not in rendered
+
+
+def test_no_number_in_the_table_ships_without_its_base() -> None:
+    # D16-R03. The table's own counts are all "n of m" or "…, of m rules
+    # verdicted"; the one cell that could have carried a bare summed figure
+    # says why it is not summing instead of going blank.
+    pack = _pack()
+    rendered = render_report(_base_run_state(pack), pack)
+    table = _domain_table_html(rendered)
+
+    assert "%" not in re.sub(r'style="[^"]*"', "", table)
+    assert table.count("of 4 rules verdicted") >= 1
+    assert table.count("of 3 rules verdicted") >= 1
+
+
+def test_findings_cell_keeps_all_four_severities_including_the_zeros() -> None:
+    pack = _pack()
+    rendered = render_report(_base_run_state(pack), pack)
+
+    assert "0 critical, <strong>1 high</strong>, 0 medium, 0 low" in _domain_row(
+        rendered, "d01"
+    )
+    assert "0 critical, 0 high, 0 medium, 0 low" in _domain_row(rendered, "d02")
+
+
+def test_rules_fetched_column_and_the_block_below_agree_about_a_domain() -> None:
+    # One shared status map, so a domain cannot read "no" in the table and be
+    # missing from the callout, or the reverse.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.rules_fetched_domain_ids = ["d01"]
+    rendered = render_report(run_state, pack)
+
+    assert _domain_row(rendered, "d01").endswith("<td>yes</td></tr>")
+    assert _domain_row(rendered, "d02").endswith("<td>no</td></tr>")
+    assert (
+        "1 domain(s) recorded rule verdicts without their rule text ever being "
+        "fetched this run" in rendered
+    )
+    assert "Teacup Logistics Handling (d02)" in rendered
+
+
+def test_rules_fetched_column_says_not_recorded_for_a_legacy_run_state() -> None:
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.rules_fetched_domain_ids = None
+    rendered = render_report(run_state, pack)
+
+    assert _domain_row(rendered, "d01").endswith("<td>not recorded</td></tr>")
+    assert _domain_row(rendered, "d02").endswith("<td>not recorded</td></tr>")
+
+
+def test_totals_row_refuses_to_sum_files_across_domains() -> None:
+    # Issue #87's inflated cross-domain file total must not come back in as a
+    # tidy-looking table footer.
+    pack = _pack()
+    rendered = render_report(_base_run_state(pack), pack)
+    table = _domain_table_html(rendered)
+
+    assert "All 2 selected domains" in table
+    assert (
+        "pass: 5, finding: 1, not applicable: 0, could not evaluate: 1, "
+        "of 7 rules verdicted" in table
+    )
+    assert "not summed: a file two domains both opened would count twice" in table
+    assert "17 inspected" not in table
+
+
+def test_self_assessment_limits_survive_the_move_into_the_table() -> None:
+    # Confidence became a column; the free-text limits could not, and they
+    # are the one part of a self-assessment that can contradict the
+    # confidence beside it, so they get their own block rather than being
+    # dropped.
+    pack = _pack()
+    rendered = render_report(_base_run_state(pack), pack)
+
+    assert "1 of 2 domains reported a limit on its own assessment." in rendered
+    assert "d02: Teacup Logistics Handling: did not check archived routes" in rendered
+
+
+def test_self_assessment_limits_block_still_renders_when_nobody_reported_one() -> None:
+    # A vanished block and a run where every domain claimed no limits look
+    # identical otherwise.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.domain_results["d02"].self_assessment.limits = ""
+    rendered = render_report(run_state, pack)
+
+    assert (
+        "None of the 2 selected domains reported a limit on its own assessment."
+        in rendered
     )

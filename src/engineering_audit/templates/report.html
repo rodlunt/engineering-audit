@@ -24,6 +24,16 @@
     --warn-bg: #fff4d6;
     --warn-border: #caa63d;
     --ok-bg: #e9f5ee;
+    /* The per-domain table's verdict bar (issue #123). Every pair of these
+       four differs by at least 1.8:1 in relative luminance, in this palette
+       and in the dark one, so the segments stay apart in greyscale, on a
+       photocopy and for a reader who cannot separate the hues. Colour is
+       never the only carrier here in any case: every value the bar draws is
+       written out in words in the same table cell. */
+    --seg-pass: #3d6f5f;
+    --seg-finding: #6b1215;
+    --seg-na: #ecece6;
+    --seg-cne: #a8a8a2;
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -40,6 +50,10 @@
       --warn-bg: #3a301a;
       --warn-border: #caa63d;
       --ok-bg: #16261e;
+      --seg-pass: #5fa48c;
+      --seg-finding: #ffbcc0;
+      --seg-na: #2a2e30;
+      --seg-cne: #575c60;
     }
   }
   * { box-sizing: border-box; }
@@ -101,6 +115,76 @@
   .perf-block.prominent {
     background: var(--warn-bg);
     border: 1px solid var(--warn-border);
+  }
+  /* The per-domain table (issue #123): one row per domain, replacing five
+     one-column lists a reader used to join by domain title by eye. */
+  .domain-table-wrap { overflow-x: auto; }
+  .domain-table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 0.85rem;
+  }
+  .domain-table th, .domain-table td {
+    border-bottom: 1px solid var(--border);
+    padding: 0.45rem 0.5rem;
+    text-align: left;
+    vertical-align: top;
+  }
+  .domain-table thead th { border-bottom: 2px solid var(--border); }
+  .domain-table tfoot th, .domain-table tfoot td {
+    border-top: 2px solid var(--border);
+    border-bottom: none;
+  }
+  .domain-table tbody th { font-weight: 500; }
+  .domain-id { color: var(--muted); font-family: ui-monospace, monospace; }
+  /* Minimum widths, not fixed ones: without them the browser gives the
+     verdict cell almost everything and squeezes "0 critical, 0 high, 1
+     medium, 0 low" into four one-word lines, which triples the row height
+     for a row that is mostly zeros. */
+  .verdict-cell { min-width: 13rem; }
+  .findings-cell { min-width: 8.5rem; }
+  .files-cell { min-width: 7.5rem; }
+  /* The bar's track is the full width of the cell; the bar itself is drawn
+     to a share of it set by how many rules the domain verdicted against the
+     largest domain in the run, so length carries quantity (D16-R05) rather
+     than every row being stretched to the same size. */
+  .vbar-track { display: block; width: 100%; margin-bottom: 0.25rem; }
+  .vbar { display: flex; height: 0.65rem; border-radius: 2px; overflow: hidden; }
+  .vseg { display: block; height: 100%; }
+  /* A hairline in the page background between segments, so two adjacent
+     segments never merge into one block whatever the palette does. */
+  .vseg + .vseg { border-left: 1px solid var(--card-bg); }
+  .seg-pass { background: var(--seg-pass); }
+  .seg-finding { background: var(--seg-finding); }
+  /* The two "nothing was checked" segments also carry a texture, so the
+     checked/not-checked split survives greyscale without relying on the
+     luminance steps alone. */
+  .seg-na {
+    background: repeating-linear-gradient(
+      45deg, var(--seg-na), var(--seg-na) 3px, var(--border) 3px, var(--border) 4px);
+  }
+  .seg-cne {
+    background: repeating-linear-gradient(
+      -45deg, var(--seg-cne), var(--seg-cne) 2px, var(--card-bg) 2px, var(--card-bg) 3px);
+  }
+  .verdict-numerals { display: block; }
+  .vbar-legend {
+    list-style: none;
+    padding: 0;
+    margin: 0.4rem 0 0.6rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem 1rem;
+    font-size: 0.85rem;
+    color: var(--muted);
+  }
+  .vbar-legend li { display: flex; align-items: center; gap: 0.35rem; }
+  .vkey {
+    display: inline-block;
+    width: 1.1rem;
+    height: 0.65rem;
+    border: 1px solid var(--border);
+    border-radius: 2px;
   }
   .perf-block p.ok {
     background: var(--ok-bg);
@@ -269,8 +353,28 @@
       --warn-bg: #fff4d6;
       --warn-border: #caa63d;
       --ok-bg: #e9f5ee;
+      /* The verdict-bar segments belong in this override too. Without them a
+         reader printing on a dark-mode OS would get the light palette
+         everywhere except inside the bars, which would still be drawn in
+         dark-mode colours on white paper. */
+      --seg-pass: #3d6f5f;
+      --seg-finding: #6b1215;
+      --seg-na: #ecece6;
+      --seg-cne: #a8a8a2;
     }
     body { margin: 0; }
+    /* On screen the table scrolls sideways if it has to. On paper there is
+       nothing to scroll, and a clipped table loses its right-hand columns
+       with no marker, so the overflow container is switched off and the
+       table is allowed to set its own width. */
+    .domain-table-wrap { overflow-x: visible; }
+    .domain-table { font-size: 0.7rem; }
+    .domain-table tr { break-inside: avoid; page-break-inside: avoid; }
+    /* Background fills are dropped by default in most print settings, which
+       would leave every bar blank. This asks for them, and the numerals in
+       the same cell are what the reader falls back on when the setting says
+       no. */
+    .vseg, .vkey { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     /* The interactive filing UI makes no sense on paper: a tick box, a
        token input and buttons cannot be acted on once printed. */
     .print-button,
