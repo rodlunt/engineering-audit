@@ -1,5 +1,12 @@
 # Engineering Audit Triggers (merge into GEMINI.md)
 
+**This file is for Gemini CLI only.** It sits in the repository root because Gemini CLI
+resolves an extension's context file from the root of the repository it installs, next to
+`gemini-extension.json` and `commands/` (see `integrations/gemini/README.md`, and issue
+#145 for why it cannot live under `integrations/`). It is not general repository guidance,
+it is not loaded by Claude Code or Codex, which read `CLAUDE.md` and `AGENTS.md`
+respectively, and nothing outside Gemini CLI should treat it as instructions.
+
 This file ships as a placeholder. The engineering-audit repository contains no
 rule content of its own (rules packs are distributed separately, see the
 repository root README), so there is nothing real to bake into this context file

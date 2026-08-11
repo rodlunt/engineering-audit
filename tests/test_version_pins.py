@@ -149,6 +149,52 @@ def test_find_manifest_version_pins(tmp_path: Path) -> None:
     assert pins[0].version == "9.9.9"
 
 
+def test_find_manifest_version_pins_finds_the_root_gemini_manifest(
+    tmp_path: Path,
+) -> None:
+    """A root gemini-extension.json is discovered, not just manifests under
+    integrations/.
+
+    Gemini CLI resolves an extension from the repository root, so that one
+    manifest cannot live under integrations/ and still install (issue #145).
+    Before this, moving it out of integrations/ took it out of the scan's
+    scope entirely: the release checker would have stopped seeing the pin
+    the checker exists to watch.
+    """
+    repo = _build_repo(tmp_path, version="9.9.9")
+    (repo / "gemini-extension.json").write_text(
+        json.dumps({"name": "engineering-audit", "version": "9.9.9"}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    _init_git_repo(repo)
+    tracked = version_pins.list_tracked_files(repo)
+
+    pins = version_pins.find_manifest_version_pins(tracked, repo)
+
+    names = sorted(pin.path.name for pin in pins)
+    assert names == ["gemini-extension.json", "manifest.json"]
+
+
+def test_find_manifest_version_pins_ignores_other_root_json(tmp_path: Path) -> None:
+    """The root scan is a named allowlist, not "any JSON in the root".
+
+    A broad root scan would eventually match a JSON whose "version" means
+    something else, and bump-version.py rewrites every pin it discovers, so
+    a false positive there corrupts an unrelated file on every release.
+    """
+    repo = _build_repo(tmp_path, version="9.9.9")
+    (repo / "some-other-tool.json").write_text(
+        json.dumps({"version": "3.2.1"}, indent=2) + "\n", encoding="utf-8"
+    )
+    _init_git_repo(repo)
+    tracked = version_pins.list_tracked_files(repo)
+
+    pins = version_pins.find_manifest_version_pins(tracked, repo)
+
+    assert [pin.path.name for pin in pins] == ["manifest.json"]
+    assert "3.2.1" not in {pin.version for pin in pins}
+
+
 def test_bare_version_without_a_known_lead_in_is_not_a_prose_pin(
     tmp_path: Path,
 ) -> None:

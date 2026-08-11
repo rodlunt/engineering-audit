@@ -117,16 +117,40 @@ run the audit. Headless notes and caveats: [integrations/codex/](integrations/co
 
 #### Gemini CLI
 
-Everything for Gemini ships as an extension (documented, untested: Gemini CLI was not
-available to exercise it; check `gemini --help` against the README's flags before an
-unattended run):
+**Register the MCP server directly.** This is the supported route: add an entry to
+`~/.gemini/settings.json` (or a project-level `.gemini/settings.json`), swapping in the taster
+path from Step 3:
+
+```json
+{
+  "mcpServers": {
+    "engineering-audit": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/rodlunt/engineering-audit@v0.7.0",
+        "engineering-audit-mcp"
+      ],
+      "env": {
+        "ENGINEERING_AUDIT_RULES_DIR": "/path/to/engineering-audit/examples/taster-rules"
+      }
+    }
+  }
+}
+```
+
+**There is also a packaged extension**, which registers the same MCP server, adds an `/audit`
+command and carries a context file. Its manifest sits in this repository's root, because Gemini
+CLI resolves an extension from the root of the repository it installs:
 
 ```sh
 gemini extensions install https://github.com/rodlunt/engineering-audit --ref v0.7.0
 ```
 
-The extension registers the MCP server, adds an `/audit` command, and carries the inline
-trigger fragment as its context file. Manual alternative and details:
+**That one-liner has never been run against a real Gemini CLI**, so prefer the settings.json entry
+above until it has. Two things to know before trying it: the bundled `GEMINI.md` ships as a
+placeholder and must be regenerated from your own rules pack first (the file says how), and this
+repository carries no rule content of its own. Details and the full caveats:
 [integrations/gemini/](integrations/gemini/).
 
 #### Headless / CI

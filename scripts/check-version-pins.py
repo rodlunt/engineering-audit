@@ -127,10 +127,11 @@ def main(repo_root: Path = REPO_ROOT, pyproject: Path | None = None) -> int:
         )
     if not found.manifest_pins:
         problems.append(
-            'found zero manifest "version" fields under integrations/; '
-            "the manifest scan in scripts/version_pins.py has gone stale, "
-            "or the Gemini extension manifest was removed, either way "
-            "this is broken, not clean"
+            'found zero manifest "version" fields in the repository root '
+            "or under integrations/; the manifest scan in "
+            "scripts/version_pins.py has gone stale, or the Gemini "
+            "extension manifest was removed, either way this is broken, "
+            "not clean"
         )
 
     if problems:

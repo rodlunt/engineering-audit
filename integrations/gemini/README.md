@@ -10,32 +10,55 @@ your own install before relying on it.
 
 ## What is here
 
-- `gemini-extension/gemini-extension.json`: an extension manifest that registers
-  the `engineering-audit` MCP server and points Gemini CLI at a bundled `GEMINI.md`
-  for inline triggers.
-- `gemini-extension/GEMINI.md`: a placeholder context file. It ships empty of real
+The extension's own files live in the **repository root**, not in this directory, because
+Gemini CLI requires them there (see "Why the extension is not in this directory" below):
+
+- [`gemini-extension.json`](../../gemini-extension.json): an extension manifest that
+  registers the `engineering-audit` MCP server and points Gemini CLI at a bundled
+  `GEMINI.md` for inline triggers.
+- [`GEMINI.md`](../../GEMINI.md): a placeholder context file. It ships empty of real
   trigger content because this repository carries no rule content of its own
   (rules packs are distributed separately); regenerate it from your own rules pack
   before installing (instructions inside the file).
-- `gemini-extension/commands/audit.toml`: a custom `/audit` command that points the
-  agent at this tool's `AUDIT.md` for the standalone audit flow.
+- [`commands/audit.toml`](../../commands/audit.toml): a custom `/audit` command that
+  points the agent at this tool's `AUDIT.md` for the standalone audit flow.
+
+This directory holds the documentation for all of it.
+
+## Why the extension is not in this directory
+
+Gemini CLI's extension reference states that "Each extension must have a
+`gemini-extension.json` file in its root directory", with no documented support for a
+subdirectory and no path flag on `gemini extensions install`. Custom commands must sit in
+a `commands/` directory at that same root, and the context file alongside it.
+
+So a manifest under `integrations/` is never found: the install silently registers no MCP
+server, which is exactly what an external tester hit (issue #145). Keeping the packaging
+tidy and keeping it installable were mutually exclusive, and installable won.
 
 ## Install
+
+**As a manual MCP server entry, which is the supported route.** Skip to it below. The
+extension route immediately following has never been run against a real Gemini CLI.
 
 **As a packaged extension**, once you have regenerated `GEMINI.md` from your rules
 pack (see the placeholder file for the exact command):
 
 ```
-gemini extensions install <repo-or-local-path-to-this-extension> --ref v0.7.0
+gemini extensions install https://github.com/rodlunt/engineering-audit --ref v0.7.0
 ```
 
-Documented syntax: `gemini extensions install <url>` installs an extension from a
-git repository URL. A local, unpublished extension directory may need a different
-form; check `gemini extensions install --help` on your install. `--ref v0.7.0` pins
+The URL is this repository, because the manifest sits in its root. Documented syntax:
+`gemini extensions install <url>` installs an extension from a git repository URL. A
+local, unpublished extension directory may need a different form; check
+`gemini extensions install --help` on your install. `--ref v0.7.0` pins
 the install to the current tagged release rather than the moving `main` branch;
 see the root README's [How to use](../../README.md#how-to-use) section for how to find
 the latest tag and update to it deliberately. Drop `--ref` (or point it at a
 branch) only for a deliberate local/dev install off `main`.
+
+An earlier revision of this file told you to install from the extension's own
+subdirectory. That was wrong and could never have worked: see issue #145.
 
 **As a manual MCP server entry**, without the extension packaging, add an entry to
 your `~/.gemini/settings.json` (or the project-level `.gemini/settings.json`)

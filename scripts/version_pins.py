@@ -20,7 +20,9 @@ Three kinds of pin are discovered:
 1. `@vX.Y.Z` install references: README install commands, integration
    docs, and the Gemini extension manifest's uvx `args`.
 2. The top-level `"version"` field of any tracked JSON manifest under
-   `integrations/`.
+   `integrations/`, plus the named root manifests in
+   ROOT_MANIFEST_FILENAMES below, which their own tools require to sit in
+   the repository root instead.
 3. Prose that names the version without an `@` prefix, matched by a fixed
    list of known lead-in phrases (PROSE_LEAD_INS below), not by a bare
    `vX.Y.Z` pattern. A context-free scan for `vX.Y.Z` anywhere in the tree
@@ -109,6 +111,15 @@ VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 # regenerates this from pyproject.toml itself, so it is not the kind of
 # forgotten-pin bug this module exists to catch.
 EXCLUDED_FILES = {"uv.lock"}
+
+# Manifests that must live in the repository root rather than under
+# integrations/, named one by one so the root scan cannot widen by accident.
+# gemini-extension.json is here because Gemini CLI resolves an extension
+# from the root of the repository it installs, so a manifest under
+# integrations/ is never found and the MCP server is never registered
+# (issue #145). Add a filename here only when its own tool forces the same
+# constraint, and never to make a scan "more thorough".
+ROOT_MANIFEST_FILENAMES = {"gemini-extension.json"}
 
 
 @dataclass(frozen=True)
@@ -229,14 +240,30 @@ def find_prose_pins(
 def find_manifest_version_pins(
     tracked_files: list[Path], repo_root: Path = REPO_ROOT
 ) -> list[ManifestPin]:
-    """Return every tracked JSON manifest under integrations/ that declares
-    a top-level "version" field."""
+    """Return every tracked JSON manifest that declares a top-level
+    "version" field, from either of the two places one can live.
+
+    Two locations, not one, because of issue #145. Gemini CLI requires
+    `gemini-extension.json` in the *repository* root ("Each extension must
+    have a gemini-extension.json file in its root directory"), so that
+    manifest cannot sit under integrations/ and be installable. Anything
+    else that carries a version stays under integrations/ where the rest of
+    the per-assistant packaging lives.
+
+    Deliberately a named-file allowlist rather than "any JSON in the root",
+    for the same reason PROSE_LEAD_INS is a fixed list rather than a bare
+    vX.Y.Z pattern: a broad scan eventually matches a JSON whose "version"
+    field means something else entirely, and bump-version.py would then
+    rewrite it on every release.
+    """
     found: list[ManifestPin] = []
     for path in tracked_files:
         rel = path.relative_to(repo_root)
         if rel.suffix != ".json":
             continue
-        if "integrations" not in rel.parts:
+        in_integrations = "integrations" in rel.parts
+        is_root_manifest = len(rel.parts) == 1 and rel.name in ROOT_MANIFEST_FILENAMES
+        if not in_integrations and not is_root_manifest:
             continue
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
