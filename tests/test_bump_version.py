@@ -16,14 +16,23 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from types import ModuleType
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-CHECK_SCRIPT = REPO_ROOT / "scripts" / "check-version-pins.py"
-BUMP_SCRIPT = REPO_ROOT / "scripts" / "bump-version.py"
+SCRIPTS_DIR = REPO_ROOT / "scripts"
+CHECK_SCRIPT = SCRIPTS_DIR / "check-version-pins.py"
+BUMP_SCRIPT = SCRIPTS_DIR / "bump-version.py"
+
+# Same convention as tests/test_version_pins.py: version_pins.py has no
+# hyphen in its filename, so it can be imported directly once its directory
+# is on sys.path, unlike check-version-pins.py and bump-version.py below,
+# which need _load_module's importlib.util dance instead.
+sys.path.insert(0, str(SCRIPTS_DIR))
+from version_pins import find_at_pins, find_prose_pins  # noqa: E402
 
 _module_counter = 0
 
@@ -216,12 +225,21 @@ def test_bump_does_not_rewrite_this_historical_line(tmp_path: Path) -> None:
     was rewording the sentence so it names no second version at all, not a
     scanner exception: this proves that reworded sentence has nothing left
     for either PROSE_PIN_RE or AT_PIN_RE to find, so a real bump leaves the
-    whole file byte-for-byte unchanged, not just the one sentence."""
+    whole file byte-for-byte unchanged, not just the one sentence.
+
+    The precondition below asserts that property directly, via the same
+    find_at_pins/find_prose_pins discovery bump-version.py and
+    check-version-pins.py both import, rather than pinning one exact
+    sentence of the docstring's prose: a future reword of that paragraph
+    that still names no pin should not fail this test, and a reword that
+    reintroduces a discoverable pin should fail it for that reason, not
+    because a string went missing."""
     copy = _copy_real_repo(tmp_path)
 
     check_script_in_copy = copy / "scripts" / "check-version-pins.py"
     before = check_script_in_copy.read_text(encoding="utf-8")
-    assert "the release tag current at the time" in before
+    assert not find_at_pins([check_script_in_copy], repo_root=copy)
+    assert not find_prose_pins([check_script_in_copy], repo_root=copy)
 
     bump_module = _load_module("bump_version", BUMP_SCRIPT)
     exit_code = bump_module.main(["9.9.9"], repo_root=copy)
