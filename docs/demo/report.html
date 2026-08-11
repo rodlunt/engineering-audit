@@ -51,6 +51,10 @@
     margin: 2.5rem auto;
     padding: 0 1.25rem 3rem;
     line-height: 1.55;
+    /* Defensive backstop so a long unbroken token anywhere in the body
+       (not just the locations and references below) cannot push the page
+       into horizontal scroll on a narrow viewport. */
+    overflow-wrap: break-word;
   }
   header h1 { font-size: 1.6rem; margin-bottom: 0.25rem; }
   h2 { font-size: 1.25rem; border-bottom: 1px solid var(--border); padding-bottom: 0.4rem; }
@@ -95,7 +99,17 @@
   }
   .finding-head { display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
   .finding-rule { color: var(--muted); font-size: 0.85rem; }
-  .finding-location { color: var(--muted); font-size: 0.85rem; margin: 0.2rem 0 0.5rem; font-family: ui-monospace, monospace; }
+  /* Both lines carry an unbroken token (a path:line-range or a long URL)
+     with no spaces to wrap at. overflow-wrap: anywhere lets the browser
+     break inside the token itself, rather than word-break: break-all,
+     which would also chop ordinary prose mid-word wherever it appears. */
+  .finding-location, .finding-reference {
+    color: var(--muted);
+    font-size: 0.85rem;
+    margin: 0.2rem 0 0.5rem;
+    font-family: ui-monospace, monospace;
+    overflow-wrap: anywhere;
+  }
   .finding-body p { margin: 0.4rem 0; }
   .severity-badge {
     display: inline-block;
@@ -111,10 +125,26 @@
   .severity-high { background: var(--high); }
   .severity-medium { background: var(--medium); color: #1a1a1a; }
   .severity-low { background: var(--low); }
-  .finding.sev-critical { border-left-color: var(--critical); }
-  .finding.sev-high { border-left-color: var(--high); }
-  .finding.sev-medium { border-left-color: var(--medium); }
-  .finding.sev-low { border-left-color: var(--low); }
+  /* Stripe width falls as severity falls, so severity survives greyscale
+     or a photocopy even where the colour itself cannot be told apart: the
+     dark-mode critical and low backgrounds sit within 0.01 of each other
+     in relative luminance, but 8px is never mistaken for 2px. */
+  .finding.sev-critical { border-left-color: var(--critical); border-left-width: 8px; }
+  .finding.sev-high { border-left-color: var(--high); border-left-width: 6px; }
+  .finding.sev-medium { border-left-color: var(--medium); border-left-width: 4px; }
+  .finding.sev-low { border-left-color: var(--low); border-left-width: 2px; }
+  /* Dark-mode-only text colour for three of the four severity badges: white
+     text on these dark-mode backgrounds fails contrast (2.26:1, 1.80:1,
+     2.22:1). #1a1a1a on the same backgrounds clears 4.5:1 (7.69:1, 9.66:1,
+     7.85:1). Placed after .severity-badge above so it wins the cascade at
+     equal specificity (its color: #ffffff would otherwise win by source
+     order even when this media query matches). Scoped to "screen" so it
+     never leaks into printing on a dark-mode OS, where the print block
+     below forces the light-palette backgrounds back on and white badge
+     text is the correct choice again. */
+  @media screen and (prefers-color-scheme: dark) {
+    .severity-critical, .severity-high, .severity-low { color: #1a1a1a; }
+  }
   .issue-block {
     background: var(--card-bg);
     border: 1px solid var(--border);
@@ -194,6 +224,9 @@
   footer { color: var(--muted); font-size: 0.85rem; border-top: 1px solid var(--border); padding-top: 1rem; }
   footer a { color: var(--accent); }
   .print-button { margin: 0.35rem 0 0.75rem; }
+  /* The one-line substitute for the whole Issues section on paper, hidden
+     on screen where the real, interactive section is present instead. */
+  .print-only-note { display: none; }
   @media print {
     /* Force the light palette regardless of the OS colour scheme: this
        block is deliberately placed after the dark-mode block above so it
@@ -225,10 +258,12 @@
     button {
       display: none !important;
     }
-    /* Readonly textareas (issue text, feedback) are scrollable boxes on
-       screen; a scrollbar means nothing on paper, so expand them to show
-       their full content instead of clipping at their on-screen height. */
-    .issue-block textarea,
+    /* The feedback textarea is a scrollable box on screen; a scrollbar
+       means nothing on paper, so expand it to show its full content
+       instead of clipping at its on-screen height. The issue-block
+       textareas had the same rule here until the #issues section itself
+       was hidden from print below, which makes the rule moot for them:
+       a hidden ancestor already hides everything inside it. */
     #feedback-textarea {
       height: auto !important;
       max-height: none !important;
@@ -237,8 +272,20 @@
       padding: 0;
       white-space: pre-wrap;
     }
-    .finding, .issue-block { break-inside: avoid; page-break-inside: avoid; }
+    .finding { break-inside: avoid; page-break-inside: avoid; }
     a { color: #1a1a1a; }
+    /* The Issues section duplicates the Findings section above, reformatted
+       for GitHub, and its interactive controls are already hidden by the
+       rules above, so what would print is content with its function
+       stripped out. Its issue bodies are also readonly textareas, which
+       cannot be expanded to full height on paper (height: auto resolves to
+       the rows attribute, and overflow: visible on a scroll container
+       computes back to auto), so every issue body would clip mid-sentence
+       with no crop marker. Hiding the section removes the clipping problem
+       rather than trying to solve it, since the same content is already
+       present, uncut, in the Findings section above. */
+    #issues { display: none !important; }
+    .print-only-note { display: block !important; }
   }
 </style>
 </head>
@@ -271,6 +318,9 @@ bed-14 has two occupants (gnome-07, gnome-19) and neither carries the shared-bed
 
 Found by an engineering-practice audit (rule D01-R02, severity high, at ledger/beds.py:42). Reference: invented for test fixtures only, no external source</textarea><button type="button" onclick="copyIssueText('issue-text-0', this)">Copy issue text</button> <span class="issue-status" id="issue-status-0"></span></div><div class="issue-actions"><button type="button" onclick="revealGithubFileForm()">Add selected issues to GitHub (requires GitHub PAT)</button> <button type="button" onclick="copySelectedIssues(this)">Copy selected issues (for pasting into an LLM or editor)</button></div><script type="application/json" id="issues-data">{"issues": [{"rule_id": "D01-R02", "title": "Set shared-bed flag for bed-14", "body": "bed-14 has two occupants (gnome-07, gnome-19) and neither carries the shared-bed flag. See ledger/beds.py:42.\n\nFound by an engineering-practice audit (rule D01-R02, severity high, at ledger/beds.py:42). Reference: invented for test fixtures only, no external source"}]}</script>
 </section>
+
+<p class="print-only-note">Issues section omitted from print: the issue-filing text for
+every finding is available in the on-screen version of this report.</p>
 
 <section id="feedback">
   <h2>Feedback</h2>
