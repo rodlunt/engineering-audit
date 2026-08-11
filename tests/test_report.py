@@ -1253,7 +1253,14 @@ def test_feedback_consent_checkboxes_prefilled_true_from_config() -> None:
     pack = _pack()
     run_state = _base_run_state(pack)
     run_state.config.telemetry_consent = TelemetryConsent(
-        coverage=True, rollup=True, self_assessment=True, environment=True, consulted_sources=True
+        coverage=True,
+        rollup=True,
+        self_assessment=True,
+        environment=True,
+        consulted_sources=True,
+        verdict_distribution=True,
+        duration=True,
+        rules_fetched=True,
     )
     rendered = render_report(run_state, pack)
 
@@ -1263,6 +1270,9 @@ def test_feedback_consent_checkboxes_prefilled_true_from_config() -> None:
         "consent-self-assessment",
         "consent-environment",
         "consent-consulted-sources",
+        "consent-verdict-distribution",
+        "consent-duration",
+        "consent-rules-fetched",
     ):
         match = re.search(rf'<input type="checkbox" id="{input_id}"([^>]*)>', rendered)
         assert match is not None, f"checkbox {input_id!r} not found"
@@ -1273,7 +1283,14 @@ def test_feedback_consent_checkboxes_prefilled_false_from_config() -> None:
     pack = _pack()
     run_state = _base_run_state(pack)
     run_state.config.telemetry_consent = TelemetryConsent(
-        coverage=False, rollup=False, self_assessment=False, environment=False, consulted_sources=False
+        coverage=False,
+        rollup=False,
+        self_assessment=False,
+        environment=False,
+        consulted_sources=False,
+        verdict_distribution=False,
+        duration=False,
+        rules_fetched=False,
     )
     rendered = render_report(run_state, pack)
 
@@ -1283,6 +1300,9 @@ def test_feedback_consent_checkboxes_prefilled_false_from_config() -> None:
         "consent-self-assessment",
         "consent-environment",
         "consent-consulted-sources",
+        "consent-verdict-distribution",
+        "consent-duration",
+        "consent-rules-fetched",
     ):
         match = re.search(rf'<input type="checkbox" id="{input_id}"([^>]*)>', rendered)
         assert match is not None, f"checkbox {input_id!r} not found"
@@ -1316,7 +1336,12 @@ def test_feedback_embedded_json_parses_and_matches_build_feedback_sections() -> 
     rendered = render_report(run_state, pack)
 
     data = _extract_json_script(rendered, "feedback-sections-data")
-    expected_sections = build_feedback_sections(run_state.meta, run_state.domain_results)
+    expected_sections = build_feedback_sections(
+        run_state.meta,
+        run_state.domain_results,
+        rules_fetched_domain_ids=run_state.rules_fetched_domain_ids,
+        rules_fetch_unknown_domain_ids=run_state.rules_fetch_unknown_domain_ids,
+    )
 
     assert data["run_metadata"] == expected_sections["run_metadata"]
     assert data["coverage"] == expected_sections["coverage"]
@@ -1324,6 +1349,9 @@ def test_feedback_embedded_json_parses_and_matches_build_feedback_sections() -> 
     assert data["self_assessment"] == expected_sections["self_assessment"]
     assert data["environment"] == expected_sections["environment"]
     assert data["consulted_sources"] == expected_sections["consulted_sources"]
+    assert data["verdict_distribution"] == expected_sections["verdict_distribution"]
+    assert data["duration"] == expected_sections["duration"]
+    assert data["rules_fetched"] == expected_sections["rules_fetched"]
     assert data["email"] == "rodneylunt79+audit-feedback@gmail.com"
 
     # Cross-check against the MCP path's own builder: with only one section
@@ -1332,12 +1360,27 @@ def test_feedback_embedded_json_parses_and_matches_build_feedback_sections() -> 
     # report's own JS joins ticked sections.
     base_consent = {
         "coverage": False, "rollup": False, "self_assessment": False, "environment": False,
-        "consulted_sources": False,
+        "consulted_sources": False, "verdict_distribution": False, "duration": False,
+        "rules_fetched": False,
     }
-    for key in ("coverage", "rollup", "self_assessment", "environment", "consulted_sources"):
+    for key in (
+        "coverage",
+        "rollup",
+        "self_assessment",
+        "environment",
+        "consulted_sources",
+        "verdict_distribution",
+        "duration",
+        "rules_fetched",
+    ):
         consent_kwargs = {**base_consent, key: True}
         body = build_feedback_body(
-            None, run_state.meta, TelemetryConsent(**consent_kwargs), run_state.domain_results
+            None,
+            run_state.meta,
+            TelemetryConsent(**consent_kwargs),
+            run_state.domain_results,
+            rules_fetched_domain_ids=run_state.rules_fetched_domain_ids,
+            rules_fetch_unknown_domain_ids=run_state.rules_fetch_unknown_domain_ids,
         )
         assert body == data["run_metadata"] + "\n\n" + data[key]
 

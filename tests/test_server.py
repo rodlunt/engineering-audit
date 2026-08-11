@@ -2205,6 +2205,78 @@ def test_submit_feedback_includes_consented_sections(
     assert "Two gnomes share bed-14 without the shared-bed flag" not in body
 
 
+def test_submit_feedback_omits_verdict_distribution_duration_and_rules_fetched_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake, calls = _fake_create_issue()
+    monkeypatch.setattr(server_module, "create_issue", _fake)
+    monkeypatch.setattr(server_module, "gh_available", lambda: True)
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    _begin_run(mcp, tmp_path / "audit-output")
+    _preset_config_env(
+        monkeypatch,
+        tmp_path,
+        feedback_text="The gnome export was slow.",
+        telemetry_consent={
+            "verdict_distribution": False,
+            "duration": False,
+            "rules_fetched": False,
+        },
+    )
+    _call(mcp, "start_config", {})
+    _call(mcp, "get_config", {"timeout_s": 1})
+    _record_d01_with_finding(mcp)
+    _record_d02_all_pass(mcp)
+
+    _call(mcp, "submit_feedback", {})
+    body = calls[0]["body"]
+    assert "Rule verdict distribution" not in body
+    assert "Duration" not in body
+    assert "Rules fetched" not in body
+
+
+def test_submit_feedback_includes_verdict_distribution_duration_and_rules_fetched_when_consented(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake, calls = _fake_create_issue()
+    monkeypatch.setattr(server_module, "create_issue", _fake)
+    monkeypatch.setattr(server_module, "gh_available", lambda: True)
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    _begin_run(mcp, tmp_path / "audit-output")
+    _preset_config_env(
+        monkeypatch,
+        tmp_path,
+        feedback_text="The gnome export was slow.",
+        telemetry_consent={
+            "verdict_distribution": True,
+            "duration": True,
+            "rules_fetched": True,
+        },
+    )
+    _call(mcp, "start_config", {})
+    _call(mcp, "get_config", {"timeout_s": 1})
+    # Both domains are fetched via get_domain by the record helpers below
+    # (see _fetch_domain), so the rules-fetched section must report both as
+    # fetched, never as unrecorded: this is a live run, not one carried in
+    # from a save that predates fetch tracking.
+    _record_d01_with_finding(mcp)
+    _record_d02_all_pass(mcp)
+
+    _call(mcp, "submit_feedback", {})
+    body = calls[0]["body"]
+    assert "Rule verdict distribution" in body
+    assert "Total verdicts:" in body
+    assert "Duration" in body
+    assert "Rules fetched" in body
+    assert "- d01: fetched" in body
+    assert "- d02: fetched" in body
+    assert "unrecorded" not in body
+    # Finding text must never leave via feedback, only counts.
+    assert "Two gnomes share bed-14 without the shared-bed flag" not in body
+
+
 def test_submit_feedback_gh_unavailable_returns_mailto_with_encoded_body(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

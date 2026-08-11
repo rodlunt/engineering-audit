@@ -16,16 +16,18 @@ the one place that wording is built.
 from __future__ import annotations
 
 from collections import Counter
+from datetime import datetime
 from urllib.parse import quote
 
 from engineering_audit.rules import Rule, citation
-from engineering_audit.schema import DomainResult, Finding, RunMeta, TelemetryConsent
+from engineering_audit.schema import DomainResult, Finding, RunMeta, TelemetryConsent, Verdict
 
 __all__ = [
     "FEEDBACK_REPO",
     "FEEDBACK_EMAIL",
     "feedback_subject",
     "rules_pack_label",
+    "duration_text",
     "build_feedback_sections",
     "build_feedback_body",
     "build_mailto_url",
@@ -38,6 +40,12 @@ FEEDBACK_REPO = "rodlunt/engineering-audit"
 FEEDBACK_EMAIL = "rodneylunt79+audit-feedback@gmail.com"
 
 _SEVERITY_ORDER = ("critical", "high", "medium", "low")
+_VERDICT_ORDER = (
+    Verdict.pass_,
+    Verdict.FINDING,
+    Verdict.NOT_APPLICABLE,
+    Verdict.COULD_NOT_EVALUATE,
+)
 
 
 def feedback_subject(meta: RunMeta) -> str:
@@ -61,9 +69,161 @@ def rules_pack_label(meta: RunMeta) -> str:
     return meta.rules_pack_name
 
 
+def _parse_iso(value: str | None) -> datetime | None:
+    """Parse an ISO 8601 timestamp as recorded on RunMeta, or None if value
+    is None or is not a timestamp this tool would have written itself.
+
+    Every string reaching here has already passed RunMeta's own
+    _valid_iso_timestamp validator at parse time, so a second failure here
+    would mean a bug in that validator, not bad input; returning None rather
+    than raising keeps this a display-time concern; a report must still
+    render over a corrupt or foreign-written run-state file.
+    """
+    if value is None:
+        return None
+    normalised = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        return datetime.fromisoformat(normalised)
+    except ValueError:
+        return None
+
+
+def _format_duration(total_seconds: float) -> str:
+    total_seconds = int(round(abs(total_seconds)))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    parts = []
+    if hours:
+        parts.append(f"{hours}h")
+    if hours or minutes:
+        parts.append(f"{minutes}m")
+    parts.append(f"{seconds}s")
+    return "".join(parts)
+
+
+# A duration disagreement is flagged, never resolved: see duration_text's
+# docstring for why neither figure is corrected in place.
+#
+# The threshold is the larger of a fixed floor and a share of the longer
+# duration, so both ends of a run get an honest tolerance:
+#   - On a short run, the proportional share alone would flag any pair of
+#     clocks that do not agree to the second, which is tighter than two
+#     independently-read clocks (the assistant's notion of "now" and the
+#     server's) should ever be expected to agree even when both are honest.
+#     The floor absorbs that.
+#   - On a long run, a fixed floor alone would flag routine minute-scale
+#     variance (tool round trips, a slow domain sweep) on every run long
+#     enough to accumulate it. The proportional share scales with the run
+#     instead.
+# Chosen so the bug that motivated this fix, started == finished on a run
+# that took minutes, is always caught: the gap between a zero-second
+# assistant-reported duration and any real server-measured duration IS the
+# server duration, which clears the 60-second floor on any audit worth
+# auditing.
+_DURATION_DIVERGENCE_FLOOR_SECONDS = 60.0
+_DURATION_DIVERGENCE_PROPORTION = 0.15
+
+
+def duration_text(meta: RunMeta) -> str:
+    """The "Duration" meta row's value: the assistant-reported span, the
+    server-measured span, or both with a warning when they disagree by more
+    than expected.
+
+    Never overwrites the assistant's figure with the server's, or vice
+    versa (see issue #102): a resumed run legitimately spans a wall-clock
+    gap that is not audit work, so the server's elapsed time is not
+    automatically the truer number either. The only failure mode this
+    guards against is a duration presented as fact when it was never
+    checked against anything; once both are shown, or the disagreement is
+    named, the reader can judge which to trust.
+
+    Used both by report.py's meta block, which shows this for every run
+    regardless of consent, and by build_feedback_sections' duration section
+    below, which is consent-gated: the same wording either way, so the two
+    can never describe the same run's duration differently.
+    """
+    assistant_start = _parse_iso(meta.started)
+    assistant_end = _parse_iso(meta.finished)
+    server_start = _parse_iso(meta.server_started)
+    server_end = _parse_iso(meta.server_finished)
+
+    assistant_duration = (
+        (assistant_end - assistant_start).total_seconds()
+        if assistant_start is not None and assistant_end is not None
+        else None
+    )
+    server_duration = (
+        (server_end - server_start).total_seconds()
+        if server_start is not None and server_end is not None
+        else None
+    )
+
+    if assistant_duration is None and server_duration is None:
+        return "not available"
+    if server_duration is None:
+        # This run (or the resume that continued it) predates server-side
+        # duration measurement, so there is nothing to check the
+        # assistant's figure against. Unmeasured, not confirmed, and the
+        # row has to say so rather than rendering the lone figure as if it
+        # had been.
+        assert assistant_duration is not None  # the both-None case returned above
+        return (
+            f"{_format_duration(assistant_duration)} as reported by the assistant; not "
+            "measured by the server, so this could not be checked"
+        )
+    if assistant_duration is None:
+        return f"{_format_duration(server_duration)} (server-measured; run still in progress or unreported)"
+
+    threshold = max(
+        _DURATION_DIVERGENCE_FLOOR_SECONDS,
+        _DURATION_DIVERGENCE_PROPORTION * max(assistant_duration, server_duration),
+    )
+    if abs(assistant_duration - server_duration) > threshold:
+        return (
+            f"{_format_duration(assistant_duration)} as reported by the assistant, but the "
+            f"server measured {_format_duration(server_duration)}. These disagree by more "
+            "than expected: treat the reported duration with caution."
+        )
+    return f"{_format_duration(assistant_duration)} (server-measured: {_format_duration(server_duration)})"
+
+
+def _rules_fetched_state(
+    domain_id: str,
+    rules_fetched_domain_ids: list[str] | None,
+    rules_fetch_unknown_domain_ids: list[str],
+) -> bool | None:
+    """Whether domain_id's rule text was fetched this run: True, False, or
+    None when that cannot be known.
+
+    Mirrors server.py's own _rules_fetched_state, which reads the same three
+    states off a live RunTracker; this one reads them off the plain lists
+    RunState and RunProgress carry (see RULES_FETCHED_FIELD_DESCRIPTION and
+    RULES_FETCH_UNKNOWN_FIELD_DESCRIPTION on schema.py), since this module
+    never sees a RunTracker.
+
+    rules_fetched_domain_ids is None for a whole run saved before fetches
+    were tracked at all: every domain's status is unknown then, regardless
+    of rules_fetch_unknown_domain_ids, because there was nothing yet able to
+    record it either way. Once fetches are tracked, a domain named in
+    rules_fetch_unknown_domain_ids is one carried in from an earlier,
+    untracked save across a resume; everything else is a plain fetched/not
+    fetched answer.
+    """
+    if rules_fetched_domain_ids is None:
+        return None
+    if domain_id in rules_fetched_domain_ids:
+        return True
+    if domain_id in rules_fetch_unknown_domain_ids:
+        return None
+    return False
+
+
 def build_feedback_sections(
     meta: RunMeta,
     domain_results: dict[str, DomainResult],
+    *,
+    rules_fetched_domain_ids: list[str] | None = None,
+    rules_fetch_unknown_domain_ids: list[str] | None = None,
 ) -> dict[str, str]:
     """Build every fixed-text feedback section, keyed by name, regardless of
     consent.
@@ -75,7 +235,15 @@ def build_feedback_sections(
     never describe the same consent choice differently. Computing every
     section unconditionally and letting the caller decide which to use
     keeps consent purely a selection concern, never a wording concern.
+
+    rules_fetched_domain_ids and rules_fetch_unknown_domain_ids carry the
+    same None-vs-empty-vs-populated contract RunState and RunProgress give
+    them (see RULES_FETCHED_FIELD_DESCRIPTION on schema.py): omitting them
+    (the default, None) is the honest choice for a caller with nothing to
+    pass, since it renders exactly like a run that predates fetch tracking,
+    which is the truth for such a caller.
     """
+    rules_fetch_unknown_domain_ids = rules_fetch_unknown_domain_ids or []
     meta_lines = [
         f"Tool version: {meta.tool_version}",
         f"Tool commit: {meta.tool_commit or 'unknown'}",
@@ -161,6 +329,69 @@ def build_feedback_sections(
         else "Sources consulted\n- No sources were consulted outside the rules pack this run."
     )
 
+    # Per-domain pass/finding/not-applicable/could-not-evaluate counts, plus
+    # the run total: the single table that makes a thin run (many
+    # not-applicable, few findings) look different from a thorough one,
+    # rather than indistinguishable from it the way a findings-only rollup
+    # is (issue #111). Contains counts of the tool's own vocabulary only, no
+    # repository content, paths, URLs or finding text.
+    verdict_totals: Counter[str] = Counter()
+    verdict_domain_lines = []
+    for domain_id, result in domain_results.items():
+        if result.status == "could-not-run":
+            verdict_domain_lines.append(f"- {domain_id}: could not run")
+            continue
+        domain_verdict_counts = Counter(rv.verdict.value for rv in result.rule_verdicts)
+        verdict_totals.update(domain_verdict_counts)
+        counts_text = ", ".join(
+            f"{verdict.value} {domain_verdict_counts.get(verdict.value, 0)}"
+            for verdict in _VERDICT_ORDER
+        )
+        verdict_domain_lines.append(f"- {domain_id}: {counts_text}")
+    verdict_totals_lines = "\n".join(
+        f"- {verdict.value}: {verdict_totals.get(verdict.value, 0)}" for verdict in _VERDICT_ORDER
+    )
+    verdict_distribution = (
+        "Rule verdict distribution\n"
+        f"Total verdicts: {sum(verdict_totals.values())}\n"
+        f"By verdict:\n{verdict_totals_lines}\n"
+        "By domain:\n"
+        + ("\n".join(verdict_domain_lines) or "- No domains audited.")
+    )
+
+    # Both spans and the divergence verdict between them, in the exact
+    # wording report.py's always-shown "Duration" meta row uses: the two
+    # must never describe the same run's duration differently just because
+    # one is consent-gated and the other is not.
+    duration = f"Duration\n{duration_text(meta)}"
+
+    # Whether this run's rule text was FETCHED via get_domain for each
+    # domain, never whether it was read or applied (issue #110's wording
+    # discipline, carried over rather than loosened here): an agent can
+    # fetch every domain, discard the text and bulk-mark anyway, and this
+    # section will still look clean. "unrecorded" is its own state, never
+    # collapsed into "not fetched": see _rules_fetched_state above.
+    rules_fetched_lines = []
+    for domain_id, result in domain_results.items():
+        if result.status == "could-not-run":
+            rules_fetched_lines.append(f"- {domain_id}: did not run")
+            continue
+        state = _rules_fetched_state(
+            domain_id, rules_fetched_domain_ids, rules_fetch_unknown_domain_ids
+        )
+        if state is True:
+            rules_fetched_lines.append(f"- {domain_id}: fetched")
+        elif state is False:
+            rules_fetched_lines.append(f"- {domain_id}: not fetched")
+        else:
+            rules_fetched_lines.append(f"- {domain_id}: unrecorded")
+    rules_fetched = (
+        "Rules fetched\n"
+        "Shows only that rule text was served by get_domain for each domain this run, "
+        "never that it was read or applied.\n"
+        + ("\n".join(rules_fetched_lines) or "- No domains audited.")
+    )
+
     return {
         "run_metadata": run_metadata,
         "coverage": coverage,
@@ -168,6 +399,9 @@ def build_feedback_sections(
         "self_assessment": self_assessment,
         "environment": environment_section,
         "consulted_sources": consulted_sources,
+        "verdict_distribution": verdict_distribution,
+        "duration": duration,
+        "rules_fetched": rules_fetched,
     }
 
 
@@ -176,6 +410,9 @@ def build_feedback_body(
     meta: RunMeta,
     consent: TelemetryConsent,
     domain_results: dict[str, DomainResult],
+    *,
+    rules_fetched_domain_ids: list[str] | None = None,
+    rules_fetch_unknown_domain_ids: list[str] | None = None,
 ) -> str:
     """Build the plain-text feedback body: the user's free text (if any),
     then the always-included run-metadata section, then each consented
@@ -184,7 +421,12 @@ def build_feedback_body(
     unconsented section can be told apart from a consented one that simply
     had nothing to report.
     """
-    sections_by_name = build_feedback_sections(meta, domain_results)
+    sections_by_name = build_feedback_sections(
+        meta,
+        domain_results,
+        rules_fetched_domain_ids=rules_fetched_domain_ids,
+        rules_fetch_unknown_domain_ids=rules_fetch_unknown_domain_ids,
+    )
 
     sections: list[str] = []
     if free_text and free_text.strip():
@@ -201,6 +443,12 @@ def build_feedback_body(
         sections.append(sections_by_name["environment"])
     if consent.consulted_sources:
         sections.append(sections_by_name["consulted_sources"])
+    if consent.verdict_distribution:
+        sections.append(sections_by_name["verdict_distribution"])
+    if consent.duration:
+        sections.append(sections_by_name["duration"])
+    if consent.rules_fetched:
+        sections.append(sections_by_name["rules_fetched"])
 
     return "\n\n".join(sections)
 

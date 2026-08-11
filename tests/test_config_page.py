@@ -131,10 +131,64 @@ def test_get_page_telemetry_consent_defaults_are_all_unticked(domains) -> None:
             "consent_self_assessment",
             "consent_environment",
             "consent_consulted_sources",
+            "consent_verdict_distribution",
+            "consent_duration",
+            "consent_rules_fetched",
         ):
             tag_match = re.search(rf'<input type="checkbox" name="{name}"[^>]*>', page)
             assert tag_match is not None, f"{name} checkbox not found on the page"
             assert "checked" not in tag_match.group(0), f"{name} was pre-ticked"
+    finally:
+        srv.shutdown()
+
+
+def test_get_page_verdict_distribution_consent_label_names_its_contents(domains) -> None:
+    # Issue #111: the label must say plainly what the section contains
+    # (four verdict kinds, per domain and in total), not just gesture at
+    # "verdicts", and must not claim to include finding text.
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            page = resp.read().decode("utf-8")
+        assert "Rule verdict distribution" in page
+        assert "pass, finding, not-applicable and could-not-evaluate" in page
+        assert "not the finding text" in page
+    finally:
+        srv.shutdown()
+
+
+def test_get_page_duration_consent_label_names_its_contents_and_excludes_token_counts(domains) -> None:
+    # Issue #111: token counts cannot be part of this section, since the
+    # server never sees them; the label must say so and point at the
+    # free-text field rather than silently omitting them with no
+    # explanation.
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            page = resp.read().decode("utf-8")
+        assert "Run duration" in page
+        assert "assistant-reported span" in page
+        assert "server-measured span" in page
+        assert "Token counts are not included" in page
+        assert "the server never sees them" in page
+    finally:
+        srv.shutdown()
+
+
+def test_get_page_rules_fetched_consent_label_carries_the_fetched_not_applied_wording(domains) -> None:
+    # Issue #111 / #110: this section must never claim the rule text was
+    # read or applied, only that it was fetched. That wording discipline
+    # was established for the report and MCP tool by #117 and must not be
+    # loosened here.
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            page = resp.read().decode("utf-8")
+        assert "Rules fetched" in page
+        assert "Shows only that it was fetched, never that it was read or applied" in page
     finally:
         srv.shutdown()
 
@@ -242,6 +296,41 @@ def test_post_submission_with_consulted_sources_consent_ticked(domains) -> None:
         config = srv.poll()
         assert config != "pending"
         assert config.telemetry_consent.consulted_sources is True
+    finally:
+        srv.shutdown()
+
+
+def test_post_submission_with_verdict_distribution_duration_and_rules_fetched_consent_ticked(
+    domains,
+) -> None:
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        token = _fetch_csrf_token(url)
+        payload = urlencode(
+            {
+                "domain": ["d01"],
+                "issue_mode": "report",
+                "consent_verdict_distribution": "on",
+                "consent_duration": "on",
+                "consent_rules_fetched": "on",
+                "csrf_token": token,
+            },
+            doseq=True,
+        ).encode("utf-8")
+        request = urllib.request.Request(url + "submit", data=payload, method="POST")
+        with urllib.request.urlopen(request, timeout=5) as resp:
+            assert resp.status == 200
+
+        config = srv.poll()
+        assert config != "pending"
+        assert config.telemetry_consent.verdict_distribution is True
+        assert config.telemetry_consent.duration is True
+        assert config.telemetry_consent.rules_fetched is True
+        # Untouched flags stay unticked, the same opt-in-only contract as
+        # every other consent box.
+        assert config.telemetry_consent.coverage is False
+        assert config.telemetry_consent.consulted_sources is False
     finally:
         srv.shutdown()
 
@@ -718,6 +807,9 @@ def test_a_draft_never_pre_ticks_a_consent_box(domains) -> None:
             "consent_self_assessment",
             "consent_environment",
             "consent_consulted_sources",
+            "consent_verdict_distribution",
+            "consent_duration",
+            "consent_rules_fetched",
         ):
             tag_match = re.search(rf'<input type="checkbox" name="{name}"[^>]*>', page)
             assert tag_match is not None

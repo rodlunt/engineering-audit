@@ -62,6 +62,9 @@ function buildFeedbackPayload() {
   if (document.getElementById("consent-self-assessment").checked) { parts.push(data.self_assessment); }
   if (document.getElementById("consent-environment").checked) { parts.push(data.environment); }
   if (document.getElementById("consent-consulted-sources").checked) { parts.push(data.consulted_sources); }
+  if (document.getElementById("consent-verdict-distribution").checked) { parts.push(data.verdict_distribution); }
+  if (document.getElementById("consent-duration").checked) { parts.push(data.duration); }
+  if (document.getElementById("consent-rules-fetched").checked) { parts.push(data.rules_fetched); }
   return parts.join("\n\n");
 }
 

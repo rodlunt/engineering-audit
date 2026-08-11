@@ -239,6 +239,9 @@ def _form_state_from_fields(fields: dict[str, list[str]]) -> _FormState:
             self_assessment="consent_self_assessment" in fields,
             environment="consent_environment" in fields,
             consulted_sources="consent_consulted_sources" in fields,
+            verdict_distribution="consent_verdict_distribution" in fields,
+            duration="consent_duration" in fields,
+            rules_fetched="consent_rules_fetched" in fields,
         ),
         output_location_mode=fields.get("output_location", ["default"])[0],
         output_location_path=fields.get("output_location_path", [""])[0].strip(),
@@ -614,6 +617,9 @@ class ConfigServer:
             consent_self_assessment_checked="checked" if consent.self_assessment else "",
             consent_environment_checked="checked" if consent.environment else "",
             consent_consulted_sources_checked="checked" if consent.consulted_sources else "",
+            consent_verdict_distribution_checked="checked" if consent.verdict_distribution else "",
+            consent_duration_checked="checked" if consent.duration else "",
+            consent_rules_fetched_checked="checked" if consent.rules_fetched else "",
             csrf_token=html.escape(self._csrf_token),
             output_location_error=output_location_error_html,
             output_dir_display=output_dir_display,
@@ -633,6 +639,9 @@ class ConfigServer:
             self_assessment="consent_self_assessment" in fields,
             environment="consent_environment" in fields,
             consulted_sources="consent_consulted_sources" in fields,
+            verdict_distribution="consent_verdict_distribution" in fields,
+            duration="consent_duration" in fields,
+            rules_fetched="consent_rules_fetched" in fields,
         )
 
         output_location_mode = fields.get("output_location", ["default"])[0]

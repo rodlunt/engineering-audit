@@ -13,6 +13,7 @@ from engineering_audit.feedback import (
     build_feedback_sections,
     build_issue_trailing_line,
     build_mailto_url,
+    duration_text,
     feedback_subject,
 )
 from engineering_audit.rules import Rule
@@ -219,7 +220,7 @@ def test_feedback_repo_constant_is_the_tool_authors_repo() -> None:
     assert FEEDBACK_REPO == "rodlunt/engineering-audit"
 
 
-def test_build_feedback_sections_returns_the_six_fixed_sections_regardless_of_consent() -> None:
+def test_build_feedback_sections_returns_the_nine_fixed_sections_regardless_of_consent() -> None:
     # build_feedback_sections computes every section unconditionally; only
     # build_feedback_body (and the report's own consent gating) decides
     # which ones make it into a given message.
@@ -231,6 +232,9 @@ def test_build_feedback_sections_returns_the_six_fixed_sections_regardless_of_co
         "self_assessment",
         "environment",
         "consulted_sources",
+        "verdict_distribution",
+        "duration",
+        "rules_fetched",
     }
     assert "Run metadata" in sections["run_metadata"]
     assert "widgets-app" in sections["run_metadata"]
@@ -238,6 +242,121 @@ def test_build_feedback_sections_returns_the_six_fixed_sections_regardless_of_co
     assert "Total: 1" in sections["rollup"]
     assert "d01: confidence high." in sections["self_assessment"]
     assert "D01-R01: https://example.invalid/standard" in sections["consulted_sources"]
+
+
+def test_verdict_distribution_section_reports_per_domain_and_run_total_counts() -> None:
+    # d01 has one pass and one finding verdict; d02 has one pass verdict.
+    # This is the table meant to make a thin run (lots of not-applicable,
+    # few findings) visibly different from a thorough one, so it must count
+    # every one of the four verdict kinds, not just findings.
+    sections = build_feedback_sections(_meta(), _domain_results())
+    section = sections["verdict_distribution"]
+    assert "Rule verdict distribution" in section
+    assert "Total verdicts: 3" in section
+    assert "- pass: 2" in section
+    assert "- finding: 1" in section
+    assert "- not-applicable: 0" in section
+    assert "- could-not-evaluate: 0" in section
+    assert "- d01: pass 1, finding 1, not-applicable 0, could-not-evaluate 0" in section
+    assert "- d02: pass 1, finding 0, not-applicable 0, could-not-evaluate 0" in section
+    # No repository content, paths, URLs or finding text: only counts.
+    assert "ledger/beds.py" not in section
+    assert "a finding title that must never appear in feedback" not in section
+
+
+def test_verdict_distribution_section_names_a_could_not_run_domain_rather_than_zero_counts() -> None:
+    # A could-not-run domain has no rule_verdicts at all (DomainResult
+    # enforces this): reporting it as "pass 0, finding 0, ..." would look
+    # exactly like a domain that ran and found nothing wrong, which is the
+    # same confusion this section exists to end. It must be named as not
+    # having run instead.
+    domain_results = {
+        **_domain_results(),
+        "d03": DomainResult(domain_id="d03", status="could-not-run", reason="no git repository found"),
+    }
+    section = build_feedback_sections(_meta(), domain_results)["verdict_distribution"]
+    assert "- d03: could not run" in section
+    assert "Total verdicts: 3" in section  # unaffected by the domain that never ran
+
+
+def test_duration_section_matches_the_reports_own_duration_wording() -> None:
+    meta = _meta(
+        started="2026-08-09T09:00:00Z",
+        finished="2026-08-09T09:10:00Z",
+        server_started="2026-08-09T09:00:01Z",
+        server_finished="2026-08-09T09:10:02Z",
+    )
+    section = build_feedback_sections(meta, _domain_results())["duration"]
+    assert section == f"Duration\n{duration_text(meta)}"
+    assert "10m0s" in section
+    assert "server-measured" in section
+
+
+def test_duration_section_reports_unmeasured_honestly_rather_than_as_agreement() -> None:
+    # server_started/server_finished absent means "never measured", not
+    # "agrees with the assistant". The section must say so, not silently
+    # show only the assistant's figure as though it had been checked.
+    meta = _meta(server_started=None, server_finished=None)
+    section = build_feedback_sections(meta, _domain_results())["duration"]
+    assert "not measured by the server, so this could not be checked" in section
+
+
+def test_rules_fetched_section_reports_per_domain_fetched_state() -> None:
+    sections = build_feedback_sections(
+        _meta(),
+        _domain_results(),
+        rules_fetched_domain_ids=["d01"],
+        rules_fetch_unknown_domain_ids=[],
+    )
+    section = sections["rules_fetched"]
+    assert "Rules fetched" in section
+    assert "never that it was read or applied" in section
+    assert "- d01: fetched" in section
+    assert "- d02: not fetched" in section
+
+
+def test_rules_fetched_section_reports_unrecorded_rather_than_not_fetched_for_a_legacy_run() -> None:
+    # rules_fetched_domain_ids=None means the whole run predates fetch
+    # tracking: every domain's status is unknown, and the section must say
+    # "unrecorded" for each, never collapse that into "not fetched" (which
+    # would accuse a run that may well have fetched the rules) or "fetched"
+    # (which would launder it clean).
+    sections = build_feedback_sections(_meta(), _domain_results())
+    section = sections["rules_fetched"]
+    assert "- d01: unrecorded" in section
+    assert "- d02: unrecorded" in section
+    assert "- d01: fetched" not in section
+    assert "- d01: not fetched" not in section
+    assert "- d02: fetched" not in section
+    assert "- d02: not fetched" not in section
+
+
+def test_rules_fetched_section_distinguishes_a_domain_carried_in_from_an_earlier_untracked_resume() -> None:
+    # A run that DOES record fetches can still carry one domain forward from
+    # before tracking existed (an earlier resume): that domain lands in
+    # rules_fetch_unknown_domain_ids even though the run overall has a
+    # concrete (non-None) fetched list, and must still read as unrecorded,
+    # not as "not fetched".
+    sections = build_feedback_sections(
+        _meta(),
+        _domain_results(),
+        rules_fetched_domain_ids=[],
+        rules_fetch_unknown_domain_ids=["d01"],
+    )
+    section = sections["rules_fetched"]
+    assert "- d01: unrecorded" in section
+    assert "- d02: not fetched" in section
+
+
+def test_rules_fetched_section_names_a_could_not_run_domain_as_did_not_run() -> None:
+    domain_results = {
+        **_domain_results(),
+        "d03": DomainResult(domain_id="d03", status="could-not-run", reason="no git repository found"),
+    }
+    section = build_feedback_sections(
+        _meta(), domain_results, rules_fetched_domain_ids=["d01"], rules_fetch_unknown_domain_ids=[]
+    )["rules_fetched"]
+    assert "- d03: did not run" in section
 
 
 def test_consulted_sources_section_reports_absence_when_none_recorded() -> None:
@@ -268,32 +387,51 @@ def test_build_feedback_body_matches_build_feedback_sections_for_every_consent_c
     domain_results = _domain_results()
     sections = build_feedback_sections(meta, domain_results)
 
-    for coverage, rollup, self_assessment, environment, consulted_sources in (
-        (True, False, False, False, False),
-        (False, True, False, False, False),
-        (False, False, True, False, False),
-        (False, False, False, True, False),
-        (False, False, False, False, True),
-        (True, True, True, True, True),
-        (False, False, False, False, False),
-    ):
-        consent = TelemetryConsent(
-            coverage=coverage, rollup=rollup, self_assessment=self_assessment, environment=environment,
-            consulted_sources=consulted_sources,
-        )
+    flag_names = (
+        "coverage",
+        "rollup",
+        "self_assessment",
+        "environment",
+        "consulted_sources",
+        "verdict_distribution",
+        "duration",
+        "rules_fetched",
+    )
+    combinations = [
+        {name: (name == chosen) for name in flag_names} for chosen in flag_names
+    ]
+    combinations.append({name: True for name in flag_names})
+    combinations.append({name: False for name in flag_names})
+
+    for consent_kwargs in combinations:
+        consent = TelemetryConsent(**consent_kwargs)
         body = build_feedback_body("hi", meta, consent, domain_results)
         expected_parts = ["hi", sections["run_metadata"]]
-        if coverage:
-            expected_parts.append(sections["coverage"])
-        if rollup:
-            expected_parts.append(sections["rollup"])
-        if self_assessment:
-            expected_parts.append(sections["self_assessment"])
-        if environment:
-            expected_parts.append(sections["environment"])
-        if consulted_sources:
-            expected_parts.append(sections["consulted_sources"])
+        for name in flag_names:
+            if consent_kwargs[name]:
+                expected_parts.append(sections[name])
         assert body == "\n\n".join(expected_parts)
+
+
+def test_verdict_distribution_duration_and_rules_fetched_are_omitted_unless_consented() -> None:
+    body = build_feedback_body(
+        "hi", _meta(), TelemetryConsent(), _domain_results()
+    )
+    assert "Rule verdict distribution" not in body
+    assert "Duration" not in body
+    assert "Rules fetched" not in body
+
+
+def test_verdict_distribution_duration_and_rules_fetched_appear_when_consented() -> None:
+    body = build_feedback_body(
+        "hi",
+        _meta(),
+        TelemetryConsent(verdict_distribution=True, duration=True, rules_fetched=True),
+        _domain_results(),
+    )
+    assert "Rule verdict distribution" in body
+    assert "Duration" in body
+    assert "Rules fetched" in body
 
 
 def test_build_issue_trailing_line_matches_the_wording_file_issues_sends() -> None:

@@ -399,6 +399,16 @@ def test_telemetry_consent_consulted_sources_defaults_off() -> None:
     assert TelemetryConsent().consulted_sources is False
 
 
+def test_telemetry_consent_verdict_distribution_duration_and_rules_fetched_default_off() -> None:
+    # Issue #111: same opt-in-only contract as every other flag on this
+    # model. A fresh configuration page must never render one of these
+    # boxes pre-ticked.
+    consent = TelemetryConsent()
+    assert consent.verdict_distribution is False
+    assert consent.duration is False
+    assert consent.rules_fetched is False
+
+
 def test_audit_config_deliverables_dir_defaults_to_none() -> None:
     # Issue #109: the default stays exactly what it was before this field
     # existed, unset, meaning "the run's own output_dir".
