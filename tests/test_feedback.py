@@ -13,8 +13,10 @@ from engineering_audit.feedback import (
     build_feedback_sections,
     build_issue_trailing_line,
     build_mailto_url,
+    domain_confidence_note,
     duration_text,
     feedback_subject,
+    strip_markdown_emphasis,
 )
 from engineering_audit.rules import Rule
 from engineering_audit.schema import (
@@ -621,3 +623,132 @@ def test_build_issue_trailing_line_raises_for_a_sourceless_rule() -> None:
     )
     with pytest.raises(ValueError, match="no cited source"):
         build_issue_trailing_line(finding, rule)
+
+
+# ---------------------------------------------------------------------------
+# Issue #128: strip_markdown_emphasis, and citation stripping inside
+# build_issue_trailing_line.
+# ---------------------------------------------------------------------------
+
+
+def test_strip_markdown_emphasis_removes_every_run_of_asterisks() -> None:
+    assert strip_markdown_emphasis("**bold** and *italic* and plain") == (
+        "bold and italic and plain"
+    )
+    assert strip_markdown_emphasis("no asterisks here") == "no asterisks here"
+    assert strip_markdown_emphasis("***triple***") == "triple"
+    assert "*" not in strip_markdown_emphasis("a * b ** c *** d")
+
+
+def test_build_issue_trailing_line_strips_markdown_from_the_citation() -> None:
+    rule = Rule(
+        id="D01-R01",
+        title="A rule",
+        number=1,
+        volatility="durable",
+        source="A paper (Halpin, *An Overview*, example.invalid), step 1",
+    )
+    finding = Finding(
+        rule_id="D01-R01",
+        severity=Severity.LOW,
+        title="x",
+        location="x.py",
+        body_md="x",
+        issue_title="x",
+        issue_body="x",
+    )
+    line = build_issue_trailing_line(finding, rule)
+    assert "*" not in line
+    assert "An Overview" in line
+
+
+# ---------------------------------------------------------------------------
+# Issue #130: domain_confidence_note, and build_issue_trailing_line's
+# optional confidence/rules_fetched kwargs.
+# ---------------------------------------------------------------------------
+
+
+def test_domain_confidence_note_never_claims_rules_were_read_or_applied() -> None:
+    # Wording discipline carried over from issue #110: "fetched" means only
+    # that the rule text was served by get_domain, never that it was read
+    # or applied, in either direction.
+    for confidence in (None, "high", "medium", "low"):
+        for rules_fetched in (True, False, None):
+            note = domain_confidence_note(confidence, rules_fetched)
+            assert "was read" not in note
+            assert "was applied" not in note
+
+
+def test_domain_confidence_note_names_confidence_and_fetch_status() -> None:
+    assert domain_confidence_note("high", True) == (
+        "This finding's domain: self-assessed confidence high; its rule text was "
+        "fetched from the server this run."
+    )
+    assert domain_confidence_note(None, False) == (
+        "This finding's domain: no self-assessed confidence reported; its rule "
+        "text was never fetched from the server this run: treat this finding as "
+        "unsupported until the domain is redone."
+    )
+    assert domain_confidence_note("medium", None) == (
+        "This finding's domain: self-assessed confidence medium; whether its rule "
+        "text was fetched this run is not recorded."
+    )
+
+
+def test_build_issue_trailing_line_with_no_domain_context_matches_pre_130_output() -> (
+    None
+):
+    # Backward compatibility: a caller (server.py's file_issues) that
+    # passes neither confidence nor rules_fetched must get exactly the
+    # trailing line this function built before issue #130.
+    rule = Rule(
+        id="D01-R02",
+        title="A rule",
+        number=2,
+        volatility="volatile",
+        source="invented for test fixtures only, no external source",
+    )
+    finding = Finding(
+        rule_id="D01-R02",
+        severity=Severity.HIGH,
+        title="x",
+        location="ledger/beds.py:42",
+        body_md="x",
+        issue_title="x",
+        issue_body="x",
+    )
+    line = build_issue_trailing_line(finding, rule)
+    assert line == (
+        "Found by an engineering-practice audit (rule D01-R02, severity high, "
+        "at ledger/beds.py:42). Reference: invented for test fixtures only, "
+        "no external source"
+    )
+
+
+def test_build_issue_trailing_line_inserts_the_domain_note_when_given_context() -> None:
+    rule = Rule(
+        id="D01-R02",
+        title="A rule",
+        number=2,
+        volatility="volatile",
+        source="invented for test fixtures only, no external source",
+    )
+    finding = Finding(
+        rule_id="D01-R02",
+        severity=Severity.HIGH,
+        title="x",
+        location="ledger/beds.py:42",
+        body_md="x",
+        issue_title="x",
+        issue_body="x",
+    )
+    line = build_issue_trailing_line(
+        finding, rule, confidence="low", rules_fetched=False
+    )
+    assert line == (
+        "Found by an engineering-practice audit (rule D01-R02, severity high, "
+        "at ledger/beds.py:42). This finding's domain: self-assessed confidence "
+        "low; its rule text was never fetched from the server this run: treat "
+        "this finding as unsupported until the domain is redone. Reference: "
+        "invented for test fixtures only, no external source"
+    )

@@ -229,6 +229,11 @@ For each domain id in `selected_domain_ids`, in order:
      issue on its own, understand the problem, and know how to fix it. Do not write "see rule
      D01-R02 for details"; restate the reasoning inline. Write issue text in plain punctuation
      (commas, colons, parentheses); do not use em or en dashes.
+   - **Write `body_md`, `issue_title` and `issue_body` as plain prose, never markdown.** No
+     `**bold**`, `*italic*`, backtick code spans or `#` headings. The report renders none of this
+     text through a markdown parser, on purpose: it displays exactly what you write. Markdown you
+     write does not turn into formatting, it appears as literal asterisks and backticks in the
+     finished report and in any filed issue, which is a defect, not a stylistic choice.
    - **Be terse.** Both `body_md` and `issue_body` follow a strict three-part shape and nothing
      else:
      1. **The issue**: what is wrong, with the location. One or two sentences.

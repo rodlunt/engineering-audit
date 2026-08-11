@@ -1721,15 +1721,22 @@ def test_issue_button_rows_present_at_top_and_bottom() -> None:
 def test_issue_embedded_body_ends_with_shared_trailing_line_byte_identical_to_file_issues() -> (
     None
 ):
-    # This is the exact body file_issues sends to gh issue create for this
-    # same finding (see test_server.py's
-    # test_file_issues_confirm_files_one_issue_per_finding), reused here to
-    # prove the report and the MCP filing path can never diverge.
+    # build_issue_trailing_line's core sentence (rule, severity, location,
+    # reference) is still the exact text file_issues sends to gh issue
+    # create for this same finding (see test_server.py's
+    # test_file_issues_confirm_files_one_issue_per_finding): the two can
+    # never describe those four facts differently. The report's own issues
+    # section additionally passes this finding's domain confidence and
+    # fetch status (issue #130), which server.py's file_issues call does
+    # not (yet) supply, so the report's copy embeds one extra sentence
+    # naming them; d01 here has self_assessment confidence "high" and no
+    # rules_fetched_domain_ids recorded on the run, i.e. "not recorded".
     expected_body = (
         "bed-14 has two occupants and no shared-bed flag. See ledger/beds.py:42.\n\n"
         "Found by an engineering-practice audit (rule D01-R02, severity high, "
-        "at ledger/beds.py:42). Reference: invented for test fixtures only, "
-        "no external source"
+        "at ledger/beds.py:42). This finding's domain: self-assessed confidence "
+        "high; whether its rule text was fetched this run is not recorded. "
+        "Reference: invented for test fixtures only, no external source"
     )
     pack = _pack()
     run_state = _base_run_state(pack)
@@ -2584,3 +2591,348 @@ def test_collapsed_blocks_are_closed_by_default() -> None:
     pack = _pack()
     rendered = render_report(_base_run_state(pack), pack)
     assert "<details open" not in rendered
+
+
+# ---------------------------------------------------------------------------
+# Issue #128: markdown emphasis is stripped, never rendered.
+#
+# Decision recorded on the issue: strip, do not render. Rendering untrusted
+# assistant-authored finding text into HTML would need a mature CommonMark
+# renderer plus a mature HTML sanitiser, two dependencies this project does
+# not carry, for a gain that is purely cosmetic. citation() text (our own,
+# from the rules pack) and finding text (assistant-authored, untrusted) are
+# treated the same way at the point each reaches a reader: every run of
+# literal asterisks is removed.
+# ---------------------------------------------------------------------------
+
+
+def test_nested_markdown_emphasis_in_a_citation_is_stripped_from_the_reference_line(
+    tmp_path: Path,
+) -> None:
+    # Real rules-pack footers wrap the whole Source: fragment in markdown
+    # emphasis and often nest a second pair around a cited work's own
+    # title, e.g. "*Source: ... (Halpin, *Object-Role Modeling: an
+    # overview*, orm.net), CSDP step 1. Rule id: ...*". citation() already
+    # drops the outer wrapper's leading asterisk (it starts matching after
+    # "Source:"), but the inner pair around the title used to survive
+    # verbatim into the rendered reference line.
+    pack = _write_single_rule_pack(
+        tmp_path,
+        "A paper (Halpin, *An Overview of a Method*, example.invalid), step 1.",
+    )
+    rendered = render_report(_single_finding_run_state("D01-R01"), pack)
+
+    reference_match = re.search(
+        r'<div class="finding-reference">(.*?)</div>', rendered, re.DOTALL
+    )
+    assert reference_match is not None
+    assert "*" not in reference_match.group(1)
+    assert "An Overview of a Method" in reference_match.group(1)
+
+
+def test_finding_body_markdown_emphasis_renders_as_clean_prose() -> None:
+    # A real tester run's finding bodies looked exactly like this: an
+    # assistant defaulting to markdown even though the report never renders
+    # it, leaving literal "**" in what the reader sees.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.domain_results["d01"].findings[0].body_md = (
+        "**The issue**: bed-14 holds two gnomes.\n\n"
+        "**Why it matters**: the census undercounts.\n\n"
+        "**Suggested fix**: set the shared-bed flag."
+    )
+    rendered = render_report(run_state, pack)
+
+    body_match = re.search(
+        r'<div class="finding-body">(.*?)</div>\s*<div class="finding-reference">',
+        rendered,
+        re.DOTALL,
+    )
+    assert body_match is not None
+    body_html = body_match.group(1)
+    assert "*" not in body_html
+    assert "The issue: bed-14 holds two gnomes." in body_html
+    assert "Suggested fix: set the shared-bed flag." in body_html
+
+
+def test_finding_title_markdown_emphasis_is_stripped() -> None:
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.domain_results["d01"].findings[0].title = "Two **gnomes** share bed-14"
+    rendered = render_report(run_state, pack)
+    assert "<strong>Two gnomes share bed-14</strong>" in rendered
+    assert "**gnomes**" not in rendered
+
+
+def test_issues_data_payload_strips_markdown_from_title_and_body() -> None:
+    # Both markdown sources (citations and finding text) flow into the
+    # issues-data payload too (issue #128): before this fix, a filed
+    # GitHub issue rendered the assistant's markdown fine while the report
+    # the user read did not, so the two artefacts disagreed about the same
+    # text. Stripping both makes them agree on plain prose instead.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    finding = run_state.domain_results["d01"].findings[0]
+    finding.issue_title = "**Set shared-bed flag** for bed-14"
+    finding.issue_body = (
+        "**The issue**: bed-14 has two occupants.\n\n**Suggested fix**: set the flag."
+    )
+    rendered = render_report(run_state, pack)
+
+    data = _extract_json_script(rendered, "issues-data")
+    issue = data["issues"][0]
+    assert "*" not in issue["title"]
+    assert "*" not in issue["body"]
+    assert issue["title"] == "Set shared-bed flag for bed-14"
+    assert "The issue: bed-14 has two occupants." in issue["body"]
+
+
+def test_no_literal_asterisk_survives_into_findings_or_issues_sections(
+    tmp_path: Path,
+) -> None:
+    # The comprehensive check: every field that can carry markdown (a
+    # citation with a nested title, a finding's title, body, issue_title
+    # and issue_body) carries it in this run, and no literal '*' reaches
+    # the Findings or Issues sections at all. Scoped to those two sections
+    # (not the whole page) because report.js, this tool's own script, is
+    # legitimately allowed a literal '*' in a comment or a regex.
+    pack = _write_single_rule_pack(
+        tmp_path,
+        "A paper (Halpin, *An Overview*, example.invalid), step 1.",
+    )
+    run_state = RunState(
+        meta=_meta(),
+        config=AuditConfig(selected_domain_ids=["d01"], issue_mode="report"),
+        domain_results={
+            "d01": DomainResult(
+                domain_id="d01",
+                status="completed",
+                rule_verdicts=[RuleVerdict(rule_id="D01-R01", verdict=Verdict.FINDING)],
+                findings=[
+                    Finding(
+                        rule_id="D01-R01",
+                        severity=Severity.LOW,
+                        title="A **bold** title",
+                        location="x.py",
+                        body_md=(
+                            "**The issue**: x.\n\n**Why it matters**: y.\n\n"
+                            "**Suggested fix**: z."
+                        ),
+                        issue_title="A **bold** issue title",
+                        issue_body="**The issue**: x.\n\n**Suggested fix**: z.",
+                    )
+                ],
+            )
+        },
+    )
+    rendered = render_report(run_state, pack)
+
+    findings_and_issues = rendered[
+        rendered.index('<section id="findings">') : rendered.index(
+            '<p class="print-only-note">'
+        )
+    ]
+    assert "*" not in findings_and_issues
+
+
+# ---------------------------------------------------------------------------
+# Issue #129: the four severity levels are defined next to the by-severity
+# list, and the report says they were assigned, not measured.
+# ---------------------------------------------------------------------------
+
+
+def test_severity_definitions_render_between_the_by_severity_and_verdict_lists() -> (
+    None
+):
+    pack = _pack()
+    rendered = render_report(_base_run_state(pack), pack)
+
+    sev_list_pos = rendered.index("<h3>Findings by severity</h3>")
+    definitions_pos = rendered.index('<dl class="severity-definitions">')
+    verdicts_heading_pos = rendered.index("<h3>Rule verdicts</h3>")
+    assert sev_list_pos < definitions_pos < verdicts_heading_pos
+
+    for severity, definition in report_module._SEVERITY_DEFINITIONS.items():
+        assert f"<dt>{severity}</dt>" in rendered
+        assert f"<dd>{definition}.</dd>" in rendered
+
+
+def test_severity_definitions_state_the_assistant_assigned_them_not_measured() -> None:
+    pack = _pack()
+    # _meta() defaults assistant="claude-code", model="claude-sonnet-5".
+    rendered = render_report(_base_run_state(pack), pack)
+
+    definitions_block = rendered[
+        rendered.index('<dl class="severity-definitions">') : rendered.index(
+            "<h3>Rule verdicts</h3>"
+        )
+    ]
+    assert "claude-code" in definitions_block
+    assert "claude-sonnet-5" in definitions_block
+    assert "judged each finding's severity" in definitions_block
+    assert "not a measurement" in definitions_block
+
+
+def test_severity_definitions_match_audit_md() -> None:
+    # Pinned so the report's copy and AUDIT.md's own guidance for the agent
+    # choosing a finding's severity cannot silently drift apart (issue
+    # #129). This parses AUDIT.md's own "- **<severity>**: ..." bullets and
+    # asserts they still equal report._SEVERITY_DEFINITIONS word for word.
+    audit_md = (Path(__file__).parent.parent / "AUDIT.md").read_text(encoding="utf-8")
+    pattern = re.compile(
+        r"- \*\*(critical|high|medium|low)\*\*: (.+?)\.\n(?=\s*- )", re.DOTALL
+    )
+    matches = pattern.findall(audit_md)
+    assert len(matches) == 4, (
+        f"expected exactly 4 severity bullets in AUDIT.md, found {len(matches)}: {matches}"
+    )
+    from_audit_md = {sev: " ".join(body.split()) for sev, body in matches}
+    assert from_audit_md == report_module._SEVERITY_DEFINITIONS
+
+
+# ---------------------------------------------------------------------------
+# Issue #130: domain confidence and rules-fetched status reach the findings
+# they qualify, and the issues filed from them.
+# ---------------------------------------------------------------------------
+
+
+def test_finding_card_marks_a_never_fetched_domain_visibly() -> None:
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.domain_results["d01"].self_assessment = SelfAssessment(
+        confidence="low", limits=""
+    )
+    # Recorded (not None) but d01 is absent from it: its rules were never
+    # fetched this run.
+    run_state.rules_fetched_domain_ids = ["d02"]
+    rendered = render_report(run_state, pack)
+
+    note_match = re.search(
+        r'<div class="finding-location">ledger/beds\.py:42</div>(.*?)'
+        r'<div class="finding-body">',
+        rendered,
+        re.DOTALL,
+    )
+    assert note_match is not None
+    note_html = note_match.group(1)
+    # Visible, not muted (issue #130's "mark its findings visibly"): weight
+    # carries the emphasis, not colour, matching _severity_cell's own
+    # convention for a nonzero critical/high count.
+    assert '<div class="finding-domain-note"><strong>' in note_html
+    assert "self-assessed confidence low" in note_html
+    assert "never fetched from the server this run" in note_html
+    assert "treat this finding as unsupported until the domain is redone" in note_html
+    # Wording discipline carried over from issue #110: fetched is not read
+    # or applied, in either direction.
+    assert "was read" not in note_html
+    assert "was applied" not in note_html
+
+
+def test_finding_card_note_is_muted_when_the_domain_was_fetched() -> None:
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.rules_fetched_domain_ids = ["d01", "d02"]
+    rendered = render_report(run_state, pack)
+
+    note_match = re.search(
+        r'<div class="finding-location">ledger/beds\.py:42</div>(.*?)'
+        r'<div class="finding-body">',
+        rendered,
+        re.DOTALL,
+    )
+    assert note_match is not None
+    note_html = note_match.group(1)
+    assert '<div class="finding-domain-note muted">' in note_html
+    assert "its rule text was fetched from the server this run" in note_html
+
+
+def test_issue_body_carries_the_same_domain_confidence_note_as_the_finding_card() -> (
+    None
+):
+    # Issue #130's own words: this is where it bites hardest. A user files
+    # an issue from the report's copy-to-clipboard or PAT-filing text, and
+    # that text must carry the same warning the finding card does.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.domain_results["d01"].self_assessment = SelfAssessment(
+        confidence="low", limits=""
+    )
+    run_state.rules_fetched_domain_ids = []  # nothing fetched this run
+    rendered = render_report(run_state, pack)
+
+    data = _extract_json_script(rendered, "issues-data")
+    body = data["issues"][0]["body"]
+    assert "self-assessed confidence low" in body
+    assert "never fetched from the server this run" in body
+    assert "treat this finding as unsupported until the domain is redone" in body
+
+
+def test_unfetched_critical_finding_is_unticked_despite_severity() -> None:
+    # Composition test: issue #122 pre-ticks critical/high by default;
+    # issue #130's unfetched-domain rule must compose with that, not
+    # replace it. A critical finding from a domain whose rules were never
+    # fetched this run ends up unticked despite its severity, while a
+    # critical finding from a domain that was fetched stays ticked exactly
+    # as #122 left it.
+    pack = _pack()
+    d01 = pack.get_domain("d01")
+    d02 = pack.get_domain("d02")
+    d01_verdicts = _all_pass_verdicts(d01)
+    d01_verdicts[1] = RuleVerdict(rule_id="D01-R02", verdict=Verdict.FINDING)
+    d02_verdicts = _all_pass_verdicts(d02)
+    d02_verdicts[0] = RuleVerdict(rule_id="D02-R01", verdict=Verdict.FINDING)
+
+    run_state = RunState(
+        meta=_meta(),
+        config=AuditConfig(selected_domain_ids=["d01", "d02"], issue_mode="report"),
+        domain_results={
+            "d01": DomainResult(
+                domain_id="d01",
+                status="completed",
+                rule_verdicts=d01_verdicts,
+                findings=[
+                    Finding(
+                        rule_id="D01-R02",
+                        severity=Severity.CRITICAL,
+                        title="fetched-domain finding",
+                        location="ledger/beds.py:1",
+                        body_md="x",
+                        issue_title="x",
+                        issue_body="x",
+                    )
+                ],
+            ),
+            "d02": DomainResult(
+                domain_id="d02",
+                status="completed",
+                rule_verdicts=d02_verdicts,
+                findings=[
+                    Finding(
+                        rule_id="D02-R01",
+                        severity=Severity.CRITICAL,
+                        title="unfetched-domain finding",
+                        location="crates/manifest.py:1",
+                        body_md="x",
+                        issue_title="x",
+                        issue_body="x",
+                    )
+                ],
+            ),
+        },
+        rules_fetched_domain_ids=["d01"],  # d02's rules were never fetched
+    )
+    rendered = render_report(run_state, pack)
+
+    assert (
+        '<input type="checkbox" id="issue-check-0" checked '
+        'onchange="updateGithubFileButtonLabel()">' in rendered
+    )
+    assert (
+        '<input type="checkbox" id="issue-check-1" onchange="updateGithubFileButtonLabel()">'
+        in rendered
+    )
+    assert '<input type="checkbox" id="issue-check-1" checked' not in rendered
+    assert (
+        "1 critical or high finding from a domain whose rules were never fetched "
+        "this run is listed unticked too" in rendered
+    )

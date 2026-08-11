@@ -15,6 +15,7 @@ the one place that wording is built.
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 from datetime import datetime
 from urllib.parse import quote
@@ -34,6 +35,8 @@ __all__ = [
     "feedback_subject",
     "rules_pack_label",
     "duration_text",
+    "strip_markdown_emphasis",
+    "domain_confidence_note",
     "build_feedback_sections",
     "build_feedback_body",
     "build_mailto_url",
@@ -52,6 +55,31 @@ _VERDICT_ORDER = (
     Verdict.NOT_APPLICABLE,
     Verdict.COULD_NOT_EVALUATE,
 )
+
+# Issue #128's decision: strip markdown emphasis markers rather than render
+# them. Rendering untrusted assistant-authored finding text into HTML would
+# need a mature CommonMark renderer plus a mature HTML sanitiser, two
+# dependencies this project does not carry, for a gain that is purely
+# cosmetic (bold text). Stripping is the safe, boring choice: a run of one
+# or more literal asterisks, wherever it appears, is removed outright. This
+# is deliberately not a markdown parser: it does not pair delimiters, does
+# not special-case escaped asterisks, and never turns the text either side
+# of a marker into markup. Both of this module's untrusted-text sources
+# (rules-pack citations, which wrap the whole footer and any nested title in
+# markdown emphasis by pack-authoring convention, and assistant-authored
+# finding text, which defaults to **bold** markdown that this report never
+# renders) are passed through it before a reader sees them.
+_MARKDOWN_EMPHASIS_RE = re.compile(r"\*+")
+
+
+def strip_markdown_emphasis(text: str) -> str:
+    """Remove every run of literal asterisks from text (issue #128).
+
+    See the module-level comment above _MARKDOWN_EMPHASIS_RE for why this
+    is a strip, not a render: the safest markdown parser is the one that is
+    never run.
+    """
+    return _MARKDOWN_EMPHASIS_RE.sub("", text)
 
 
 def feedback_subject(meta: RunMeta) -> str:
@@ -490,16 +518,70 @@ def build_mailto_url(email: str, subject: str, body: str) -> str:
     return f"mailto:{email}?subject={quote(subject)}&body={quote(body)}"
 
 
-def build_issue_trailing_line(finding: Finding, rule: Rule) -> str:
+def _confidence_clause(confidence: str | None) -> str:
+    return (
+        f"self-assessed confidence {confidence}"
+        if confidence
+        else "no self-assessed confidence reported"
+    )
+
+
+def _rules_fetched_clause(rules_fetched: bool | None) -> str:
+    # Wording discipline carried over from issue #110, unchanged here: this
+    # says only that the rule text was served by get_domain, never that it
+    # was read or applied, in either direction. A domain that fetched its
+    # rules and guessed anyway would read the same as one that read them
+    # properly; this clause cannot and does not tell the two apart.
+    if rules_fetched is True:
+        return "its rule text was fetched from the server this run"
+    if rules_fetched is False:
+        return (
+            "its rule text was never fetched from the server this run: treat "
+            "this finding as unsupported until the domain is redone"
+        )
+    return "whether its rule text was fetched this run is not recorded"
+
+
+def domain_confidence_note(confidence: str | None, rules_fetched: bool | None) -> str:
+    """One line carrying a finding's domain confidence and rules-fetched
+    status onto the finding itself (issue #130).
+
+    The report's Tool performance summary states a domain's confidence and
+    fetch status once, and until now a finding card or filed issue never
+    repeated either: a low-confidence finding from a domain whose rules
+    were never fetched rendered identically to a high-confidence one whose
+    rules were. Shared by report.py's per-finding card and
+    build_issue_trailing_line below, so a finding's report card and its
+    filed-issue text can never describe the same domain differently.
+    """
+    return f"This finding's domain: {_confidence_clause(confidence)}; {_rules_fetched_clause(rules_fetched)}."
+
+
+def build_issue_trailing_line(
+    finding: Finding,
+    rule: Rule,
+    *,
+    confidence: str | None = None,
+    rules_fetched: bool | None = None,
+) -> str:
     """Build the trailing attribution line appended after every filed or
     copyable issue body: "Found by an engineering-practice audit (rule
-    <id>, severity <sev>, at <loc>). Reference: <capped citation>".
+    <id>, severity <sev>, at <loc>). [<domain confidence note>.] Reference:
+    <capped citation>".
 
     This is the single place that wording is built. `server.py`'s
     `file_issues` (issues filed via the user's own `gh` CLI) and
     `report.py`'s issues section (issues copied from, or filed via a PAT
     from, the rendered report) both call this, so a filed issue and its
     in-report copy text can never describe the same finding differently.
+
+    ``confidence`` and ``rules_fetched`` are the finding's own domain's
+    :attr:`SelfAssessment.confidence` and fetch status (issue #130): pass
+    both to carry a domain-confidence note into the built line, or leave
+    both at their default ``None`` to omit it entirely, which reproduces
+    this function's pre-#130 output byte for byte. Passing only one is
+    still honoured (the note names the other as not reported/not recorded)
+    since a caller that has one may not have the other.
     """
     if not rule.source:
         raise ValueError(
@@ -507,7 +589,15 @@ def build_issue_trailing_line(finding: Finding, rule: Rule) -> str:
             "rules pack. A finding is a published claim; this tool does not publish "
             "claims without evidence."
         )
-    return (
+    parts = [
         f"Found by an engineering-practice audit (rule {finding.rule_id}, severity "
-        f"{finding.severity.value}, at {finding.location}). Reference: {citation(rule.source)}"
-    )
+        f"{finding.severity.value}, at {finding.location})."
+    ]
+    if confidence is not None or rules_fetched is not None:
+        parts.append(domain_confidence_note(confidence, rules_fetched))
+    # Issue #128: a citation copied from the rules pack can carry markdown
+    # emphasis (nested *italic* titles, or a whole footer wrapped in
+    # asterisks); this is the boundary where it is stripped before
+    # publication, same as report.py's own _reference_line.
+    parts.append(f"Reference: {strip_markdown_emphasis(citation(rule.source))}")
+    return " ".join(parts)
