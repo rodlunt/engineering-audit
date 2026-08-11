@@ -287,6 +287,58 @@ def test_run_meta_accepts_trailing_z_timestamp() -> None:
     assert meta.started == "2026-08-09T09:00:00Z"
 
 
+def test_run_meta_server_timestamps_default_to_none() -> None:
+    # Neither field is required: a run-state written before this fix, or
+    # loaded straight from a dict that never mentions them, must parse
+    # cleanly with both unset. Unset is what "never measured" looks like;
+    # it must never come out as an empty string or a fabricated zero.
+    meta = RunMeta(
+        tool_version="0.1.0",
+        rules_pack_name="fixture-pack",
+        assistant="claude-code",
+        model="claude-sonnet-5",
+        repo_name="engineering-audit",
+        repo_commit="deadbeef",
+        started="2026-08-09T09:00:00Z",
+    )
+    assert meta.server_started is None
+    assert meta.server_finished is None
+
+
+def test_run_meta_accepts_server_timestamps() -> None:
+    meta = RunMeta(
+        tool_version="0.1.0",
+        rules_pack_name="fixture-pack",
+        assistant="claude-code",
+        model="claude-sonnet-5",
+        repo_name="engineering-audit",
+        repo_commit="deadbeef",
+        started="2026-08-09T09:00:00Z",
+        finished="2026-08-09T09:05:00Z",
+        server_started="2026-08-09T09:00:03Z",
+        server_finished="2026-08-09T09:05:01Z",
+    )
+    assert meta.server_started == "2026-08-09T09:00:03Z"
+    assert meta.server_finished == "2026-08-09T09:05:01Z"
+
+
+def test_run_meta_rejects_an_invalid_server_started_timestamp() -> None:
+    # server_started/server_finished go through the same _valid_iso_timestamp
+    # validator as started/finished; this pins that they were actually added
+    # to it rather than left unchecked.
+    with pytest.raises(ValidationError, match="not a valid ISO 8601"):
+        RunMeta(
+            tool_version="0.1.0",
+            rules_pack_name="fixture-pack",
+            assistant="claude-code",
+            model="claude-sonnet-5",
+            repo_name="engineering-audit",
+            repo_commit="deadbeef",
+            started="2026-08-09T09:00:00Z",
+            server_started="not-a-timestamp",
+        )
+
+
 def test_run_state_round_trip_json() -> None:
     state = RunState(
         meta=_meta(),
@@ -454,6 +506,21 @@ def test_run_state_from_json_missing_schema_version_is_treated_as_version_1() ->
     assert restored.schema_version == 1
     assert restored.filed_issue_urls == {}
     assert restored.feedback_issue_url is None
+
+
+def test_run_state_from_json_without_server_timestamps_leaves_them_unknown() -> None:
+    # A run-state.json written before issue #102 has no server_started or
+    # server_finished keys at all (they were never a field, not merely
+    # unset). Loading it must default both to None rather than refusing the
+    # file or inventing a value: an unmeasured span is unknown, and this is
+    # the case that must not render as agreement or as zero.
+    state = RunState(meta=_meta(), config=_config())
+    raw = json.loads(state.to_json())
+    del raw["meta"]["server_started"]
+    del raw["meta"]["server_finished"]
+    restored = RunState.from_json(json.dumps(raw))
+    assert restored.meta.server_started is None
+    assert restored.meta.server_finished is None
 
 
 def test_run_state_from_json_accepts_current_version() -> None:

@@ -292,6 +292,13 @@ this run" section, grouped by rule id; there is nothing further to pass for eith
 record from here, and a later `begin_run` on the same `output_dir` starts a clean run rather
 than offering to resume this one.
 
+`started` and `finished` are your own claim about when the run ran, not something the server
+checks at the time you give it. The server separately stamps its own clock at `begin_run` and at
+`render_report` (`meta.server_started` / `meta.server_finished`), and the report's "Duration" row
+states both figures, flagging it when they disagree by more than expected. There is nothing to
+do differently here: pass `started` and `finished` honestly, as always, and let the report say so
+if they turn out not to match what the server measured.
+
 Tell the user directly where `report.html` is, give them a one-line summary of what was
 found (e.g. "3 findings: 1 high, 2 medium, across 2 domains"), and offer to open the report
 for them (`xdg-open` on Linux, `open` on macOS, `start` on Windows); if opening fails or the

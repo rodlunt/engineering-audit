@@ -26,6 +26,7 @@ import time
 import webbrowser
 from collections import Counter
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from importlib.metadata import PackageNotFoundError, distribution as _pkg_distribution
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
@@ -105,6 +106,21 @@ def _default_tool_version() -> str:
         return _pkg_version("engineering-audit")
     except PackageNotFoundError:
         return "0.0.0-dev"
+
+
+def _now_utc_iso() -> str:
+    """The server's own UTC wall-clock stamp, in the same 'Z'-suffixed ISO
+    8601 form the assistant-supplied started/finished timestamps are
+    documented to use.
+
+    Exists as one function, rather than inlining datetime.now(timezone.utc)
+    at each call site, so begin_run and render_report always stamp in
+    exactly the same format and so a test can freeze "now" with a single
+    monkeypatch. See RunMeta.server_started/server_finished (schema.py) and
+    issue #102: this is the reading a report's duration is actually checked
+    against, independent of whatever the assistant claims for started/finished.
+    """
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _parse_direct_url_commit(direct_url_json: str) -> str | None:
@@ -1035,6 +1051,18 @@ def _register_run_tools(mcp: MCPServer, state: AppState) -> None:
         rules version that produced it, not just a package version number
         that can lag behind either.
 
+        started is the caller's own claim about when the run began, taken on
+        trust like everything else the calling agent asserts. This call also
+        stamps meta.server_started from the server's own clock at the moment
+        it runs, independent of that claim; render_report does the same for
+        meta.server_finished. Neither figure is treated as more authoritative
+        than the other in the rendered report: a resumed run genuinely spans a
+        wall-clock gap that is not audit work, so the server's elapsed time is
+        not automatically the truer duration, but an assistant-supplied
+        duration that was never checked against anything is worse. The report
+        states both and flags it when they diverge by more than expected,
+        rather than presenting an unmeasured number as fact.
+
         The run also performs a best-effort tool update check, comparing
         tool_commit against the tool's latest tagged release on GitHub. The
         result lands in the returned meta's update_check field, tri-state:
@@ -1126,6 +1154,7 @@ def _register_run_tools(mcp: MCPServer, state: AppState) -> None:
             repo_name=repo_name,
             repo_commit=repo_commit,
             started=started,
+            server_started=_now_utc_iso(),
             environment=environment,
         )
         output_dir_path.mkdir(parents=True, exist_ok=True)
@@ -1615,6 +1644,11 @@ def _register_report_tools(mcp: MCPServer, state: AppState) -> None:
         engineering-audit-render later to re-render the same report without
         this server, this run tracker, or either URL, still in memory.
 
+        This call also stamps meta.server_finished from the server's own
+        clock, alongside the caller-supplied finished. See begin_run's
+        server_started for why the report keeps both this figure and the
+        caller's rather than trusting either one alone.
+
         The finished run stays reachable for one last submit_feedback (the
         order AUDIT.md documents), which rewrites both files to carry the
         feedback issue's link. It stops being reachable at the next
@@ -1628,7 +1662,13 @@ def _register_report_tools(mcp: MCPServer, state: AppState) -> None:
         run = _require_run(state)
         config = _require_config(run)
 
-        finished_meta = RunMeta(**{**run.meta.model_dump(), "finished": finished})
+        finished_meta = RunMeta(
+            **{
+                **run.meta.model_dump(),
+                "finished": finished,
+                "server_finished": _now_utc_iso(),
+            }
+        )
 
         run_state = RunState(
             meta=finished_meta,

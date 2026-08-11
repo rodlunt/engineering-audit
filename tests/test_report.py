@@ -880,6 +880,96 @@ def test_meta_block_shows_unknown_for_rules_and_tool_commit_when_none() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Meta block: Duration row (issue #102, server-measured vs assistant-reported)
+# ---------------------------------------------------------------------------
+
+
+def test_duration_row_shows_server_measurement_alongside_assistant_figure_when_they_agree() -> None:
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.meta.started = "2026-08-09T09:00:00Z"
+    run_state.meta.finished = "2026-08-09T09:10:00Z"  # assistant-reported: 10m0s
+    run_state.meta.server_started = "2026-08-09T09:00:02Z"
+    run_state.meta.server_finished = "2026-08-09T09:09:55Z"  # server-measured: 9m53s, close enough
+    rendered = render_report(run_state, pack)
+
+    assert '<div class="meta-label">Duration</div>' in rendered
+    assert "10m0s (server-measured: 9m53s)" in rendered
+    assert "disagree" not in rendered
+
+
+def test_duration_row_flags_divergence_when_assistant_reports_zero_seconds() -> None:
+    # The actual defect reported in #102: two real runs recorded started ==
+    # finished on audits that took minutes, and the report rendered the
+    # zero-second gap without comment. The server-measured span must now be
+    # shown and the mismatch called out rather than the zero figure standing
+    # alone.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.meta.started = "2026-08-10T23:41:07Z"
+    run_state.meta.finished = "2026-08-10T23:41:07Z"  # assistant-reported: 0s
+    run_state.meta.server_started = "2026-08-10T23:41:07Z"
+    run_state.meta.server_finished = "2026-08-10T23:44:59Z"  # server-measured: 3m52s
+    rendered = render_report(run_state, pack)
+
+    assert "0s as reported by the assistant, but the server measured 3m52s" in rendered
+    assert "treat the reported duration with caution" in rendered
+
+
+def test_duration_row_does_not_flag_ordinary_clock_skew_on_a_short_run() -> None:
+    # Two independently-read clocks (the assistant's and the server's)
+    # should not be expected to agree to the second even when both are
+    # honest; a few seconds of skew on a short run must not read as a
+    # disagreement.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.meta.started = "2026-08-09T09:00:00Z"
+    run_state.meta.finished = "2026-08-09T09:00:05Z"  # assistant-reported: 5s
+    run_state.meta.server_started = "2026-08-09T09:00:01Z"
+    run_state.meta.server_finished = "2026-08-09T09:00:08Z"  # server-measured: 7s
+    rendered = render_report(run_state, pack)
+
+    assert "disagree" not in rendered
+    assert "5s (server-measured: 7s)" in rendered
+
+
+def test_duration_row_says_unmeasured_when_server_timestamps_predate_the_field() -> None:
+    # A run-state.json written before this fix has server_started and
+    # server_finished as None (never a field it could have populated), not
+    # as a zero or an agreeing figure. The row must say the duration could
+    # not be checked, not silently fall back to showing the unchecked
+    # assistant figure as if it had been.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.meta.server_started = None
+    run_state.meta.server_finished = None
+    rendered = render_report(run_state, pack)
+
+    assert "not measured by the server, so this could not be checked" in rendered
+    assert "disagree" not in rendered
+
+
+def test_duration_row_on_a_resumed_run_does_not_flag_the_legitimate_wall_clock_gap() -> None:
+    # A resumed run's server_started is kept from the original begin_run,
+    # not reset at resume time (see _resume_run in server.py), so it spans
+    # the same real interval as the assistant-reported started/finished,
+    # including whatever gap the crash and resume introduced. That gap is
+    # not audit work, but it is real time, and an honestly-reported
+    # assistant duration should agree with it rather than trip the
+    # divergence check just because a resume happened.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.meta.started = "2026-08-09T09:00:00Z"
+    run_state.meta.finished = "2026-08-09T11:00:00Z"  # 2 hours, spans the resume gap
+    run_state.meta.server_started = "2026-08-09T09:00:01Z"  # stamped at the original begin_run
+    run_state.meta.server_finished = "2026-08-09T11:00:04Z"  # stamped at the final render_report
+    rendered = render_report(run_state, pack)
+
+    assert "disagree" not in rendered
+    assert "(server-measured:" in rendered
+
+
+# ---------------------------------------------------------------------------
 # Feedback section: tick boxes, embedded JSON, script-injection escaping
 # ---------------------------------------------------------------------------
 
