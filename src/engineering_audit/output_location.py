@@ -28,6 +28,7 @@ from pathlib import Path
 __all__ = [
     "REPORT_FILENAME",
     "RUN_STATE_FILENAME",
+    "UnresolvableOutputLocation",
     "resolve_deliverables_dir",
     "validate_deliverables_dir",
     "existing_deliverables_warning",
@@ -51,14 +52,57 @@ def _existing_deliverables(path: Path) -> list[str]:
     ]
 
 
+class UnresolvableOutputLocation(ValueError):
+    """Raised by resolve_deliverables_dir when ``raw`` cannot be turned into
+    an absolute path at all, as distinct from validate_deliverables_dir's
+    checks, which run on a path expanduser/resolve already managed to
+    produce.
+
+    Issue #152: Path.expanduser() raises the bare RuntimeError
+    "Could not determine home directory" for an unknown ``~user``, and
+    Path.resolve() raises the same RuntimeError for a symlink loop; neither
+    is a ValueError or an OSError, so neither was caught by either caller
+    of resolve_deliverables_dir. Both callers already catch ValueError from
+    this module elsewhere (validate_deliverables_dir's error strings,
+    config_page's _InvalidOutputLocation), so subclassing ValueError here
+    means this failure mode joins a family they already handle rather than
+    adding a new exception name either one could forget to watch for.
+    """
+
+
 def resolve_deliverables_dir(raw: str) -> Path:
     """Expand ``~`` and resolve ``raw`` to an absolute path.
 
     Pure path arithmetic: touches no filesystem state, so it is safe to call
     just to compute the value shown back to the user before anything has
     been validated or written, which is the whole point of showing it.
+
+    Raises UnresolvableOutputLocation, never the bare RuntimeError that
+    Path.expanduser()/Path.resolve() themselves raise, so every caller can
+    keep treating "this path could not be used" as one exception family
+    instead of two.
     """
-    return Path(raw).expanduser().resolve()
+    try:
+        expanded = Path(raw).expanduser()
+    except RuntimeError as exc:
+        # Path.expanduser() raises this specific text only for an unknown
+        # ~user: the account named after ~ has no entry to look a home
+        # directory up in. That is the actionable detail worth naming back
+        # to the user, not the raw exception text.
+        raise UnresolvableOutputLocation(
+            f"'{raw}' could not be resolved: the user named after '~' could not be found, "
+            "so its home directory is unknown. Check the username and try again."
+        ) from exc
+    try:
+        return expanded.resolve()
+    except RuntimeError as exc:
+        # A different RuntimeError from the same two calls: Path.resolve()
+        # raises it for a symlink loop rather than an unknown user, so the
+        # message names the cause actually seen here instead of repeating
+        # the ~user wording above for an unrelated failure.
+        raise UnresolvableOutputLocation(
+            f"'{raw}' could not be resolved: {exc}"
+        ) from exc
 
 
 def validate_deliverables_dir(path: Path) -> str | None:
