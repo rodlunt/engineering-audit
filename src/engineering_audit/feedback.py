@@ -77,15 +77,15 @@ _ASTERISK_RUN_RE = re.compile(r"\*+")
 
 def strip_markdown_emphasis(text: str) -> str:
     """Strip markdown emphasis, leaving code and unpaired asterisks alone
-    (issue #128).
+    (issue #128, hardened by issue #150).
 
-    Two safeguards, both required, neither sufficient alone:
+    Three safeguards, all required, none sufficient alone:
 
     1. **Code spans are protected outright.** Anything between two matching
        runs of backticks (an inline `` `code span` `` or a fenced code
        block, which is the same shape with a longer backtick run) is never
-       inspected by step 2 below. Without this, two unrelated code spans
-       that each hold one multiplication asterisk, e.g.
+       inspected by steps 2 and 3 below. Without this, two unrelated code
+       spans that each hold one multiplication asterisk, e.g.
        "`a * b` and `c * d`", would still get incorrectly paired with each
        other (both are length-1 runs), stripping an asterisk out of code
        that was never markdown.
@@ -94,21 +94,42 @@ def strip_markdown_emphasis(text: str) -> str:
        matches the first '*' of a '**' run as the closing half of an
        earlier, unrelated single '*', so
        "def handler(*args, **kwargs):" corrupts to
-       "def handler(args, *kwargs):": a run of length 1 (before "args")
-       gets paired against the first character of the run of length 2
-       (before "kwargs"), rather than the two runs being recognised as
-       different delimiters. Pairing by matching run *length* instead (a
-       single '*' can only close another single '*'; a '**' can only close
-       another '**') leaves that line untouched entirely, along with a
-       bare "SELECT * FROM users", "glob pattern **/*.py" and
-       "rm -rf build/*": none of those contain two runs of the same
-       length, so nothing in them is a genuine pair.
+       "def handler(args, *kwargs):". Pairing by matching run *length*
+       instead (a single '*' can only close another single '*'; a '**' can
+       only close another '**') leaves that line untouched entirely.
+    3. **A run may only open emphasis when it sits at a word boundary on
+       its outer side and hugs content on its inner side, and may only
+       close emphasis when it hugs content on its inner side** (issue
+       #150: the #128 fix above still corrupted a string holding *two*
+       unpaired single asterisks, since same-length pairing alone happily
+       matches any two lone asterisks against each other regardless of
+       what surrounds them, e.g. "Run rm -rf build/* then rm -rf dist/*"
+       or "Use the glob a/*.py and b/*.py"). Requiring an asterisk that
+       is about to *open* to be preceded by whitespace or the string start
+       is what stops those two cases: in each, every asterisk is preceded
+       by a non-space character ("/"), so none of them ever qualifies as
+       an opener, and a closer with nothing pending to close against is
+       simply left alone. This is deliberately asymmetric: a *closer* is
+       not required to be followed by whitespace, because ordinary prose
+       closes emphasis into punctuation ("*An Overview*," or a rules pack
+       footer's trailing "...durable.*"), and constraining that side would
+       stop those genuine, single-occurrence pairs from stripping. A run
+       can never satisfy both roles at once, since opening requires
+       whitespace/boundary immediately before it and closing requires the
+       opposite (non-space immediately before it), so there is never an
+       open/close ambiguity to resolve.
 
-    This is still deliberately not a markdown parser: it does not resolve
-    CommonMark's left/right-flanking rules, and a genuinely intended,
-    unpaired double asterisk in prose is still lost, same as before. The
-    safest parser is the one that is never run; this makes the boundary
-    strip more conservative, not a step towards becoming a renderer.
+    This is still deliberately not a full CommonMark implementation: real
+    CommonMark flanking is punctuation-aware in both directions and would
+    still pair the two asterisks in "a/*.py and b/*.py" into an emphasis
+    span (this is a genuine, if surprising, real-Markdown quirk), which is
+    exactly the corruption this function exists to avoid. The rule above
+    is deliberately more conservative than CommonMark on the opening side
+    to close that gap, at the cost of no longer stripping a genuinely
+    intended, unpaired double asterisk in prose (unchanged from before).
+    The safest parser is the one that is never run; this makes the
+    boundary strip more conservative, not a step towards becoming a
+    renderer.
     """
     protected_spans = [match.span() for match in _CODE_SPAN_RE.finditer(text)]
 
@@ -123,23 +144,32 @@ def strip_markdown_emphasis(text: str) -> str:
     if not runs:
         return text
 
-    # Nearest-neighbour pairing per run length, left to right: the first
-    # unmatched run of a given length is a candidate opener; the next run
-    # of that same length closes it. Two runs of different lengths never
-    # pair with each other, which is the property the docstring above
-    # depends on.
+    # Nearest-neighbour pairing per run length, left to right, gated by the
+    # flanking rule from the docstring above: only an opener-capable run
+    # becomes a pending candidate, and only a closer-capable run can pop
+    # one. Two runs of different lengths never pair with each other, which
+    # is the property the docstring above depends on.
     pending: dict[
         int, int
     ] = {}  # run length -> index into `runs` of its open candidate
     drop: set[int] = set()  # indices into `runs` whose asterisks are removed
     for index, run in enumerate(runs):
         length = len(run.group())
-        opener_index = pending.pop(length, None)
-        if opener_index is None:
-            pending[length] = index
-        else:
-            drop.add(opener_index)
+        start, end = run.span()
+        before = text[start - 1] if start > 0 else None
+        after = text[end] if end < len(text) else None
+        can_open = (
+            after is not None
+            and not after.isspace()
+            and (before is None or before.isspace())
+        )
+        can_close = before is not None and not before.isspace()
+
+        if can_close and length in pending:
+            drop.add(pending.pop(length))
             drop.add(index)
+        elif can_open:
+            pending[length] = index
     if not drop:
         return text
 
