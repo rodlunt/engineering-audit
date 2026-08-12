@@ -566,6 +566,77 @@ def test_write_report_completes_for_a_mixed_naive_and_aware_timestamp_pair(
     assert out_path.exists()
 
 
+# ---------------------------------------------------------------------------
+# Regression: issue #153, a follow-up to #102. _format_duration applied
+# abs() to the span, so a finished time earlier than its started time
+# rendered as its magnitude while the divergence check fired on the signed
+# difference: two identical-looking figures declared to disagree. A
+# negative duration must be named as impossible instead.
+# ---------------------------------------------------------------------------
+
+
+def test_duration_text_names_an_impossible_assistant_duration_against_a_server_figure() -> (
+    None
+):
+    meta = _meta(
+        started="2026-08-09T09:05:00Z",
+        finished="2026-08-09T09:00:00Z",  # finished before started
+        server_started="2026-08-09T09:00:00Z",
+        server_finished="2026-08-09T09:05:00Z",
+    )
+    text = duration_text(meta)
+    assert text == (
+        "the assistant reported a finished time earlier than its started "
+        "time, so no duration can be derived from what it recorded; the "
+        "server measured 5m0s, the only usable figure for this run"
+    )
+    # The old bug: two identical-looking "5m0s" figures declared to
+    # disagree. The fix must never produce that sentence shape again.
+    assert "disagree" not in text
+
+
+def test_duration_text_names_an_impossible_assistant_duration_with_no_server_figure() -> (
+    None
+):
+    meta = _meta(
+        started="2026-08-09T09:05:00Z",
+        finished="2026-08-09T09:00:00Z",
+        server_started=None,
+        server_finished=None,
+    )
+    assert duration_text(meta) == (
+        "the assistant reported a finished time earlier than its started "
+        "time, so no duration can be derived from what it recorded, and "
+        "the server did not measure this run either"
+    )
+
+
+def test_duration_text_ordinary_agreeing_case_is_unchanged() -> None:
+    meta = _meta(
+        started="2026-08-09T09:00:00Z",
+        finished="2026-08-09T09:10:00Z",
+        server_started="2026-08-09T09:00:01Z",
+        server_finished="2026-08-09T09:10:02Z",
+    )
+    text = duration_text(meta)
+    assert text == "10m0s (server-measured: 10m1s)"
+
+
+def test_duration_text_ordinary_disagreeing_case_is_unchanged() -> None:
+    meta = _meta(
+        started="2026-08-09T09:00:00Z",
+        finished="2026-08-09T09:00:00Z",  # started == finished, issue #102
+        server_started="2026-08-09T09:00:00Z",
+        server_finished="2026-08-09T09:05:00Z",
+    )
+    text = duration_text(meta)
+    assert text == (
+        "0s as reported by the assistant, but the server measured 5m0s. "
+        "These disagree by more than expected: treat the reported duration "
+        "with caution."
+    )
+
+
 def test_rules_fetched_section_reports_per_domain_fetched_state() -> None:
     sections = build_feedback_sections(
         _meta(),

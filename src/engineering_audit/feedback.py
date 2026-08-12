@@ -278,8 +278,9 @@ _DURATION_DIVERGENCE_PROPORTION = 0.15
 
 def duration_text(meta: RunMeta) -> str:
     """The "Duration" meta row's value: the assistant-reported span, the
-    server-measured span, or both with a warning when they disagree by more
-    than expected.
+    server-measured span, both with a warning when they disagree by more
+    than expected, or a plain statement that the assistant's pair of
+    timestamps makes no duration possible at all (issue #153).
 
     Never overwrites the assistant's figure with the server's, or vice
     versa (see issue #102): a resumed run legitimately spans a wall-clock
@@ -312,6 +313,31 @@ def duration_text(meta: RunMeta) -> str:
 
     if assistant_duration is None and server_duration is None:
         return "not available"
+
+    # A finished time earlier than its own started time is not noise to
+    # flatten with abs(): it is the strongest evidence available that one
+    # of the two recorded timestamps is wrong (issue #153, a follow-up to
+    # #102's own disagreement check). _format_duration's abs() used to
+    # render this as its magnitude while the divergence check below fired
+    # on the signed difference, so an impossible pair rendered as two
+    # identical figures declaring themselves to disagree. Naming it here,
+    # before anything below ever formats the negative span, keeps a
+    # negative duration from being shown as if it were a real one, and
+    # keeps the server figure from being silently substituted as though it
+    # had been confirmed against the assistant's.
+    if assistant_duration is not None and assistant_duration < 0:
+        if server_duration is None:
+            return (
+                "the assistant reported a finished time earlier than its started "
+                "time, so no duration can be derived from what it recorded, and "
+                "the server did not measure this run either"
+            )
+        return (
+            "the assistant reported a finished time earlier than its started "
+            "time, so no duration can be derived from what it recorded; the "
+            f"server measured {_format_duration(server_duration)}, the only "
+            "usable figure for this run"
+        )
     if server_duration is None:
         # This run (or the resume that continued it) predates server-side
         # duration measurement, so there is nothing to check the
