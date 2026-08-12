@@ -39,11 +39,18 @@ Three kinds of pin are discovered and checked against `pyproject.toml`'s
    prefix (`--ref vX.Y.Z`, `currently vX.Y.Z`, `placeholder: vX.Y.Z`).
 
 Fails loudly, not just on mismatch: this script exits non-zero if any pin
-disagrees with `pyproject.toml`, and it also exits non-zero if any of the
-three categories above discovers zero pins. Zero pins does not mean the
-repository is clean, it means the patterns in version_pins.py have gone
-stale after a rename or restructure, and a check that can silently pass by
-finding nothing is worse than no check at all.
+disagrees with `pyproject.toml`, and it also exits non-zero if categories 1
+or 3 discover zero pins. Zero pins there does not mean the repository is
+clean, it means the patterns in version_pins.py have gone stale after a
+rename or restructure, and a check that can silently pass by finding
+nothing is worse than no check at all.
+
+Category 2 is exempt from that zero-guard, and only because this project
+now ships no versioned JSON manifest at all: the Gemini extension manifest
+was the only one and went with the packaged extension (issue #145). Zero is
+the correct answer there, so guarding on it would fire on a healthy tree.
+Discovery still runs, so a manifest added later is checked from the moment
+it lands. See the comment at that check for when to restore the guard.
 
 Every file and pin examined is printed, so the output shows coverage
 (what was checked) rather than only a pass or fail verdict.
@@ -125,13 +132,17 @@ def main(repo_root: Path = REPO_ROOT, pyproject: Path | None = None) -> int:
             "scripts/version_pins.py have gone stale, or every mention "
             "was removed, either way this is broken, not clean"
         )
-    if not found.manifest_pins:
-        problems.append(
-            'found zero manifest "version" fields under integrations/; '
-            "the manifest scan in scripts/version_pins.py has gone stale, "
-            "or the Gemini extension manifest was removed, either way "
-            "this is broken, not clean"
-        )
+    # Deliberately NOT guarded on zero, unlike the two categories above.
+    # This repository currently ships no versioned JSON manifest: the Gemini
+    # extension manifest was the only one, and it was removed with the
+    # packaged extension (issue #145). Zero is therefore the expected state
+    # here, not evidence of a stale scan, and a guard that fires on the
+    # correct answer is an alarm people learn to switch off.
+    #
+    # Nothing is lost by dropping it: find_manifest_version_pins still runs,
+    # so a manifest added under integrations/ later is discovered and checked
+    # from the moment it lands, with no edit here. Restore the zero-guard if
+    # this project ever again ships a manifest it must always find.
 
     if problems:
         print("\nFAILED (check is broken, not the repository is clean):")
