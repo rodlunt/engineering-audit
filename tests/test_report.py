@@ -3016,3 +3016,109 @@ def test_unfetched_critical_finding_is_unticked_despite_severity() -> None:
         "1 critical or high finding from a domain whose rules were never fetched "
         "this run is listed unticked too" in rendered
     )
+
+
+def test_preticked_note_matches_boxes_actually_ticked_when_a_finding_is_filed() -> None:
+    # Issue #154: a finding already filed this run renders as a disabled,
+    # unticked "already filed" link (the `if filed_url:` branch a few lines
+    # above the note this test checks), no matter its severity or fetch
+    # status. The "N of M issues are ticked" note has to count what actually
+    # ended up ticked, not what severity alone would have ticked, or it
+    # overstates the selection: a run that filed its critical findings would
+    # have the note claim boxes are ticked when every one of them is a
+    # disabled link.
+    #
+    # Deliberately does not recompute the expected N from the input
+    # findings' severities: doing that would let this test repeat the same
+    # "ignores filed_url" mistake the production code made and pass while
+    # the bug is still present. Instead it pulls both numbers out of the
+    # rendered HTML independently, the note's own claim and a count of
+    # actual `checked` attributes, and asserts they agree.
+    pack = _pack()
+    d01 = pack.get_domain("d01")
+    d02 = pack.get_domain("d02")
+    d01_verdicts = _all_pass_verdicts(d01)
+    d01_verdicts[0] = RuleVerdict(rule_id="D01-R01", verdict=Verdict.FINDING)
+    d01_verdicts[1] = RuleVerdict(rule_id="D01-R02", verdict=Verdict.FINDING)
+    d01_verdicts[2] = RuleVerdict(rule_id="D01-R03", verdict=Verdict.FINDING)
+    d02_verdicts = _all_pass_verdicts(d02)
+    d02_verdicts[0] = RuleVerdict(rule_id="D02-R01", verdict=Verdict.FINDING)
+
+    run_state = RunState(
+        meta=_meta(),
+        config=AuditConfig(selected_domain_ids=["d01", "d02"], issue_mode="report"),
+        domain_results={
+            "d01": DomainResult(
+                domain_id="d01",
+                status="completed",
+                rule_verdicts=d01_verdicts,
+                findings=[
+                    Finding(
+                        rule_id="D01-R01",
+                        severity=Severity.CRITICAL,
+                        title="not filed, stays ticked",
+                        location="ledger/gnomes.py:1",
+                        body_md="x",
+                        issue_title="x",
+                        issue_body="x",
+                    ),
+                    Finding(
+                        rule_id="D01-R02",
+                        severity=Severity.HIGH,
+                        title="already filed this run",
+                        location="ledger/beds.py:42",
+                        body_md="x",
+                        issue_title="x",
+                        issue_body="x",
+                    ),
+                    Finding(
+                        rule_id="D01-R03",
+                        severity=Severity.LOW,
+                        title="low severity, never ticked either way",
+                        location="ledger/beards.py:1",
+                        body_md="x",
+                        issue_title="x",
+                        issue_body="x",
+                    ),
+                ],
+            ),
+            "d02": DomainResult(
+                domain_id="d02",
+                status="completed",
+                rule_verdicts=d02_verdicts,
+                findings=[
+                    Finding(
+                        rule_id="D02-R01",
+                        severity=Severity.CRITICAL,
+                        title="not filed, stays ticked",
+                        location="crates/manifest.py:1",
+                        body_md="x",
+                        issue_title="x",
+                        issue_body="x",
+                    )
+                ],
+            ),
+        },
+        rules_fetched_domain_ids=["d01", "d02"],
+        filed_issue_urls={"D01-R02#1": "https://example.invalid/issues/1"},
+    )
+    rendered = render_report(run_state, pack)
+
+    # The filed finding renders as a disabled link, not a live checkbox.
+    assert 'href="https://example.invalid/issues/1"' in rendered
+
+    actually_ticked = len(
+        re.findall(r'<input type="checkbox" id="issue-check-\d+" checked', rendered)
+    )
+    note_match = re.search(r"(\d+) of 4 issues? (?:is|are) ticked", rendered)
+    assert note_match is not None, "no 'N of 4 issues are ticked' note found"
+    note_claims = int(note_match.group(1))
+
+    assert note_claims == actually_ticked, (
+        f"note claims {note_claims} ticked but the rendered HTML actually has "
+        f"{actually_ticked} checked box(es)"
+    )
+    # Not a vacuous 0 == 0: this run does have ticked boxes, just fewer than
+    # severity alone would suggest, because one of the three critical/high
+    # findings was already filed.
+    assert actually_ticked > 0
