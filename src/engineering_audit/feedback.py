@@ -74,6 +74,14 @@ _VERDICT_ORDER = (
 _CODE_SPAN_RE = re.compile(r"(`+)(.*?)\1", re.DOTALL)
 _ASTERISK_RUN_RE = re.compile(r"\*+")
 
+# '/' immediately after a run marks a recursive-glob directory boundary
+# ("*/", "**/"); '.' immediately after marks an extension wildcard
+# ("*.py", "*.log"). Neither is ever how this tool's own output opens
+# real emphasis, so a run followed by either is never eligible to open,
+# regardless of what precedes it (see strip_markdown_emphasis's docstring,
+# safeguard 4, issue #150's residual case).
+_GLOB_LIKE_OPENER_FOLLOW_CHARS = "/."
+
 
 def strip_markdown_emphasis(text: str) -> str:
     """Strip markdown emphasis, leaving code and unpaired asterisks alone
@@ -118,18 +126,36 @@ def strip_markdown_emphasis(text: str) -> str:
        whitespace/boundary immediately before it and closing requires the
        opposite (non-space immediately before it), so there is never an
        open/close ambiguity to resolve.
+    4. **A run immediately followed by '/' or '.' can never open emphasis,
+       even when it otherwise sits at a word boundary** (issue #150's
+       residual case, found on re-review: "The pattern **/*.py and
+       src/**/*.ts both match" still corrupted to "The pattern /*.py and
+       src//*.ts both match"). The first "**" there is genuinely preceded
+       by whitespace ("pattern **/"), so safeguard 3 above waved it
+       through as an opener; the second "**" is preceded by "/" from
+       "src/", making it closer-only, and the two paired. Both are
+       unambiguously glob syntax, not prose: "*/" and "**/" mark a
+       recursive-glob directory boundary, and "*.ext" marks an
+       extension wildcard ("*.py", "*.log", a common shape in a
+       .gitignore line or a cleanup instruction), and neither is ever how
+       this tool's own output opens real emphasis. Excluding both
+       characters closes the class rather than the single reported
+       string: any run followed by one of them is inert on the opening
+       side regardless of what precedes it, so it can never hand a later,
+       unrelated closer-shaped run (another glob fragment elsewhere in
+       the same finding body) something to pair against.
 
     This is still deliberately not a full CommonMark implementation: real
     CommonMark flanking is punctuation-aware in both directions and would
     still pair the two asterisks in "a/*.py and b/*.py" into an emphasis
     span (this is a genuine, if surprising, real-Markdown quirk), which is
-    exactly the corruption this function exists to avoid. The rule above
-    is deliberately more conservative than CommonMark on the opening side
+    exactly the corruption this function exists to avoid. The rules above
+    are deliberately more conservative than CommonMark on the opening side
     to close that gap, at the cost of no longer stripping a genuinely
-    intended, unpaired double asterisk in prose (unchanged from before).
-    The safest parser is the one that is never run; this makes the
-    boundary strip more conservative, not a step towards becoming a
-    renderer.
+    intended, unpaired double asterisk in prose (unchanged from before),
+    or one that happens to open right before a "/" or ".". The safest
+    parser is the one that is never run; this makes the boundary strip
+    more conservative, not a step towards becoming a renderer.
     """
     protected_spans = [match.span() for match in _CODE_SPAN_RE.finditer(text)]
 
@@ -161,6 +187,7 @@ def strip_markdown_emphasis(text: str) -> str:
         can_open = (
             after is not None
             and not after.isspace()
+            and after not in _GLOB_LIKE_OPENER_FOLLOW_CHARS
             and (before is None or before.isspace())
         )
         can_close = before is not None and not before.isspace()

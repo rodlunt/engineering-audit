@@ -859,55 +859,106 @@ def test_strip_markdown_emphasis_removes_matched_pairs() -> None:
     assert strip_markdown_emphasis("***triple***") == "triple"
 
 
-def test_a_whole_line_wrapped_in_single_asterisks_still_strips() -> None:
-    # A rules pack footer line, e.g. "*Source: ... .*", is wrapped in a
-    # single pair of asterisks spanning the whole line: the opener sits at
-    # the string start and the closer immediately before the string end,
-    # both unambiguous under the flanking rule.
-    text = "*Source: fixture only. Rule id: D01-R05. Volatility: durable.*"
-    assert strip_markdown_emphasis(text) == (
-        "Source: fixture only. Rule id: D01-R05. Volatility: durable."
-    )
-
-
 # ---------------------------------------------------------------------------
-# Regression: a blanket "remove every asterisk" strip corrupted code in
-# finding bodies (a naive first cut of issue #128's fix). This tool's whole
-# output is claims about code, so a finding body containing code is the
-# normal case. The four inputs below are the exact regressions flagged in
-# review; each must survive strip_markdown_emphasis byte for byte, because
-# none of them contains a matched pair of same-length asterisk runs.
+# Corpus: realistic code, path, glob and command strings that must survive
+# strip_markdown_emphasis byte for byte.
+#
+# This corpus exists because individual regressions here have been patched
+# twice already (issue #128's original "remove every asterisk" cut, then
+# issue #150's length-only pairing) and a *third* instance still got
+# through both fixes (a recursive-glob pair, "**/*.py ... src/**/*.ts",
+# found on re-review of #150 itself): each fix's own tests only ever
+# covered the specific strings that motivated it, which is exactly why the
+# next shape of the same underlying bug kept slipping past them. A broad,
+# growing corpus is the durable answer: it is meant to fail loudly the
+# next time this function's pairing or flanking rule changes shape,
+# whether or not anyone thought to add a matching named test for the
+# specific string that breaks.
+#
+# Categories, each represented by more than one string so a length- or
+# position-only fix cannot pass by accident:
+#   - Python varargs/kwargs syntax
+#   - SQL SELECT-star and COUNT(*)
+#   - shell rm/chmod/chown wildcards, more than one command per string
+#   - simple and recursive globs, including two in one string
+#   - extension-wildcard globs ("*.py", "*.log"), the shape a
+#     .gitignore line or a cleanup instruction uses
+#   - a bare '*' used as a bullet point or a multiplication sign
 # ---------------------------------------------------------------------------
 
-_CODE_INPUTS_THAT_MUST_SURVIVE_INTACT = (
+_TEXT_THAT_MUST_SURVIVE_THE_STRIP_INTACT = (
+    # Python
     "def handler(*args, **kwargs):",
+    "call(*args, **kwargs)",
+    # SQL
     "SELECT * FROM users WHERE id = ?",
-    "glob pattern **/*.py matches nested files",
+    "SELECT * FROM users; SELECT * FROM orders",
+    "SELECT COUNT(*) FROM t; SELECT COUNT(*) FROM u",
+    # Shell wildcards, single and multiple commands
     "rm -rf build/*",
+    "Run rm -rf build/* then rm -rf dist/*",
+    "chmod 600 * and chown root *",
+    # Globs, plain and recursive, single and multiple occurrences
+    "glob pattern **/*.py matches nested files",
+    "Use the glob a/*.py and b/*.py",
+    "**/*.py",
+    "src/**/*.ts",
+    "The pattern **/*.py and src/**/*.ts both match",
+    # Extension-wildcard globs (issue #150's residual case is this shape
+    # with '/' instead of '.'; both characters are excluded as opener
+    # follow-characters for the same reason)
+    "Ignore *.pyc; also check build/*.log for leaks",
+    "Files matching *.py or *.ts are excluded",
+    # A bare '*' as a bullet point or a multiplication sign
+    "* bullet one\n* bullet two",
+    "3 * 4 = 12 and 5 * 6 = 30",
+    "a * b * c * d",
 )
 
 
-def test_unpaired_asterisks_in_code_survive_the_strip_intact() -> None:
-    for code in _CODE_INPUTS_THAT_MUST_SURVIVE_INTACT:
-        assert strip_markdown_emphasis(code) == code, (
-            f"strip_markdown_emphasis corrupted code that contains no matched "
-            f"emphasis pair: {code!r} -> {strip_markdown_emphasis(code)!r}"
+def test_corpus_of_code_path_glob_and_command_strings_survives_the_strip_intact() -> (
+    None
+):
+    for text in _TEXT_THAT_MUST_SURVIVE_THE_STRIP_INTACT:
+        assert strip_markdown_emphasis(text) == text, (
+            f"strip_markdown_emphasis corrupted text with no genuine emphasis "
+            f"pair in it: {text!r} -> {strip_markdown_emphasis(text)!r}"
         )
 
 
-def test_a_finding_body_mixing_prose_and_code_only_strips_the_prose_emphasis() -> None:
-    # A realistic finding body: markdown bold in the prose (which must
-    # still be stripped, per #128's original decision) sitting next to a
-    # shell command with an unpaired asterisk (which must not be).
-    body = (
+# ---------------------------------------------------------------------------
+# Corpus: genuine markdown emphasis that must still strip, alongside the
+# corpus above of things that must not. Kept as a companion list for the
+# same reason: a fix that satisfies the "must survive" corpus by refusing
+# to pair anything would be a regression this list catches.
+# ---------------------------------------------------------------------------
+
+_TEXT_THAT_MUST_STRIP = (
+    ("**bold** and *italic* and plain", "bold and italic and plain"),
+    ("***triple***", "triple"),
+    (
+        "*Source: fixture only. Rule id: D01-R05. Volatility: durable.*",
+        "Source: fixture only. Rule id: D01-R05. Volatility: durable.",
+    ),
+    (
         "**The issue**: the build script leaves stale artefacts.\n\n"
-        "**Suggested fix**: run `rm -rf build/*` before packaging."
-    )
-    stripped = strip_markdown_emphasis(body)
-    assert stripped == (
+        "**Suggested fix**: run `rm -rf build/*` before packaging.",
         "The issue: the build script leaves stale artefacts.\n\n"
-        "Suggested fix: run `rm -rf build/*` before packaging."
-    )
+        "Suggested fix: run `rm -rf build/*` before packaging.",
+    ),
+    (
+        "*Note*: see a/*.py for details",
+        "Note: see a/*.py for details",
+    ),
+)
+
+
+def test_corpus_of_genuine_emphasis_still_strips() -> None:
+    for text, expected in _TEXT_THAT_MUST_STRIP:
+        assert strip_markdown_emphasis(text) == expected, (
+            f"strip_markdown_emphasis failed to strip a genuine emphasis pair: "
+            f"{text!r} -> {strip_markdown_emphasis(text)!r}, expected {expected!r}"
+        )
 
 
 def test_asterisks_inside_a_code_span_are_never_paired_across_it() -> None:
@@ -926,40 +977,6 @@ def test_asterisks_inside_unrelated_code_spans_do_not_pair_with_each_other() -> 
 def test_a_fenced_code_block_is_protected_like_an_inline_code_span() -> None:
     text = "Before:\n```\nrm -rf build/*\n```\nAfter."
     assert strip_markdown_emphasis(text) == text
-
-
-# ---------------------------------------------------------------------------
-# Regression: issue #150, a follow-up to #128 above. The #128 fix paired
-# asterisk runs by length alone, so any *two* unpaired single asterisks in
-# the same string paired with each other and both were deleted. #128's own
-# tests only ever exercised one asterisk per string, which is exactly why
-# they passed while this class of bug shipped. Each input below holds two
-# occurrences and must survive completely untouched.
-# ---------------------------------------------------------------------------
-
-_MULTI_ASTERISK_INPUTS_THAT_MUST_SURVIVE_INTACT = (
-    "Run rm -rf build/* then rm -rf dist/*",
-    "SELECT * FROM users; SELECT * FROM orders",
-    "Use the glob a/*.py and b/*.py",
-)
-
-
-def test_two_unpaired_asterisks_in_one_string_both_survive_the_strip() -> None:
-    for text in _MULTI_ASTERISK_INPUTS_THAT_MUST_SURVIVE_INTACT:
-        assert strip_markdown_emphasis(text) == text, (
-            f"strip_markdown_emphasis paired two unrelated unpaired asterisks "
-            f"against each other: {text!r} -> {strip_markdown_emphasis(text)!r}"
-        )
-
-
-def test_a_genuine_emphasis_pair_still_strips_next_to_an_unrelated_single_asterisk() -> (
-    None
-):
-    # A real, intended emphasis pair earlier in the text must not be
-    # disabled by an unrelated single asterisk later on: the flanking rule
-    # closes over the multi-asterisk bug without giving up genuine pairs.
-    text = "*Note*: see a/*.py for details"
-    assert strip_markdown_emphasis(text) == "Note: see a/*.py for details"
 
 
 def test_build_issue_trailing_line_strips_markdown_from_the_citation() -> None:
