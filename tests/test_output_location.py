@@ -15,6 +15,7 @@ import pytest
 from engineering_audit.output_location import (
     REPORT_FILENAME,
     RUN_STATE_FILENAME,
+    UnresolvableOutputLocation,
     deliverables_dir_for,
     existing_deliverables_warning,
     resolve_deliverables_dir,
@@ -32,6 +33,40 @@ def test_resolve_deliverables_dir_makes_a_relative_path_absolute(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     assert resolve_deliverables_dir("reports") == (tmp_path / "reports").resolve()
+
+
+def test_resolve_deliverables_dir_raises_a_clean_error_for_an_unknown_user(
+    tmp_path,
+) -> None:
+    """Issue #152: Path.expanduser() raises a bare RuntimeError for
+    ``~nosuchuser/...`` (there is no such account to look a home directory
+    up for), and neither caller of resolve_deliverables_dir catches
+    RuntimeError. This pins resolve_deliverables_dir itself to converting
+    that into UnresolvableOutputLocation, a ValueError subclass, naming the
+    path and saying plainly that the user portion could not be resolved."""
+    with pytest.raises(UnresolvableOutputLocation) as excinfo:
+        resolve_deliverables_dir("~nosuchuser/audit-reports")
+    message = str(excinfo.value)
+    assert "~nosuchuser/audit-reports" in message
+    assert "user" in message.lower()
+
+
+def test_resolve_deliverables_dir_raises_a_clean_error_for_a_symlink_loop(
+    tmp_path,
+) -> None:
+    """Path.resolve() raises the same bare RuntimeError as expanduser(),
+    but for an unrelated cause (a symlink loop under the path), found while
+    checking issue #152's fix for other exceptions on this path. Pinned
+    separately so the two causes cannot be conflated into one wrong
+    message."""
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    a.symlink_to(b)
+    b.symlink_to(a)
+    with pytest.raises(UnresolvableOutputLocation) as excinfo:
+        resolve_deliverables_dir(str(a))
+    message = str(excinfo.value)
+    assert str(a) in message
 
 
 def test_validate_deliverables_dir_accepts_an_empty_existing_directory(

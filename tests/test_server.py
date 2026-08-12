@@ -919,6 +919,31 @@ def test_start_config_preset_path_rejects_a_deliverables_dir_with_a_missing_pare
     assert "does not exist" in str(excinfo.value)
 
 
+def test_start_config_preset_path_rejects_a_deliverables_dir_naming_an_unknown_user(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Issue #152: Path.expanduser() raises a bare RuntimeError for
+    # ~nosuchuser/..., which start_config used to let escape uncaught, so
+    # the assistant saw an internal error instead of something it could act
+    # on. This pins the fix to the same clean ValueError every other
+    # deliverables_dir rejection here already raises, not merely "no
+    # RuntimeError": ToolError is what an unhandled exception also becomes,
+    # so the assertion on the message is what actually distinguishes the
+    # intended clean error from the crash the issue reports.
+    mcp, _state = build_server(FIXTURE_PACK)
+    _begin_run(mcp, tmp_path / "audit-output")
+    _preset_config_env(
+        monkeypatch, tmp_path, deliverables_dir="~nosuchuser/audit-reports"
+    )
+
+    with pytest.raises(ToolError) as excinfo:
+        _call(mcp, "start_config", {})
+    message = str(excinfo.value)
+    assert "~nosuchuser/audit-reports" in message
+    assert "user" in message.lower()
+    assert "cannot be used" in message
+
+
 def test_start_config_preset_path_never_silently_overwrites_an_existing_report(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -1308,6 +1308,71 @@ def test_rejected_custom_output_location_re_renders_the_form_and_keeps_other_fie
         srv.shutdown()
 
 
+def test_check_output_location_endpoint_reports_an_unknown_user(domains) -> None:
+    # Issue #152: Path.expanduser() raises a bare RuntimeError for
+    # ~nosuchuser/..., which neither call site used to catch. This is the
+    # live-preview GET endpoint (config_page.py's
+    # _serve_output_location_check): it must answer with a friendly error
+    # in the JSON payload rather than the request hanging up on the
+    # unhandled RuntimeError.
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        with urllib.request.urlopen(
+            url + "check-output-location?path=~nosuchuser%2Faudit-reports",
+            timeout=5,
+        ) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        assert payload["error"] is not None
+        assert "~nosuchuser/audit-reports" in payload["error"]
+        assert "user" in payload["error"].lower()
+    finally:
+        srv.shutdown()
+
+
+def test_custom_output_location_with_unknown_user_re_renders_the_form_and_keeps_other_fields(
+    domains,
+) -> None:
+    # Issue #152: submitting ~nosuchuser/audit-reports used to crash the
+    # do_POST handler thread with an uncaught RuntimeError, resetting the
+    # connection and losing every other field the user had filled in. The
+    # fix must route this through the same friendly, form-preserving
+    # re-render _InvalidOutputLocation already gets, not merely avoid
+    # raising RuntimeError: the point is the user keeps their form state
+    # and gets a usable message, so this asserts both.
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        token = _fetch_csrf_token(url)
+        status, body = _post(
+            url,
+            {
+                "domain": ["d01"],
+                "issue_mode": "github",
+                "feedback_text": "please keep my note",
+                "output_location": "custom",
+                "output_location_path": "~nosuchuser/audit-reports",
+                "csrf_token": token,
+            },
+        )
+        assert status == 400
+        assert "~nosuchuser/audit-reports" in body
+        assert "please keep my note" in body
+        github_match = re.search(
+            r'<input type="radio" name="issue_mode" value="github"[^>]*>', body
+        )
+        assert github_match is not None
+        assert "checked" in github_match.group(0)
+        # The mistyped path itself is preserved so the user is not left
+        # retyping it.
+        assert "~nosuchuser/audit-reports" in body
+        # No submission was accepted: the run stays configurable, exactly
+        # as it does for every other rejected custom path.
+        assert srv.poll() == "pending"
+    finally:
+        srv.shutdown()
+
+
 def test_default_output_location_shows_the_runs_output_dir(tmp_path, domains) -> None:
     out_dir = tmp_path / "audit-output"
     srv = ConfigServer(domains, output_dir=out_dir)
