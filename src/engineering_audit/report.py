@@ -1644,12 +1644,20 @@ def _issues_section(
         and fetch_status[domain_id] == "no"
         and not filed_url
     )
+    # The verb agrees with the raw ticked count ("3 of 7 issues are", "1 of 7
+    # issues is"), except when there is only one issue in total: "1 issue"
+    # is then the whole subject, a single thing that either is or is not
+    # ticked, so the verb stays singular even when preticked is 0 ("0 of 1
+    # issue is ticked", never "...issue are ticked"). Excluding filed
+    # findings from preticked (issue #154) made that zero case reachable
+    # for the first time, which is what surfaced this.
+    ticked_verb_count = 1 if len(all_findings) == 1 else preticked
     note_text = (
         f"{preticked} of {len(all_findings)} {_plural(len(all_findings), 'issue')} "
-        f"{_plural(preticked, 'is', 'are')} ticked: the critical and high findings. "
-        "The medium and low ones are listed unticked, not hidden. Tick any you also "
-        "want to file, or untick one you do not. An issue already filed this run is "
-        "shown unticked with a link to it."
+        f"{_plural(ticked_verb_count, 'is', 'are')} ticked: the critical and high "
+        "findings. The medium and low ones are listed unticked, not hidden. Tick any "
+        "you also want to file, or untick one you do not. An issue already filed "
+        "this run is shown unticked with a link to it."
     )
     if unfetched_high_priority:
         note_text += (
