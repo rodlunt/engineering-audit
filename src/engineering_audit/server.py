@@ -57,6 +57,7 @@ from engineering_audit.feedback import (
     build_issue_trailing_line,
     build_mailto_url,
     feedback_subject,
+    strip_markdown_emphasis,
 )
 from engineering_audit.issues import (
     IssueFilingError,
@@ -1067,10 +1068,28 @@ def _file_pending_issues(
                 "publish claims without evidence. Nothing was filed for this finding. "
                 f"Already filed before this stop: {run.filed_issues or 'none'}."
             )
-        trailing_line = build_issue_trailing_line(finding, rule)
-        body = f"{finding.issue_body}\n\n{trailing_line}"
+        # issue.domain_id came from iterating run.domain_results in
+        # _run_issues, so it is always a key of it here.
+        domain_result = run.domain_results[issue.domain_id]
+        confidence = (
+            domain_result.self_assessment.confidence
+            if domain_result.self_assessment is not None
+            else None
+        )
+        rules_fetched = _rules_fetched_state(run, issue.domain_id)
+        trailing_line = build_issue_trailing_line(
+            finding, rule, confidence=confidence, rules_fetched=rules_fetched
+        )
+        # issue_title and issue_body are assistant-authored and untrusted,
+        # same as body_md; stripped here for the same reason report.py's
+        # issues section strips them (issue #128), so the two filing paths
+        # (this gh CLI path, and the report's own copy/paste or PAT filing)
+        # can never disagree about the same finding's text.
+        issue_title = strip_markdown_emphasis(finding.issue_title)
+        issue_body = strip_markdown_emphasis(finding.issue_body)
+        body = f"{issue_body}\n\n{trailing_line}"
         try:
-            created = create_issue(target_repo, finding.issue_title, body, labels)
+            created = create_issue(target_repo, issue_title, body, labels)
         except IssueFilingError as exc:
             unfiled = [p.key for p in pending if p.key not in run.filed_issues]
             raise ValueError(
