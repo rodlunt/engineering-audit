@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timezone
 from urllib.parse import quote
 
 from engineering_audit.rules import Rule, citation
@@ -74,18 +74,26 @@ _VERDICT_ORDER = (
 _CODE_SPAN_RE = re.compile(r"(`+)(.*?)\1", re.DOTALL)
 _ASTERISK_RUN_RE = re.compile(r"\*+")
 
+# '/' immediately after a run marks a recursive-glob directory boundary
+# ("*/", "**/"); '.' immediately after marks an extension wildcard
+# ("*.py", "*.log"). Neither is ever how this tool's own output opens
+# real emphasis, so a run followed by either is never eligible to open,
+# regardless of what precedes it (see strip_markdown_emphasis's docstring,
+# safeguard 4, issue #150's residual case).
+_GLOB_LIKE_OPENER_FOLLOW_CHARS = "/."
+
 
 def strip_markdown_emphasis(text: str) -> str:
     """Strip markdown emphasis, leaving code and unpaired asterisks alone
-    (issue #128).
+    (issue #128, hardened by issue #150).
 
-    Two safeguards, both required, neither sufficient alone:
+    Three safeguards, all required, none sufficient alone:
 
     1. **Code spans are protected outright.** Anything between two matching
        runs of backticks (an inline `` `code span` `` or a fenced code
        block, which is the same shape with a longer backtick run) is never
-       inspected by step 2 below. Without this, two unrelated code spans
-       that each hold one multiplication asterisk, e.g.
+       inspected by steps 2 and 3 below. Without this, two unrelated code
+       spans that each hold one multiplication asterisk, e.g.
        "`a * b` and `c * d`", would still get incorrectly paired with each
        other (both are length-1 runs), stripping an asterisk out of code
        that was never markdown.
@@ -94,21 +102,60 @@ def strip_markdown_emphasis(text: str) -> str:
        matches the first '*' of a '**' run as the closing half of an
        earlier, unrelated single '*', so
        "def handler(*args, **kwargs):" corrupts to
-       "def handler(args, *kwargs):": a run of length 1 (before "args")
-       gets paired against the first character of the run of length 2
-       (before "kwargs"), rather than the two runs being recognised as
-       different delimiters. Pairing by matching run *length* instead (a
-       single '*' can only close another single '*'; a '**' can only close
-       another '**') leaves that line untouched entirely, along with a
-       bare "SELECT * FROM users", "glob pattern **/*.py" and
-       "rm -rf build/*": none of those contain two runs of the same
-       length, so nothing in them is a genuine pair.
+       "def handler(args, *kwargs):". Pairing by matching run *length*
+       instead (a single '*' can only close another single '*'; a '**' can
+       only close another '**') leaves that line untouched entirely.
+    3. **A run may only open emphasis when it sits at a word boundary on
+       its outer side and hugs content on its inner side, and may only
+       close emphasis when it hugs content on its inner side** (issue
+       #150: the #128 fix above still corrupted a string holding *two*
+       unpaired single asterisks, since same-length pairing alone happily
+       matches any two lone asterisks against each other regardless of
+       what surrounds them, e.g. "Run rm -rf build/* then rm -rf dist/*"
+       or "Use the glob a/*.py and b/*.py"). Requiring an asterisk that
+       is about to *open* to be preceded by whitespace or the string start
+       is what stops those two cases: in each, every asterisk is preceded
+       by a non-space character ("/"), so none of them ever qualifies as
+       an opener, and a closer with nothing pending to close against is
+       simply left alone. This is deliberately asymmetric: a *closer* is
+       not required to be followed by whitespace, because ordinary prose
+       closes emphasis into punctuation ("*An Overview*," or a rules pack
+       footer's trailing "...durable.*"), and constraining that side would
+       stop those genuine, single-occurrence pairs from stripping. A run
+       can never satisfy both roles at once, since opening requires
+       whitespace/boundary immediately before it and closing requires the
+       opposite (non-space immediately before it), so there is never an
+       open/close ambiguity to resolve.
+    4. **A run immediately followed by '/' or '.' can never open emphasis,
+       even when it otherwise sits at a word boundary** (issue #150's
+       residual case, found on re-review: "The pattern **/*.py and
+       src/**/*.ts both match" still corrupted to "The pattern /*.py and
+       src//*.ts both match"). The first "**" there is genuinely preceded
+       by whitespace ("pattern **/"), so safeguard 3 above waved it
+       through as an opener; the second "**" is preceded by "/" from
+       "src/", making it closer-only, and the two paired. Both are
+       unambiguously glob syntax, not prose: "*/" and "**/" mark a
+       recursive-glob directory boundary, and "*.ext" marks an
+       extension wildcard ("*.py", "*.log", a common shape in a
+       .gitignore line or a cleanup instruction), and neither is ever how
+       this tool's own output opens real emphasis. Excluding both
+       characters closes the class rather than the single reported
+       string: any run followed by one of them is inert on the opening
+       side regardless of what precedes it, so it can never hand a later,
+       unrelated closer-shaped run (another glob fragment elsewhere in
+       the same finding body) something to pair against.
 
-    This is still deliberately not a markdown parser: it does not resolve
-    CommonMark's left/right-flanking rules, and a genuinely intended,
-    unpaired double asterisk in prose is still lost, same as before. The
-    safest parser is the one that is never run; this makes the boundary
-    strip more conservative, not a step towards becoming a renderer.
+    This is still deliberately not a full CommonMark implementation: real
+    CommonMark flanking is punctuation-aware in both directions and would
+    still pair the two asterisks in "a/*.py and b/*.py" into an emphasis
+    span (this is a genuine, if surprising, real-Markdown quirk), which is
+    exactly the corruption this function exists to avoid. The rules above
+    are deliberately more conservative than CommonMark on the opening side
+    to close that gap, at the cost of no longer stripping a genuinely
+    intended, unpaired double asterisk in prose (unchanged from before),
+    or one that happens to open right before a "/" or ".". The safest
+    parser is the one that is never run; this makes the boundary strip
+    more conservative, not a step towards becoming a renderer.
     """
     protected_spans = [match.span() for match in _CODE_SPAN_RE.finditer(text)]
 
@@ -123,23 +170,33 @@ def strip_markdown_emphasis(text: str) -> str:
     if not runs:
         return text
 
-    # Nearest-neighbour pairing per run length, left to right: the first
-    # unmatched run of a given length is a candidate opener; the next run
-    # of that same length closes it. Two runs of different lengths never
-    # pair with each other, which is the property the docstring above
-    # depends on.
+    # Nearest-neighbour pairing per run length, left to right, gated by the
+    # flanking rule from the docstring above: only an opener-capable run
+    # becomes a pending candidate, and only a closer-capable run can pop
+    # one. Two runs of different lengths never pair with each other, which
+    # is the property the docstring above depends on.
     pending: dict[
         int, int
     ] = {}  # run length -> index into `runs` of its open candidate
     drop: set[int] = set()  # indices into `runs` whose asterisks are removed
     for index, run in enumerate(runs):
         length = len(run.group())
-        opener_index = pending.pop(length, None)
-        if opener_index is None:
-            pending[length] = index
-        else:
-            drop.add(opener_index)
+        start, end = run.span()
+        before = text[start - 1] if start > 0 else None
+        after = text[end] if end < len(text) else None
+        can_open = (
+            after is not None
+            and not after.isspace()
+            and after not in _GLOB_LIKE_OPENER_FOLLOW_CHARS
+            and (before is None or before.isspace())
+        )
+        can_close = before is not None and not before.isspace()
+
+        if can_close and length in pending:
+            drop.add(pending.pop(length))
             drop.add(index)
+        elif can_open:
+            pending[length] = index
     if not drop:
         return text
 
@@ -183,14 +240,31 @@ def _parse_iso(value: str | None) -> datetime | None:
     would mean a bug in that validator, not bad input; returning None rather
     than raising keeps this a display-time concern; a report must still
     render over a corrupt or foreign-written run-state file.
+
+    A timestamp with no timezone offset is normalised to UTC (issue #151):
+    RunMeta's validator accepts both a bare '...T10:00:00' timestamp and a
+    '...T10:00:00Z'/offset one, without requiring a pair of them to agree,
+    since both forms are documented as acceptable and each is valid on its
+    own. Left unnormalised, duration_text's subtraction between an
+    assistant-supplied naive timestamp and a server-stamped aware one (or
+    vice versa) raises "can't subtract offset-naive and offset-aware
+    datetimes", an unhandled TypeError inside write_report that loses the
+    whole run: no report and no run-state.json are written, and every
+    retry fails identically because the stored timestamps never change.
+    A mixed pair is not the assistant doing anything unreasonable, and a
+    telemetry figure must never be able to destroy a completed run, so
+    this normalises rather than rejecting the pair.
     """
     if value is None:
         return None
     normalised = value[:-1] + "+00:00" if value.endswith("Z") else value
     try:
-        return datetime.fromisoformat(normalised)
+        parsed = datetime.fromisoformat(normalised)
     except ValueError:
         return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def _format_duration(total_seconds: float) -> str:
@@ -231,8 +305,9 @@ _DURATION_DIVERGENCE_PROPORTION = 0.15
 
 def duration_text(meta: RunMeta) -> str:
     """The "Duration" meta row's value: the assistant-reported span, the
-    server-measured span, or both with a warning when they disagree by more
-    than expected.
+    server-measured span, both with a warning when they disagree by more
+    than expected, or a plain statement that the assistant's pair of
+    timestamps makes no duration possible at all (issue #153).
 
     Never overwrites the assistant's figure with the server's, or vice
     versa (see issue #102): a resumed run legitimately spans a wall-clock
@@ -265,6 +340,31 @@ def duration_text(meta: RunMeta) -> str:
 
     if assistant_duration is None and server_duration is None:
         return "not available"
+
+    # A finished time earlier than its own started time is not noise to
+    # flatten with abs(): it is the strongest evidence available that one
+    # of the two recorded timestamps is wrong (issue #153, a follow-up to
+    # #102's own disagreement check). _format_duration's abs() used to
+    # render this as its magnitude while the divergence check below fired
+    # on the signed difference, so an impossible pair rendered as two
+    # identical figures declaring themselves to disagree. Naming it here,
+    # before anything below ever formats the negative span, keeps a
+    # negative duration from being shown as if it were a real one, and
+    # keeps the server figure from being silently substituted as though it
+    # had been confirmed against the assistant's.
+    if assistant_duration is not None and assistant_duration < 0:
+        if server_duration is None:
+            return (
+                "the assistant reported a finished time earlier than its started "
+                "time, so no duration can be derived from what it recorded, and "
+                "the server did not measure this run either"
+            )
+        return (
+            "the assistant reported a finished time earlier than its started "
+            "time, so no duration can be derived from what it recorded; the "
+            f"server measured {_format_duration(server_duration)}, the only "
+            "usable figure for this run"
+        )
     if server_duration is None:
         # This run (or the resume that continued it) predates server-side
         # duration measurement, so there is nothing to check the

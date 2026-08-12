@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -495,6 +496,147 @@ def test_duration_section_reports_unmeasured_honestly_rather_than_as_agreement()
     assert "not measured by the server, so this could not be checked" in section
 
 
+# ---------------------------------------------------------------------------
+# Regression: issue #151. RunMeta._valid_iso_timestamp accepts a naive
+# timestamp ('...T10:00:00') and an aware one ('...T10:00:00Z') without
+# requiring a pair to agree, since both forms are documented as acceptable.
+# duration_text used to subtract them directly, raising an unhandled
+# TypeError inside write_report for any mixed pair: no report and no
+# run-state.json written, and every retry failing identically because the
+# stored timestamps never change. _parse_iso now normalises a naive
+# timestamp to UTC before any subtraction happens.
+# ---------------------------------------------------------------------------
+
+
+def test_duration_text_handles_a_naive_started_and_aware_finished_pair() -> None:
+    meta = _meta(started="2026-08-09T09:00:00", finished="2026-08-09T09:10:00Z")
+    assert duration_text(meta) == (
+        "10m0s as reported by the assistant; not measured by the server, so "
+        "this could not be checked"
+    )
+
+
+def test_duration_text_handles_an_aware_started_and_naive_finished_pair() -> None:
+    meta = _meta(started="2026-08-09T09:00:00Z", finished="2026-08-09T09:10:00")
+    assert duration_text(meta) == (
+        "10m0s as reported by the assistant; not measured by the server, so "
+        "this could not be checked"
+    )
+
+
+def test_duration_text_handles_a_both_naive_pair() -> None:
+    meta = _meta(started="2026-08-09T09:00:00", finished="2026-08-09T09:10:00")
+    assert "10m0s" in duration_text(meta)
+
+
+def test_duration_text_handles_a_both_aware_pair() -> None:
+    meta = _meta(started="2026-08-09T09:00:00Z", finished="2026-08-09T09:10:00Z")
+    assert "10m0s" in duration_text(meta)
+
+
+def test_write_report_completes_for_a_mixed_naive_and_aware_timestamp_pair(
+    tmp_path,
+) -> None:
+    # The regression is specifically that write_report crashed with an
+    # unhandled TypeError, not just that duration_text misbehaved in
+    # isolation: assert the whole write path completes and produces a file,
+    # the same way a real run's render_report call would.
+    from engineering_audit.report import write_report
+    from engineering_audit.rules import load_pack
+    from engineering_audit.schema import AuditConfig, RunState, Verdict
+
+    pack = load_pack(Path(__file__).parent / "fixture_pack")
+    d01 = pack.get_domain("d01")
+    assert d01 is not None
+    verdicts = [
+        RuleVerdict(rule_id=rule.id, verdict=Verdict.pass_) for rule in d01.rules
+    ]
+    run_state = RunState(
+        meta=_meta(started="2026-08-09T09:00:00", finished="2026-08-09T09:10:00Z"),
+        config=AuditConfig(selected_domain_ids=["d01"], issue_mode="report"),
+        domain_results={
+            "d01": DomainResult(
+                domain_id="d01", status="completed", rule_verdicts=verdicts
+            )
+        },
+    )
+    out_path = tmp_path / "report.html"
+    written = write_report(run_state, pack, out_path)
+    assert written == out_path
+    assert out_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# Regression: issue #153, a follow-up to #102. _format_duration applied
+# abs() to the span, so a finished time earlier than its started time
+# rendered as its magnitude while the divergence check fired on the signed
+# difference: two identical-looking figures declared to disagree. A
+# negative duration must be named as impossible instead.
+# ---------------------------------------------------------------------------
+
+
+def test_duration_text_names_an_impossible_assistant_duration_against_a_server_figure() -> (
+    None
+):
+    meta = _meta(
+        started="2026-08-09T09:05:00Z",
+        finished="2026-08-09T09:00:00Z",  # finished before started
+        server_started="2026-08-09T09:00:00Z",
+        server_finished="2026-08-09T09:05:00Z",
+    )
+    text = duration_text(meta)
+    assert text == (
+        "the assistant reported a finished time earlier than its started "
+        "time, so no duration can be derived from what it recorded; the "
+        "server measured 5m0s, the only usable figure for this run"
+    )
+    # The old bug: two identical-looking "5m0s" figures declared to
+    # disagree. The fix must never produce that sentence shape again.
+    assert "disagree" not in text
+
+
+def test_duration_text_names_an_impossible_assistant_duration_with_no_server_figure() -> (
+    None
+):
+    meta = _meta(
+        started="2026-08-09T09:05:00Z",
+        finished="2026-08-09T09:00:00Z",
+        server_started=None,
+        server_finished=None,
+    )
+    assert duration_text(meta) == (
+        "the assistant reported a finished time earlier than its started "
+        "time, so no duration can be derived from what it recorded, and "
+        "the server did not measure this run either"
+    )
+
+
+def test_duration_text_ordinary_agreeing_case_is_unchanged() -> None:
+    meta = _meta(
+        started="2026-08-09T09:00:00Z",
+        finished="2026-08-09T09:10:00Z",
+        server_started="2026-08-09T09:00:01Z",
+        server_finished="2026-08-09T09:10:02Z",
+    )
+    text = duration_text(meta)
+    assert text == "10m0s (server-measured: 10m1s)"
+
+
+def test_duration_text_ordinary_disagreeing_case_is_unchanged() -> None:
+    meta = _meta(
+        started="2026-08-09T09:00:00Z",
+        finished="2026-08-09T09:00:00Z",  # started == finished, issue #102
+        server_started="2026-08-09T09:00:00Z",
+        server_finished="2026-08-09T09:05:00Z",
+    )
+    text = duration_text(meta)
+    assert text == (
+        "0s as reported by the assistant, but the server measured 5m0s. "
+        "These disagree by more than expected: treat the reported duration "
+        "with caution."
+    )
+
+
 def test_rules_fetched_section_reports_per_domain_fetched_state() -> None:
     sections = build_feedback_sections(
         _meta(),
@@ -718,43 +860,105 @@ def test_strip_markdown_emphasis_removes_matched_pairs() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Regression: a blanket "remove every asterisk" strip corrupted code in
-# finding bodies (a naive first cut of issue #128's fix). This tool's whole
-# output is claims about code, so a finding body containing code is the
-# normal case. The four inputs below are the exact regressions flagged in
-# review; each must survive strip_markdown_emphasis byte for byte, because
-# none of them contains a matched pair of same-length asterisk runs.
+# Corpus: realistic code, path, glob and command strings that must survive
+# strip_markdown_emphasis byte for byte.
+#
+# This corpus exists because individual regressions here have been patched
+# twice already (issue #128's original "remove every asterisk" cut, then
+# issue #150's length-only pairing) and a *third* instance still got
+# through both fixes (a recursive-glob pair, "**/*.py ... src/**/*.ts",
+# found on re-review of #150 itself): each fix's own tests only ever
+# covered the specific strings that motivated it, which is exactly why the
+# next shape of the same underlying bug kept slipping past them. A broad,
+# growing corpus is the durable answer: it is meant to fail loudly the
+# next time this function's pairing or flanking rule changes shape,
+# whether or not anyone thought to add a matching named test for the
+# specific string that breaks.
+#
+# Categories, each represented by more than one string so a length- or
+# position-only fix cannot pass by accident:
+#   - Python varargs/kwargs syntax
+#   - SQL SELECT-star and COUNT(*)
+#   - shell rm/chmod/chown wildcards, more than one command per string
+#   - simple and recursive globs, including two in one string
+#   - extension-wildcard globs ("*.py", "*.log"), the shape a
+#     .gitignore line or a cleanup instruction uses
+#   - a bare '*' used as a bullet point or a multiplication sign
 # ---------------------------------------------------------------------------
 
-_CODE_INPUTS_THAT_MUST_SURVIVE_INTACT = (
+_TEXT_THAT_MUST_SURVIVE_THE_STRIP_INTACT = (
+    # Python
     "def handler(*args, **kwargs):",
+    "call(*args, **kwargs)",
+    # SQL
     "SELECT * FROM users WHERE id = ?",
-    "glob pattern **/*.py matches nested files",
+    "SELECT * FROM users; SELECT * FROM orders",
+    "SELECT COUNT(*) FROM t; SELECT COUNT(*) FROM u",
+    # Shell wildcards, single and multiple commands
     "rm -rf build/*",
+    "Run rm -rf build/* then rm -rf dist/*",
+    "chmod 600 * and chown root *",
+    # Globs, plain and recursive, single and multiple occurrences
+    "glob pattern **/*.py matches nested files",
+    "Use the glob a/*.py and b/*.py",
+    "**/*.py",
+    "src/**/*.ts",
+    "The pattern **/*.py and src/**/*.ts both match",
+    # Extension-wildcard globs (issue #150's residual case is this shape
+    # with '/' instead of '.'; both characters are excluded as opener
+    # follow-characters for the same reason)
+    "Ignore *.pyc; also check build/*.log for leaks",
+    "Files matching *.py or *.ts are excluded",
+    # A bare '*' as a bullet point or a multiplication sign
+    "* bullet one\n* bullet two",
+    "3 * 4 = 12 and 5 * 6 = 30",
+    "a * b * c * d",
 )
 
 
-def test_unpaired_asterisks_in_code_survive_the_strip_intact() -> None:
-    for code in _CODE_INPUTS_THAT_MUST_SURVIVE_INTACT:
-        assert strip_markdown_emphasis(code) == code, (
-            f"strip_markdown_emphasis corrupted code that contains no matched "
-            f"emphasis pair: {code!r} -> {strip_markdown_emphasis(code)!r}"
+def test_corpus_of_code_path_glob_and_command_strings_survives_the_strip_intact() -> (
+    None
+):
+    for text in _TEXT_THAT_MUST_SURVIVE_THE_STRIP_INTACT:
+        assert strip_markdown_emphasis(text) == text, (
+            f"strip_markdown_emphasis corrupted text with no genuine emphasis "
+            f"pair in it: {text!r} -> {strip_markdown_emphasis(text)!r}"
         )
 
 
-def test_a_finding_body_mixing_prose_and_code_only_strips_the_prose_emphasis() -> None:
-    # A realistic finding body: markdown bold in the prose (which must
-    # still be stripped, per #128's original decision) sitting next to a
-    # shell command with an unpaired asterisk (which must not be).
-    body = (
+# ---------------------------------------------------------------------------
+# Corpus: genuine markdown emphasis that must still strip, alongside the
+# corpus above of things that must not. Kept as a companion list for the
+# same reason: a fix that satisfies the "must survive" corpus by refusing
+# to pair anything would be a regression this list catches.
+# ---------------------------------------------------------------------------
+
+_TEXT_THAT_MUST_STRIP = (
+    ("**bold** and *italic* and plain", "bold and italic and plain"),
+    ("***triple***", "triple"),
+    (
+        "*Source: fixture only. Rule id: D01-R05. Volatility: durable.*",
+        "Source: fixture only. Rule id: D01-R05. Volatility: durable.",
+    ),
+    (
         "**The issue**: the build script leaves stale artefacts.\n\n"
-        "**Suggested fix**: run `rm -rf build/*` before packaging."
-    )
-    stripped = strip_markdown_emphasis(body)
-    assert stripped == (
+        "**Suggested fix**: run `rm -rf build/*` before packaging.",
         "The issue: the build script leaves stale artefacts.\n\n"
-        "Suggested fix: run `rm -rf build/*` before packaging."
-    )
+        "Suggested fix: run `rm -rf build/*` before packaging.",
+    ),
+    (
+        "*Note*: see a/*.py for details",
+        "Note: see a/*.py for details",
+    ),
+)
+
+
+def test_corpus_of_genuine_emphasis_still_strips() -> None:
+    for text, expected in _TEXT_THAT_MUST_STRIP:
+        assert strip_markdown_emphasis(text) == expected, (
+            f"strip_markdown_emphasis failed to strip a genuine emphasis pair: "
+            f"{text!r} -> {strip_markdown_emphasis(text)!r}, expected {expected!r}"
+        )
 
 
 def test_asterisks_inside_a_code_span_are_never_paired_across_it() -> None:
