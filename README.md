@@ -298,21 +298,38 @@ detail, including what each run did and did not measure, is in
 ## The report
 
 Self-contained HTML, generated locally; nothing leaves your machine unless you choose to
-send or file it. It contains:
+send or file it. It is a written report meant to be read top to bottom, in this order:
 
-- A **tool performance summary** about the audit run itself: coverage, findings rollup,
-  a prominent could-not-evaluate list with reasons, an equally prominent not-applicable
-  list (per-domain counts and the stated reasons, so a domain set aside in full cannot
-  read as a domain swept clean), the assistant's own per-domain confidence. An unchecked
-  rule is never presented as a pass.
-- **Findings**, each in three parts (the issue and location, why it matters, suggested
-  fix) with the rule's citation appended automatically from the rules pack. The tool
-  refuses to publish a finding whose rule carries no citation.
+- A **computed headline**, first thing on the page: one sentence naming what needs
+  attention first, built from the run's own counts, with a second line saying what was set
+  aside or could not be evaluated so a partial sweep cannot read as a clean bill of health.
+- **Findings**, sorted worst first rather than in the order they were recorded, each in
+  three parts (the issue and location, why it matters, suggested fix) with the rule's
+  citation appended automatically from the rules pack. The tool refuses to publish a
+  finding whose rule carries no citation. Each finding also carries its domain's
+  self-assessed confidence and whether that domain's rule text was fetched this run, so a
+  finding from a shaky domain does not look identical to one from a solid one. The four
+  severity levels are defined on the page, and stated as assigned by the assistant named
+  in the header rather than measured.
 - **Issues**: tick boxes to select findings, then file them to GitHub directly from the
   report (fine-grained PAT, used in memory only, sent only to api.github.com), or copy the
-  selected set for pasting into an LLM or editor, or copy them one at a time.
-- **Feedback to the author**: freeform text plus tick-box consent over which run
-  statistics accompany it. Finding text never leaves your machine through this channel.
+  selected set for pasting into an LLM or editor, or copy them one at a time. Only critical
+  and high findings are ticked on load; nothing is hidden, and an already-filed finding
+  shows unticked with a link to it.
+- A **tool performance summary** about the audit run itself, below the findings rather
+  than above them: one table with a row per domain carrying rule verdicts, findings by
+  severity, files inspected and skipped, confidence and fetch status, with the
+  could-not-evaluate and not-applicable reasons in full. Every number ships with its base,
+  a domain set aside in full cannot read as a domain swept clean, and an unchecked rule is
+  never presented as a pass. Longer sections sit behind summaries that each carry their own
+  numbers, so the detail is one click away rather than occupying the top of the page.
+- **Feedback to the author**: freeform text, two optional questions asking what you
+  concluded from the report and what you would fix first, and tick-box consent over which
+  run statistics accompany any of it. Everything here is off by default and never
+  prefilled. Finding text never leaves your machine through this channel.
+
+It prints sensibly too: the issue-filing section is dropped from print rather than clipped,
+with a line saying where to find it, and collapsed sections are expanded on paper.
 
 A live example: [docs/demo/report.html](docs/demo/report.html) (download and open locally;
 GitHub does not render raw HTML in the browser). Generated from the invented demo rules pack
