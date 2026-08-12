@@ -24,6 +24,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 from pydantic import ValidationError
 
 from engineering_audit.output_location import (
+    UnresolvableOutputLocation,
     existing_deliverables_warning,
     resolve_deliverables_dir,
     validate_deliverables_dir,
@@ -397,11 +398,19 @@ class ConfigServer:
                 elif len(raw_path) > _MAX_OUTPUT_LOCATION_PATH_CHARS:
                     payload = {"resolved": "", "error": "That path is too long."}
                 else:
-                    resolved = resolve_deliverables_dir(raw_path)
-                    payload = {
-                        "resolved": str(resolved),
-                        "error": validate_deliverables_dir(resolved),
-                    }
+                    try:
+                        resolved = resolve_deliverables_dir(raw_path)
+                    except UnresolvableOutputLocation as exc:
+                        # Same treatment as any other unusable path: this is
+                        # a best-effort preview (see the docstring above),
+                        # so an unresolvable ~user is shown as the error
+                        # text next to the field, not a crashed request.
+                        payload = {"resolved": "", "error": str(exc)}
+                    else:
+                        payload = {
+                            "resolved": str(resolved),
+                            "error": validate_deliverables_dir(resolved),
+                        }
                 body = json.dumps(payload).encode("utf-8")
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -709,7 +718,15 @@ class ConfigServer:
                     "Enter a custom path, or choose the default location inside the "
                     "repository."
                 )
-            resolved = resolve_deliverables_dir(raw_path)
+            try:
+                resolved = resolve_deliverables_dir(raw_path)
+            except UnresolvableOutputLocation as exc:
+                # Same friendly, form-preserving re-render as any other bad
+                # custom path (see _InvalidOutputLocation's own docstring):
+                # an unknown ~user is an ordinary typo, not a reason to
+                # crash the handler thread and lose every other field the
+                # user had already filled in.
+                raise _InvalidOutputLocation(str(exc)) from exc
             path_error = validate_deliverables_dir(resolved)
             if path_error:
                 raise _InvalidOutputLocation(path_error)
