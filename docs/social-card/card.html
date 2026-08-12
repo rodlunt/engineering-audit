@@ -1,0 +1,73 @@
+<meta charset="utf-8">
+<title>social card source</title>
+<!--
+  Source for the GitHub social preview card (Settings, Social preview),
+  1280x640 per GitHub's spec.
+
+  This file exists because the first card, added in 7a68d6e, was composed
+  without committing its source. Nothing then tied the card to the product,
+  so when the report was redesigned the card kept advertising a layout that
+  no longer existed, including a summed coverage figure that issue #87 had
+  already removed for having no honest reading. A picture of the product is
+  a claim about the product, and a claim with no way to regenerate it is one
+  nobody can keep true.
+
+  Regenerate: see README.md in this directory.
+
+  Text is driven by query parameters so both this repository's card and the
+  engineering-framework card come from one source rather than two drifting
+  copies:
+    ?title=...&sub=...&tag=...
+-->
+<style>
+  :root {
+    --brand: #2f5d50;      /* sampled from the original card */
+    --mint: #8fd6b8;
+    --tagline: #77b79d;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1280px; height: 640px; overflow: hidden; }
+  body {
+    background: var(--brand);
+    font-family: Ubuntu, "Ubuntu Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    position: relative;
+  }
+  .strip { position: absolute; left: 0; bottom: 0; width: 100%; height: 12px; background: var(--mint); }
+  .text { position: absolute; left: 64px; top: 140px; width: 660px; }
+  h1 {
+    font-size: 72px; line-height: 1.05; font-weight: 700; color: #fff;
+    letter-spacing: -0.02em;
+  }
+  .sub {
+    margin-top: 26px; font-size: 30px; line-height: 1.45; font-weight: 400;
+    color: #dbe7e1;
+  }
+  .tag {
+    margin-top: 34px; font-size: 24px; font-weight: 700; color: var(--tagline);
+  }
+  /* The report capture, bled off the right and bottom edges exactly as the
+     original card did: it reads as a window onto the product rather than a
+     framed thumbnail. */
+  .shot {
+    position: absolute; left: 777px; top: 77px;
+    width: 560px; border-radius: 4px 0 0 0;
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.32);
+  }
+  .shot img { display: block; width: 100%; border-radius: 4px 0 0 0; }
+</style>
+<div class="strip"></div>
+<div class="text">
+  <h1 id="title"></h1>
+  <p class="sub" id="sub"></p>
+  <p class="tag" id="tag"></p>
+</div>
+<div class="shot"><img id="shot" alt=""></div>
+<script>
+  var q = new URLSearchParams(location.search);
+  document.getElementById("title").textContent = q.get("title") || "engineering-audit";
+  document.getElementById("sub").textContent =
+    q.get("sub") || "Your AI coding assistant, auditing a whole repository against sourced engineering rules.";
+  document.getElementById("tag").textContent =
+    q.get("tag") || "MCP server · Claude Code · Codex CLI · Gemini CLI";
+  document.getElementById("shot").src = q.get("shot") || "report-light.png";
+</script>
