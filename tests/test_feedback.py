@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -493,6 +494,76 @@ def test_duration_section_reports_unmeasured_honestly_rather_than_as_agreement()
     meta = _meta(server_started=None, server_finished=None)
     section = build_feedback_sections(meta, _domain_results())["duration"]
     assert "not measured by the server, so this could not be checked" in section
+
+
+# ---------------------------------------------------------------------------
+# Regression: issue #151. RunMeta._valid_iso_timestamp accepts a naive
+# timestamp ('...T10:00:00') and an aware one ('...T10:00:00Z') without
+# requiring a pair to agree, since both forms are documented as acceptable.
+# duration_text used to subtract them directly, raising an unhandled
+# TypeError inside write_report for any mixed pair: no report and no
+# run-state.json written, and every retry failing identically because the
+# stored timestamps never change. _parse_iso now normalises a naive
+# timestamp to UTC before any subtraction happens.
+# ---------------------------------------------------------------------------
+
+
+def test_duration_text_handles_a_naive_started_and_aware_finished_pair() -> None:
+    meta = _meta(started="2026-08-09T09:00:00", finished="2026-08-09T09:10:00Z")
+    assert duration_text(meta) == (
+        "10m0s as reported by the assistant; not measured by the server, so "
+        "this could not be checked"
+    )
+
+
+def test_duration_text_handles_an_aware_started_and_naive_finished_pair() -> None:
+    meta = _meta(started="2026-08-09T09:00:00Z", finished="2026-08-09T09:10:00")
+    assert duration_text(meta) == (
+        "10m0s as reported by the assistant; not measured by the server, so "
+        "this could not be checked"
+    )
+
+
+def test_duration_text_handles_a_both_naive_pair() -> None:
+    meta = _meta(started="2026-08-09T09:00:00", finished="2026-08-09T09:10:00")
+    assert "10m0s" in duration_text(meta)
+
+
+def test_duration_text_handles_a_both_aware_pair() -> None:
+    meta = _meta(started="2026-08-09T09:00:00Z", finished="2026-08-09T09:10:00Z")
+    assert "10m0s" in duration_text(meta)
+
+
+def test_write_report_completes_for_a_mixed_naive_and_aware_timestamp_pair(
+    tmp_path,
+) -> None:
+    # The regression is specifically that write_report crashed with an
+    # unhandled TypeError, not just that duration_text misbehaved in
+    # isolation: assert the whole write path completes and produces a file,
+    # the same way a real run's render_report call would.
+    from engineering_audit.report import write_report
+    from engineering_audit.rules import load_pack
+    from engineering_audit.schema import AuditConfig, RunState, Verdict
+
+    pack = load_pack(Path(__file__).parent / "fixture_pack")
+    d01 = pack.get_domain("d01")
+    assert d01 is not None
+    verdicts = [
+        RuleVerdict(rule_id=rule.id, verdict=Verdict.pass_) for rule in d01.rules
+    ]
+    run_state = RunState(
+        meta=_meta(started="2026-08-09T09:00:00", finished="2026-08-09T09:10:00Z"),
+        config=AuditConfig(selected_domain_ids=["d01"], issue_mode="report"),
+        domain_results={
+            "d01": DomainResult(
+                domain_id="d01", status="completed", rule_verdicts=verdicts
+            )
+        },
+    )
+    out_path = tmp_path / "report.html"
+    written = write_report(run_state, pack, out_path)
+    assert written == out_path
+    assert out_path.exists()
 
 
 def test_rules_fetched_section_reports_per_domain_fetched_state() -> None:

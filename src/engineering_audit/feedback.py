@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timezone
 from urllib.parse import quote
 
 from engineering_audit.rules import Rule, citation
@@ -213,14 +213,31 @@ def _parse_iso(value: str | None) -> datetime | None:
     would mean a bug in that validator, not bad input; returning None rather
     than raising keeps this a display-time concern; a report must still
     render over a corrupt or foreign-written run-state file.
+
+    A timestamp with no timezone offset is normalised to UTC (issue #151):
+    RunMeta's validator accepts both a bare '...T10:00:00' timestamp and a
+    '...T10:00:00Z'/offset one, without requiring a pair of them to agree,
+    since both forms are documented as acceptable and each is valid on its
+    own. Left unnormalised, duration_text's subtraction between an
+    assistant-supplied naive timestamp and a server-stamped aware one (or
+    vice versa) raises "can't subtract offset-naive and offset-aware
+    datetimes", an unhandled TypeError inside write_report that loses the
+    whole run: no report and no run-state.json are written, and every
+    retry fails identically because the stored timestamps never change.
+    A mixed pair is not the assistant doing anything unreasonable, and a
+    telemetry figure must never be able to destroy a completed run, so
+    this normalises rather than rejecting the pair.
     """
     if value is None:
         return None
     normalised = value[:-1] + "+00:00" if value.endswith("Z") else value
     try:
-        return datetime.fromisoformat(normalised)
+        parsed = datetime.fromisoformat(normalised)
     except ValueError:
         return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def _format_duration(total_seconds: float) -> str:
