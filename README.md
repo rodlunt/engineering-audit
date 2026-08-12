@@ -29,9 +29,9 @@ no sign-up; the full sixteen-domain, 260-rule pack is available on request
 
 | Configure a run | Report |
 |---|---|
-| <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/config-page-dark.png"><img alt="Configuration page: domain tick boxes, issue delivery, feedback consent" src="docs/images/config-page-light.png"></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/report-dark.png"><img alt="Report: run metadata and tool performance summary" src="docs/images/report-light.png"></picture> |
+| <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/config-page-dark.png"><img alt="Configuration page: domain tick boxes, issue delivery, feedback consent" src="docs/images/config-page-light.png"></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/report-dark.png"><img alt="Report: computed headline naming what needs attention first, then findings sorted worst first" src="docs/images/report-light.png"></picture> |
 
-<picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/issues-feedback-dark.png"><img alt="Issues with selection tick boxes and GitHub filing, feedback form, footer" src="docs/images/issues-feedback-light.png"></picture>
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/issues-feedback-dark.png"><img alt="Issues with selection tick boxes and GitHub filing, and the per-domain table of rule verdicts" src="docs/images/issues-feedback-light.png"></picture>
 
 ## How to use
 
