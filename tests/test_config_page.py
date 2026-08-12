@@ -134,6 +134,7 @@ def test_get_page_telemetry_consent_defaults_are_all_unticked(domains) -> None:
             "consent_verdict_distribution",
             "consent_duration",
             "consent_rules_fetched",
+            "consent_reader_conclusions",
         ):
             tag_match = re.search(rf'<input type="checkbox" name="{name}"[^>]*>', page)
             assert tag_match is not None, f"{name} checkbox not found on the page"
@@ -343,6 +344,36 @@ def test_post_submission_with_verdict_distribution_duration_and_rules_fetched_co
         # every other consent box.
         assert config.telemetry_consent.coverage is False
         assert config.telemetry_consent.consulted_sources is False
+    finally:
+        srv.shutdown()
+
+
+def test_post_submission_with_reader_conclusions_consent_ticked(domains) -> None:
+    # Issue #135: the reader's own conclusions section gets the same
+    # opt-in-by-default consent checkbox as every other section, even
+    # though the two answers themselves are only ever typed on the
+    # finished report page, never here.
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        token = _fetch_csrf_token(url)
+        payload = urlencode(
+            {
+                "domain": ["d01"],
+                "issue_mode": "report",
+                "consent_reader_conclusions": "on",
+                "csrf_token": token,
+            },
+            doseq=True,
+        ).encode("utf-8")
+        request = urllib.request.Request(url + "submit", data=payload, method="POST")
+        with urllib.request.urlopen(request, timeout=5) as resp:
+            assert resp.status == 200
+
+        config = srv.poll()
+        assert config != "pending"
+        assert config.telemetry_consent.reader_conclusions is True
+        assert config.telemetry_consent.coverage is False
     finally:
         srv.shutdown()
 
@@ -845,6 +876,7 @@ def test_a_draft_never_pre_ticks_a_consent_box(domains) -> None:
             "consent_verdict_distribution",
             "consent_duration",
             "consent_rules_fetched",
+            "consent_reader_conclusions",
         ):
             tag_match = re.search(rf'<input type="checkbox" name="{name}"[^>]*>', page)
             assert tag_match is not None

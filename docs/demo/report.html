@@ -352,6 +352,19 @@
     padding: 0.5rem;
     margin-bottom: 0.75rem;
   }
+  .reader-conclusions { margin-bottom: 0.75rem; }
+  .reader-conclusions p { margin: 0 0 0.5rem; font-size: 0.85rem; color: var(--muted); }
+  .reader-conclusion-textarea {
+    width: 100%;
+    font-family: inherit;
+    font-size: 0.9rem;
+    background: var(--bg);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.5rem;
+    margin-bottom: 0.6rem;
+  }
   .consent-rows { margin-bottom: 0.75rem; }
   .consent-row { display: block; padding: 0.25rem 0; font-size: 0.9rem; }
   .consent-row.locked { color: var(--muted); }
@@ -504,7 +517,7 @@ every finding is available in the on-screen version of this report.</p>
 
 <section id="feedback">
   <h2>Feedback</h2>
-  <div class="feedback-form"><label for="feedback-textarea">Freeform feedback</label><textarea id="feedback-textarea" rows="6"></textarea><div class="consent-rows"><label class="consent-row"><input type="checkbox" id="consent-coverage"> Coverage statistics (files inspected, files skipped)</label><label class="consent-row"><input type="checkbox" id="consent-rollup"> Findings rollup (counts by severity and domain, not the finding text)</label><label class="consent-row"><input type="checkbox" id="consent-self-assessment"> Self assessment (confidence and limits per domain)</label><label class="consent-row"><input type="checkbox" id="consent-environment"> Environment information (assistant, model, tool version)</label><label class="consent-row"><input type="checkbox" id="consent-consulted-sources"> Send fetched references to the maintainer (rule id, URL and why, for each source consulted outside the rules pack). Off by default: URLs fetched while auditing a private repository can hint at what that repository is about.</label><label class="consent-row"><input type="checkbox" id="consent-verdict-distribution"> Rule verdict distribution (counts of pass, finding, not-applicable and could-not-evaluate, per domain and in total; not the finding text)</label><label class="consent-row"><input type="checkbox" id="consent-duration"> Run duration (the assistant-reported span, the server-measured span, and whether they agree). Token counts are not included, since the server never sees them: paste them into the feedback text above if you want to share them.</label><label class="consent-row"><input type="checkbox" id="consent-rules-fetched"> Rules fetched (per domain, whether this run&#x27;s rule text was fetched via get_domain. Shows only that it was fetched, never that it was read or applied.)</label><label class="consent-row locked"><input type="checkbox" checked disabled> Run metadata (always included when sending feedback)</label></div><div class="feedback-actions"><button type="button" onclick="emailFeedback()">Email feedback</button> <button type="button" onclick="copyFeedback(this)">Copy feedback</button></div></div><script type="application/json" id="feedback-sections-data">{"email": "rodneylunt79+audit-feedback@gmail.com", "subject": "Feedback: audit run 2026-08-09 (claude-code)", "consent_keys": ["coverage", "rollup", "self_assessment", "environment", "consulted_sources", "verdict_distribution", "duration", "rules_fetched"], "run_metadata": "Run metadata\n- Tool version: 0.1.0\n- Tool commit: unknown\n- Rules pack: fixture_pack\n- Rules commit: unknown\n- Assistant: claude-code\n- Model: claude-sonnet-5\n- Repository: rodlunt/demo-widgets-app (abc1234def5678)\n- Started: 2026-08-09T09:00:00+00:00\n- Finished: 2026-08-09T09:12:00+00:00", "coverage": "Coverage\n- d01: 14 file(s) inspected, 1 skipped (one binary hat-colour swatch skipped)\n- d02: 6 file(s) inspected, 0 skipped", "rollup": "Findings rollup\nTotal: 1\nBy severity:\n- critical: 0\n- high: 1\n- medium: 0\n- low: 0\nBy domain:\n- d01: 1\n- d02: 0", "self_assessment": "Self-assessment by domain\n- d01: confidence high. Limits: did not check gnome beds outside the main garden plot.\n- d02: confidence medium. Limits: did not check archived shipment routes.", "environment": "Environment\n- No environment information reported for this run.", "consulted_sources": "Sources consulted\n- D01-R01: https://example.invalid/garden-bed-standards (why: checked the shared-bed flag's documented meaning before verdicting this rule)", "verdict_distribution": "Rule verdict distribution\nTotal verdicts: 7\nBy verdict:\n- pass: 4\n- finding: 1\n- not-applicable: 1\n- could-not-evaluate: 1\nBy domain:\n- d01: pass 1, finding 1, not-applicable 1, could-not-evaluate 1\n- d02: pass 3, finding 0, not-applicable 0, could-not-evaluate 0", "duration": "Duration\n12m0s as reported by the assistant; not measured by the server, so this could not be checked", "rules_fetched": "Rules fetched\nShows only that rule text was served by get_domain for each domain this run, never that it was read or applied.\n- d01: fetched\n- d02: fetched"}</script>
+  <div class="feedback-form"><div class="reader-conclusions"><p>Answering these two is optional, and tells the tool author whether the report itself worked, not just how the run went. Tick "Your own conclusions" below to include them if you answer.</p><label for="reader-conclusion-headline">In one sentence, what did this report tell you about your repository?</label><textarea id="reader-conclusion-headline" class="reader-conclusion-textarea" rows="2"></textarea><label for="reader-conclusion-fix-first">What would you fix first?</label><textarea id="reader-conclusion-fix-first" class="reader-conclusion-textarea" rows="2"></textarea></div><label for="feedback-textarea">Freeform feedback</label><textarea id="feedback-textarea" rows="6"></textarea><div class="consent-rows"><label class="consent-row"><input type="checkbox" id="consent-coverage"> Coverage statistics (files inspected, files skipped)</label><label class="consent-row"><input type="checkbox" id="consent-rollup"> Findings rollup (counts by severity and domain, not the finding text)</label><label class="consent-row"><input type="checkbox" id="consent-self-assessment"> Self assessment (confidence and limits per domain)</label><label class="consent-row"><input type="checkbox" id="consent-environment"> Environment information (assistant, model, tool version)</label><label class="consent-row"><input type="checkbox" id="consent-consulted-sources"> Send fetched references to the maintainer (rule id, URL and why, for each source consulted outside the rules pack). Off by default: URLs fetched while auditing a private repository can hint at what that repository is about.</label><label class="consent-row"><input type="checkbox" id="consent-verdict-distribution"> Rule verdict distribution (counts of pass, finding, not-applicable and could-not-evaluate, per domain and in total; not the finding text)</label><label class="consent-row"><input type="checkbox" id="consent-duration"> Run duration (the assistant-reported span, the server-measured span, and whether they agree). Token counts are not included, since the server never sees them: paste them into the feedback text above if you want to share them.</label><label class="consent-row"><input type="checkbox" id="consent-rules-fetched"> Rules fetched (per domain, whether this run&#x27;s rule text was fetched via get_domain. Shows only that it was fetched, never that it was read or applied.)</label><label class="consent-row"><input type="checkbox" id="consent-reader-conclusions"> Your own conclusions after reading this report (what it told you, in one sentence, and what you would fix first; answered below, in your own words, not derived from anything the tool recorded)</label><label class="consent-row locked"><input type="checkbox" checked disabled> Run metadata (always included when sending feedback)</label></div><div class="feedback-actions"><button type="button" onclick="emailFeedback()">Email feedback</button> <button type="button" onclick="copyFeedback(this)">Copy feedback</button></div></div><script type="application/json" id="feedback-sections-data">{"email": "rodneylunt79+audit-feedback@gmail.com", "subject": "Feedback: audit run 2026-08-09 (claude-code)", "consent_keys": ["coverage", "rollup", "self_assessment", "environment", "consulted_sources", "verdict_distribution", "duration", "rules_fetched", "reader_conclusions"], "run_metadata": "Run metadata\n- Tool version: 0.1.0\n- Tool commit: unknown\n- Rules pack: fixture_pack\n- Rules commit: unknown\n- Assistant: claude-code\n- Model: claude-sonnet-5\n- Repository: rodlunt/demo-widgets-app (abc1234def5678)\n- Started: 2026-08-09T09:00:00+00:00\n- Finished: 2026-08-09T09:12:00+00:00", "coverage": "Coverage\n- d01: 14 file(s) inspected, 1 skipped (one binary hat-colour swatch skipped)\n- d02: 6 file(s) inspected, 0 skipped", "rollup": "Findings rollup\nTotal: 1\nBy severity:\n- critical: 0\n- high: 1\n- medium: 0\n- low: 0\nBy domain:\n- d01: 1\n- d02: 0", "self_assessment": "Self-assessment by domain\n- d01: confidence high. Limits: did not check gnome beds outside the main garden plot.\n- d02: confidence medium. Limits: did not check archived shipment routes.", "environment": "Environment\n- No environment information reported for this run.", "consulted_sources": "Sources consulted\n- D01-R01: https://example.invalid/garden-bed-standards (why: checked the shared-bed flag's documented meaning before verdicting this rule)", "verdict_distribution": "Rule verdict distribution\nTotal verdicts: 7\nBy verdict:\n- pass: 4\n- finding: 1\n- not-applicable: 1\n- could-not-evaluate: 1\nBy domain:\n- d01: pass 1, finding 1, not-applicable 1, could-not-evaluate 1\n- d02: pass 3, finding 0, not-applicable 0, could-not-evaluate 0", "duration": "Duration\n12m0s as reported by the assistant; not measured by the server, so this could not be checked", "rules_fetched": "Rules fetched\nShows only that rule text was served by get_domain for each domain this run, never that it was read or applied.\n- d01: fetched\n- d02: fetched", "reader_conclusions": "Reader's own conclusions\nAnswered by the person reading the finished report, in their own words, not computed from repository data or verified by the tool.\nQ1: In one sentence, what did this report tell you about your repository?\nA1: (left blank)\nQ2: What would you fix first?\nA2: (left blank)"}</script>
 </section>
 
 <footer>
@@ -564,6 +577,35 @@ function _readJsonData(elementId) {
 
 /* Feedback */
 
+// reader_conclusions (issue #135) is the one consent-gated section whose
+// content is answered live in the browser, after the report has actually
+// been read, rather than computed at render time from repository data:
+// every other section's server-baked data[key] is already the full text to
+// send. The server cannot know a reader's answer in advance, so it bakes
+// in an "A1: (left blank)" / "A2: (left blank)" placeholder for each
+// question instead; this substitutes the reader's own words for that
+// placeholder when they typed one. The substitution is additive only,
+// never a rebuild of the section text, so data[key] (the value
+// build_feedback_sections computed) is always still present in what this
+// returns whether or not either question was answered. That is what keeps
+// this section subject to the same consent-integrity guarantee (issue
+// #120's guard tests, tests/js/feedback_payload.test.js) as every other
+// section: those tests fake data[key] as an opaque marker with nothing to
+// substitute into, so the replace() calls below are no-ops against it and
+// the marker still comes through unchanged.
+function _readerConclusionsText(baseText) {
+  var text = baseText;
+  var headline = document.getElementById("reader-conclusion-headline");
+  if (headline && headline.value.trim()) {
+    text = text.replace("A1: (left blank)", "A1: " + headline.value.trim());
+  }
+  var fixFirst = document.getElementById("reader-conclusion-fix-first");
+  if (fixFirst && fixFirst.value.trim()) {
+    text = text.replace("A2: (left blank)", "A2: " + fixFirst.value.trim());
+  }
+  return text;
+}
+
 function buildFeedbackPayload() {
   // consent_keys is every section build_feedback_sections returned, minus
   // run_metadata (always included below, never a consent choice), computed
@@ -584,7 +626,10 @@ function buildFeedbackPayload() {
   parts.push(data.run_metadata);
   (data.consent_keys || []).forEach(function (key) {
     var checkbox = document.getElementById("consent-" + key.split("_").join("-"));
-    if (checkbox && checkbox.checked) { parts.push(data[key]); }
+    if (!checkbox || !checkbox.checked) { return; }
+    var text = data[key];
+    if (key === "reader_conclusions") { text = _readerConclusionsText(text); }
+    parts.push(text);
   });
   return parts.join("\n\n");
 }

@@ -329,6 +329,8 @@ def build_feedback_sections(
     *,
     rules_fetched_domain_ids: list[str] | None = None,
     rules_fetch_unknown_domain_ids: list[str] | None = None,
+    reader_conclusion_headline: str | None = None,
+    reader_conclusion_fix_first: str | None = None,
 ) -> dict[str, str]:
     """Build every fixed-text feedback section, keyed by name, regardless of
     consent.
@@ -347,6 +349,19 @@ def build_feedback_sections(
     (the default, None) is the honest choice for a caller with nothing to
     pass, since it renders exactly like a run that predates fetch tracking,
     which is the truth for such a caller.
+
+    reader_conclusion_headline and reader_conclusion_fix_first (issue #135)
+    are the reader's own answers to the two questions on the finished
+    report, if this caller already has them (the MCP path's submit_feedback
+    tool, when the reader dictated an answer to the assistant). Both are
+    None by default, which renders as "(left blank)": the honest render for
+    a caller with nothing to pass, and also the render report.py's own
+    caller always gets, since a report has not been read yet at the moment
+    it renders and so cannot know a reader's answer in advance. The report's
+    own feedback form fills that gap client-side once the reader has
+    actually read it: see static/report.js's buildFeedbackPayload, which
+    substitutes live-typed text for the "(left blank)" placeholder rather
+    than this function ever being called a second time with the answer.
     """
     rules_fetch_unknown_domain_ids = rules_fetch_unknown_domain_ids or []
     meta_lines = [
@@ -515,6 +530,37 @@ def build_feedback_sections(
         + ("\n".join(rules_fetched_lines) or "- No domains audited.")
     )
 
+    # The reader's own words, not the tool's (issue #135). The two questions
+    # are fixed and always shown, so a maintainer reading this next to the
+    # report always knows exactly what was asked; "(left blank)" is the
+    # honest render both for a caller that never had an answer to pass (the
+    # two parameters above default to None) and for a reader who saw the
+    # questions and chose not to answer. Nothing here is computed from
+    # domain_results: whatever a reader restates about their own repository
+    # is exactly as much, or as little, as they chose to type, never more
+    # than the report already showed them.
+    reader_headline_answer = (
+        reader_conclusion_headline.strip()
+        if reader_conclusion_headline and reader_conclusion_headline.strip()
+        else "(left blank)"
+    )
+    reader_fix_first_answer = (
+        reader_conclusion_fix_first.strip()
+        if reader_conclusion_fix_first and reader_conclusion_fix_first.strip()
+        else "(left blank)"
+    )
+    reader_conclusions = "\n".join(
+        [
+            "Reader's own conclusions",
+            "Answered by the person reading the finished report, in their own words, "
+            "not computed from repository data or verified by the tool.",
+            "Q1: In one sentence, what did this report tell you about your repository?",
+            f"A1: {reader_headline_answer}",
+            "Q2: What would you fix first?",
+            f"A2: {reader_fix_first_answer}",
+        ]
+    )
+
     return {
         "run_metadata": run_metadata,
         "coverage": coverage,
@@ -525,6 +571,7 @@ def build_feedback_sections(
         "verdict_distribution": verdict_distribution,
         "duration": duration,
         "rules_fetched": rules_fetched,
+        "reader_conclusions": reader_conclusions,
     }
 
 
@@ -536,6 +583,8 @@ def build_feedback_body(
     *,
     rules_fetched_domain_ids: list[str] | None = None,
     rules_fetch_unknown_domain_ids: list[str] | None = None,
+    reader_conclusion_headline: str | None = None,
+    reader_conclusion_fix_first: str | None = None,
 ) -> str:
     """Build the plain-text feedback body: the user's free text (if any),
     then the always-included run-metadata section, then each consented
@@ -543,12 +592,19 @@ def build_feedback_body(
     omitted entirely, not included empty: an omission is the only way an
     unconsented section can be told apart from a consented one that simply
     had nothing to report.
+
+    reader_conclusion_headline and reader_conclusion_fix_first are the
+    reader's own answers (issue #135), passed through to
+    build_feedback_sections unchanged: see that function's docstring for
+    when a caller has them to give.
     """
     sections_by_name = build_feedback_sections(
         meta,
         domain_results,
         rules_fetched_domain_ids=rules_fetched_domain_ids,
         rules_fetch_unknown_domain_ids=rules_fetch_unknown_domain_ids,
+        reader_conclusion_headline=reader_conclusion_headline,
+        reader_conclusion_fix_first=reader_conclusion_fix_first,
     )
 
     sections: list[str] = []
@@ -572,6 +628,8 @@ def build_feedback_body(
         sections.append(sections_by_name["duration"])
     if consent.rules_fetched:
         sections.append(sections_by_name["rules_fetched"])
+    if consent.reader_conclusions:
+        sections.append(sections_by_name["reader_conclusions"])
 
     return "\n\n".join(sections)
 

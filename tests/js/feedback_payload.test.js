@@ -109,3 +109,77 @@ test("buildFeedbackPayload omits a section whose checkbox is unticked", () => {
     );
   });
 });
+
+// Issue #135: reader_conclusions is the one section answered live, in the
+// browser, after the report has actually been read, rather than baked in
+// at render time. These two tests exercise that substitution directly,
+// using the real placeholder text feedback.py's build_feedback_sections
+// writes ("A1: (left blank)" / "A2: (left blank)"), rather than the opaque
+// markers the generic tests above use: the tests above prove every section
+// survives the consent-integrity contract, but only these prove the
+// reader's own typed words actually reach the assembled payload, and that
+// the report's own placeholder text does not survive once they have.
+if (consentKeys.indexOf("reader_conclusions") !== -1) {
+  const READER_CONCLUSIONS_TEXT = [
+    "Reader's own conclusions",
+    "Answered by the person reading the finished report, in their own words, " +
+      "not computed from repository data or verified by the tool.",
+    "Q1: In one sentence, what did this report tell you about your repository?",
+    "A1: (left blank)",
+    "Q2: What would you fix first?",
+    "A2: (left blank)",
+  ].join("\n");
+
+  test("buildFeedbackPayload substitutes the reader's live-typed answers for the report's placeholders", () => {
+    const data = buildFakeSectionsData(consentKeys);
+    data.reader_conclusions = READER_CONCLUSIONS_TEXT;
+    const elements = {
+      "feedback-sections-data": { textContent: JSON.stringify(data) },
+      "feedback-textarea": { value: "" },
+      "reader-conclusion-headline": { value: "It found three hardcoded secrets." },
+      "reader-conclusion-fix-first": { value: "The hardcoded API key in config.py." },
+    };
+    consentKeys.forEach(function (key) {
+      elements["consent-" + key.split("_").join("-")] = { checked: true };
+    });
+    global.document = fakeDocument(elements);
+
+    const payload = buildFeedbackPayload();
+
+    assert.ok(
+      payload.indexOf("A1: It found three hardcoded secrets.") !== -1,
+      "the live-typed headline answer did not reach the assembled payload"
+    );
+    assert.ok(
+      payload.indexOf("A2: The hardcoded API key in config.py.") !== -1,
+      "the live-typed fix-first answer did not reach the assembled payload"
+    );
+    assert.equal(
+      payload.indexOf("(left blank)"),
+      -1,
+      "the report's own placeholder text survived even though both questions were answered"
+    );
+  });
+
+  test("buildFeedbackPayload leaves the report's placeholders untouched when nothing was typed", () => {
+    const data = buildFakeSectionsData(consentKeys);
+    data.reader_conclusions = READER_CONCLUSIONS_TEXT;
+    const elements = {
+      "feedback-sections-data": { textContent: JSON.stringify(data) },
+      "feedback-textarea": { value: "" },
+      "reader-conclusion-headline": { value: "" },
+      "reader-conclusion-fix-first": { value: "" },
+    };
+    consentKeys.forEach(function (key) {
+      elements["consent-" + key.split("_").join("-")] = { checked: true };
+    });
+    global.document = fakeDocument(elements);
+
+    const payload = buildFeedbackPayload();
+
+    assert.ok(
+      payload.indexOf(READER_CONCLUSIONS_TEXT) !== -1,
+      "the section text must come through unchanged when neither question was answered"
+    );
+  });
+}

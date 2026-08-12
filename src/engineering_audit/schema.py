@@ -556,6 +556,17 @@ class TelemetryConsent(BaseModel):
     # read or applied; the configuration page's label must preserve that
     # same distinction rather than overclaiming it.
     rules_fetched: bool = False
+    # The reader's own answers to the two summary questions on the finished
+    # report (issue #135): what the report told them, in one sentence, and
+    # what they said they would fix first. The only section here answered
+    # by a person after reading the artefact rather than computed from the
+    # run, and the only test of whether the presentation actually worked;
+    # comparing this against what the report claims is the point. Off by
+    # default like every other section, and the two answers themselves are
+    # never prefilled: a blank answer sent alongside a ticked box means the
+    # reader saw the questions and chose not to answer, not that a default
+    # was pre-supplied for them.
+    reader_conclusions: bool = False
 
 
 class AuditConfig(BaseModel):

@@ -1872,7 +1872,11 @@ def _register_feedback_tools(mcp: MCPServer, state: AppState) -> None:
     """The optional feedback channel to the tool author."""
 
     @mcp.tool()
-    def submit_feedback(extra_text: str | None = None) -> dict[str, Any]:
+    def submit_feedback(
+        extra_text: str | None = None,
+        report_conclusion: str | None = None,
+        report_fix_first: str | None = None,
+    ) -> dict[str, Any]:
         """Send optional run feedback to the tool author.
 
         Requires a resolved configuration. There is nothing to send unless
@@ -1887,9 +1891,20 @@ def _register_feedback_tools(mcp: MCPServer, state: AppState) -> None:
         severity/domain id, self-assessment, environment, consulted sources
         by rule id/url/why, rule verdict distribution by domain and in
         total, run duration and the divergence verdict between its two
-        measurements, and which domains had their rule text fetched via
-        get_domain); an unconsented section is left out entirely. Finding
-        text itself is never included, only counts.
+        measurements, which domains had their rule text fetched via
+        get_domain, and the reader's own conclusions after reading the
+        report); an unconsented section is left out entirely. Finding text
+        itself is never included, only counts.
+
+        report_conclusion and report_fix_first (issue #135) are the
+        reader's own answers, in their own words, to the two questions the
+        finished report's own feedback form asks: in one sentence, what did
+        this report tell them about their repository, and what would they
+        fix first. Pass these only if the human using this session actually
+        read the finished report and dictated an answer back; never guess
+        or paraphrase one on their behalf. Both are ignored unless the
+        reader_conclusions section was consented to on the configuration
+        page, same as every other telemetry section here.
 
         Files a labelled issue on the tool author's feedback repository via
         gh. If gh is unavailable or filing fails for any reason, the
@@ -1929,6 +1944,8 @@ def _register_feedback_tools(mcp: MCPServer, state: AppState) -> None:
             # else this pair is read (see _rules_fetch_summary above).
             rules_fetched_domain_ids=sorted(run.rules_fetched),
             rules_fetch_unknown_domain_ids=sorted(run.rules_fetch_unknown),
+            reader_conclusion_headline=report_conclusion,
+            reader_conclusion_fix_first=report_fix_first,
         )
         subject = feedback_subject(run.meta)
 

@@ -251,6 +251,7 @@ def _form_state_from_fields(fields: dict[str, list[str]]) -> _FormState:
             verdict_distribution="consent_verdict_distribution" in fields,
             duration="consent_duration" in fields,
             rules_fetched="consent_rules_fetched" in fields,
+            reader_conclusions="consent_reader_conclusions" in fields,
         ),
         output_location_mode=fields.get("output_location", ["default"])[0],
         output_location_path=fields.get("output_location_path", [""])[0].strip(),
@@ -666,6 +667,9 @@ class ConfigServer:
             else "",
             consent_duration_checked="checked" if consent.duration else "",
             consent_rules_fetched_checked="checked" if consent.rules_fetched else "",
+            consent_reader_conclusions_checked="checked"
+            if consent.reader_conclusions
+            else "",
             csrf_token=html.escape(self._csrf_token),
             output_location_error=output_location_error_html,
             output_dir_display=output_dir_display,
@@ -693,6 +697,7 @@ class ConfigServer:
             verdict_distribution="consent_verdict_distribution" in fields,
             duration="consent_duration" in fields,
             rules_fetched="consent_rules_fetched" in fields,
+            reader_conclusions="consent_reader_conclusions" in fields,
         )
 
         output_location_mode = fields.get("output_location", ["default"])[0]

@@ -321,7 +321,10 @@ def test_tool_surface_is_the_ten_tools_with_their_documented_parameters() -> Non
         "record_domain_result": (["replace", "result"], ["result"]),
         "run_status": ([], []),
         "file_issues": (["confirm", "repo"], []),
-        "submit_feedback": (["extra_text"], []),
+        "submit_feedback": (
+            ["extra_text", "report_conclusion", "report_fix_first"],
+            [],
+        ),
         "render_report": (["finished"], ["finished"]),
     }
 
@@ -2581,6 +2584,76 @@ def test_submit_feedback_includes_verdict_distribution_duration_and_rules_fetche
     assert "unrecorded" not in body
     # Finding text must never leave via feedback, only counts.
     assert "Two gnomes share bed-14 without the shared-bed flag" not in body
+
+
+def test_submit_feedback_reader_conclusions_omitted_unless_consented(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Issue #135: report_conclusion/report_fix_first are ignored unless the
+    # reader_conclusions section was consented to, same as every other
+    # telemetry section this tool sends.
+    _fake, calls = _fake_create_issue()
+    monkeypatch.setattr(server_module, "create_issue", _fake)
+    monkeypatch.setattr(server_module, "gh_available", lambda: True)
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    _begin_run(mcp, tmp_path / "audit-output")
+    _preset_config_env(
+        monkeypatch,
+        tmp_path,
+        feedback_text="The gnome export was slow.",
+        telemetry_consent={"reader_conclusions": False},
+    )
+    _call(mcp, "start_config", {})
+    _call(mcp, "get_config", {"timeout_s": 1})
+    _record_d01_with_finding(mcp)
+    _record_d02_all_pass(mcp)
+
+    _call(
+        mcp,
+        "submit_feedback",
+        {
+            "report_conclusion": "It found a shared-bed flag bug.",
+            "report_fix_first": "The missing flag on bed-14.",
+        },
+    )
+    body = calls[0]["body"]
+    assert "Reader's own conclusions" not in body
+    assert "shared-bed flag bug" not in body
+
+
+def test_submit_feedback_reader_conclusions_included_when_consented(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake, calls = _fake_create_issue()
+    monkeypatch.setattr(server_module, "create_issue", _fake)
+    monkeypatch.setattr(server_module, "gh_available", lambda: True)
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    _begin_run(mcp, tmp_path / "audit-output")
+    _preset_config_env(
+        monkeypatch,
+        tmp_path,
+        feedback_text="The gnome export was slow.",
+        telemetry_consent={"reader_conclusions": True},
+    )
+    _call(mcp, "start_config", {})
+    _call(mcp, "get_config", {"timeout_s": 1})
+    _record_d01_with_finding(mcp)
+    _record_d02_all_pass(mcp)
+
+    _call(
+        mcp,
+        "submit_feedback",
+        {
+            "report_conclusion": "It found a shared-bed flag bug.",
+            "report_fix_first": "The missing flag on bed-14.",
+        },
+    )
+    body = calls[0]["body"]
+    assert "Reader's own conclusions" in body
+    assert "A1: It found a shared-bed flag bug." in body
+    assert "A2: The missing flag on bed-14." in body
 
 
 def test_submit_feedback_gh_unavailable_returns_mailto_with_encoded_body(

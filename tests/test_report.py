@@ -631,6 +631,79 @@ def test_rules_fetched_has_nothing_to_check_when_no_domain_reached_a_verdict() -
     assert "never being fetched this run" not in rendered
 
 
+def test_both_provenance_checks_blind_fires_the_loud_notice() -> None:
+    # Issue #136: when both the tool's and the rules pack's staleness checks
+    # come back could-not-check, that is the one combination where a stale
+    # build running stale rules is completely undetectable, and nothing
+    # previously said so beyond the two header rows most readers never read.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.meta.update_check = (
+        "could-not-check: installed build's commit is unknown (not a git install)"
+    )
+    run_state.meta.pack_update_check = (
+        "could-not-check: rules pack's commit is unknown (not a git checkout)"
+    )
+    rendered = render_report(run_state, pack)
+
+    assert "Both provenance checks are blind" in rendered
+    assert "could-not-check</code>" in rendered
+    assert (
+        "build of unknown age judging your repository against rules of unknown age"
+        in (rendered)
+    )
+    # Never the stronger claim: this reports that the comparison could not
+    # be made, never that the build or the rules are actually stale.
+    assert "That is not evidence either is stale" in rendered
+
+
+def test_only_one_provenance_check_blind_does_not_fire_the_loud_notice() -> None:
+    # One check working is a materially different, less serious situation:
+    # the notice exists only for the combination where nothing can tell the
+    # reader anything at all.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.meta.update_check = "current (v0.7.0)"
+    run_state.meta.pack_update_check = (
+        "could-not-check: rules pack's commit is unknown (not a git checkout)"
+    )
+    rendered = render_report(run_state, pack)
+
+    assert "Both provenance checks are blind" not in rendered
+
+
+def test_neither_provenance_check_could_not_check_does_not_fire_the_loud_notice() -> (
+    None
+):
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.meta.update_check = "current (v0.7.0)"
+    run_state.meta.pack_update_check = "current (v3.2.0)"
+    rendered = render_report(run_state, pack)
+
+    assert "Both provenance checks are blind" not in rendered
+
+
+def test_provenance_blind_notice_does_not_fire_for_not_checked_or_unset() -> None:
+    # "not-checked" (turned off deliberately) and None (predates the field)
+    # are both distinct from "could-not-check" (attempted and failed), and
+    # neither is the combination this notice exists to flag.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.meta.update_check = "not-checked: update check disabled by configuration"
+    run_state.meta.pack_update_check = (
+        "could-not-check: rules pack's commit is unknown (not a git checkout)"
+    )
+    rendered = render_report(run_state, pack)
+    assert "Both provenance checks are blind" not in rendered
+
+    run_state2 = _base_run_state(pack)
+    run_state2.meta.update_check = None
+    run_state2.meta.pack_update_check = None
+    rendered2 = render_report(run_state2, pack)
+    assert "Both provenance checks are blind" not in rendered2
+
+
 def test_not_applicable_verdict_for_unknown_rule_id_raises() -> None:
     # Same loudness the could-not-evaluate path already has: a verdict for a
     # rule id absent from the pack is a broken run, not a cosmetic gap.
@@ -1428,6 +1501,7 @@ def test_feedback_consent_checkboxes_prefilled_true_from_config() -> None:
         verdict_distribution=True,
         duration=True,
         rules_fetched=True,
+        reader_conclusions=True,
     )
     rendered = render_report(run_state, pack)
 
@@ -1440,6 +1514,7 @@ def test_feedback_consent_checkboxes_prefilled_true_from_config() -> None:
         "consent-verdict-distribution",
         "consent-duration",
         "consent-rules-fetched",
+        "consent-reader-conclusions",
     ):
         match = re.search(rf'<input type="checkbox" id="{input_id}"([^>]*)>', rendered)
         assert match is not None, f"checkbox {input_id!r} not found"
@@ -1458,6 +1533,7 @@ def test_feedback_consent_checkboxes_prefilled_false_from_config() -> None:
         verdict_distribution=False,
         duration=False,
         rules_fetched=False,
+        reader_conclusions=False,
     )
     rendered = render_report(run_state, pack)
 
@@ -1470,6 +1546,7 @@ def test_feedback_consent_checkboxes_prefilled_false_from_config() -> None:
         "consent-verdict-distribution",
         "consent-duration",
         "consent-rules-fetched",
+        "consent-reader-conclusions",
     ):
         match = re.search(rf'<input type="checkbox" id="{input_id}"([^>]*)>', rendered)
         assert match is not None, f"checkbox {input_id!r} not found"
