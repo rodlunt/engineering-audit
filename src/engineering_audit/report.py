@@ -36,6 +36,7 @@ from engineering_audit.schema import (
     DomainResult,
     Finding,
     IncompleteResultError,
+    RunMeta,
     RunState,
     UnknownRuleIdError,
     Verdict,
@@ -1017,6 +1018,59 @@ _RULES_FETCHED_LIMIT = (
 )
 
 
+def _provenance_blind_notice(meta: RunMeta) -> str:
+    """A loud line for the one state neither staleness check's own header
+    row makes obvious: both the tool update check and the rules pack update
+    check came back could-not-check on the same run (issue #136).
+
+    Each check is honest on its own: 'could-not-check' already refuses to
+    be mistaken for 'current' (see update_check.py). What the two header
+    rows do not do is say what it costs the reader when *both* land there
+    at once, which is the one combination where a stale build running
+    stale rules is completely undetectable, because the two mechanisms
+    that exist to catch exactly that could not run at all. One check
+    working is a materially different, much less serious situation (this
+    build's age, or this pack's age, is still known) and must never trip
+    this notice; only the combination does.
+
+    Fires on the 'could-not-check' prefix only, never on 'not-checked'
+    (the check was turned off deliberately, a choice, not a mystery) and
+    never on None (an older run-state file that predates the field
+    entirely, which is a different, and separately honest, kind of
+    unknown). Never fatal and never guesses a version, matching the
+    constraint the tri-state detection itself already follows: an unknown
+    provenance is a fact to report, not a run to refuse.
+
+    Matches _RULES_FETCHED_LIMIT's register: says exactly what is and is
+    not known, and no more. It does not say the findings are wrong, only
+    that nothing here can rule out stale rules or a stale build. Wording
+    discipline carried over from issue #110 too: 'served' is the rules
+    pack's own fetch status, not this notice's business; what this notice
+    reports is only that the *version comparison itself* could not run,
+    never that the rules or the build are in fact stale.
+    """
+    tool_check = meta.update_check or ""
+    pack_check = meta.pack_update_check or ""
+    if not (
+        tool_check.startswith("could-not-check")
+        and pack_check.startswith("could-not-check")
+    ):
+        return ""
+    return (
+        '<div class="perf-block prominent">'
+        "<h3>Both provenance checks are blind</h3>"
+        "<p>The Tool update and Rules pack update rows above both read "
+        "<code>could-not-check</code>: neither this build's age nor this rules pack's age "
+        "could be compared against what has since been released. That is not evidence "
+        "either is stale, only that nothing here can tell you either way. This run is a "
+        "build of unknown age judging your repository against rules of unknown age, and "
+        'no mechanism in this report can detect if either has drifted. See "What keeps '
+        'the staleness checks working" in the project README for the install shapes '
+        "that keep both checks attached.</p>"
+        "</div>"
+    )
+
+
 def _domain_ids_with_verdicts(selected: dict[str, DomainResult]) -> list[str]:
     """The selected domains that recorded at least one rule verdict.
 
@@ -1845,6 +1899,7 @@ def render_report(run_state: RunState, pack: RulesPack) -> str:
     }
 
     performance_summary = (
+        f"{_provenance_blind_notice(run_state.meta)}"
         f'<div class="perf-block"><h3>Every domain, side by side</h3>'
         f"{_domain_table(run_state, selected, domain_titles, all_findings)}</div>"
         f'<div class="perf-block"><h3>Run totals</h3>'
