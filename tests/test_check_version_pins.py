@@ -182,17 +182,34 @@ def test_zero_prose_pins_fails_loudly(
     assert "zero known prose version mentions" in captured.err
 
 
-def test_zero_manifest_pins_fails_loudly(
+def test_zero_manifest_pins_is_accepted_because_none_are_shipped(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """Zero manifest pins passes, unlike zero at-pins or zero prose pins.
+
+    This test previously asserted the opposite. The guard was correct while
+    the Gemini extension manifest existed and was the one manifest the check
+    must always find; it went with the packaged extension in issue #145, so
+    zero is now the true state of the tree and a guard on it would fail
+    every healthy build. That is a real weakening of this check, made
+    deliberately, which is why it is spelled out here rather than left as a
+    deleted test: an alarm that fires on the correct answer gets switched
+    off, and then it is not there when it matters.
+
+    The protection that remains is that discovery still runs, so a manifest
+    added later is checked from the moment it lands. The two tests below
+    pin that the other two categories DO still fail loudly on zero, so this
+    change cannot be read as the zero-guard having been dropped wholesale.
+    """
     module = _load_module()
     repo = _build_repo(tmp_path, manifest_version=None)
 
     exit_code = _run_main(module, repo)
 
-    assert exit_code == 2
+    assert exit_code == 0
     captured = capsys.readouterr()
-    assert 'zero manifest "version" fields' in captured.err
+    assert 'manifest "version" fields found: 0' in captured.out
+    assert 'zero manifest "version" fields' not in captured.err
 
 
 def test_real_repository_passes_its_own_check() -> None:

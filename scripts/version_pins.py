@@ -86,6 +86,15 @@ AT_PIN_RE = re.compile(r"@v(\d+\.\d+\.\d+)")
 #   currently vX.Y.Z      SECURITY.md's support table
 #   placeholder: vX.Y.Z   the bug report issue template's example value
 #
+# "--ref v" currently matches nothing: it existed for the Gemini extension
+# install command, which went with the packaged extension in issue #145. It
+# is kept rather than deleted because the shape is not Gemini-specific and
+# costs nothing to watch for, so a future reintroduction anywhere is
+# discovered on the release that adds it rather than the one after. Note
+# that the zero-guard in check-version-pins.py is on the prose category as
+# a whole, not per lead-in, so an individual shape falling out of use like
+# this one does not fail the build.
+#
 # The version is always the last captured group and sits at the very end of
 # the full match, which rewrite_text_pin_file() below relies on to
 # reconstruct the lead-in unchanged.

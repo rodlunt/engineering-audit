@@ -117,16 +117,51 @@ run the audit. Headless notes and caveats: [integrations/codex/](integrations/co
 
 #### Gemini CLI
 
-Everything for Gemini ships as an extension (documented, untested: Gemini CLI was not
-available to exercise it; check `gemini --help` against the README's flags before an
-unattended run):
+There is no packaged extension. Gemini CLI resolves an extension only from a repository
+root, which would put a manifest, a `GEMINI.md` and a `commands/` directory in the root of a
+tool that also serves Claude Code and Codex, and none of it was ever exercised against a real
+Gemini CLI. Registering the server by hand is one paste and has no such cost.
 
-```sh
-gemini extensions install https://github.com/rodlunt/engineering-audit --ref v0.7.0
+Add the server to `~/.gemini/settings.json` (or a project-level `.gemini/settings.json`),
+swapping in the taster path from Step 3:
+
+```json
+{
+  "mcpServers": {
+    "engineering-audit": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/rodlunt/engineering-audit@v0.7.0",
+        "engineering-audit-mcp"
+      ],
+      "env": {
+        "ENGINEERING_AUDIT_RULES_DIR": "/path/to/engineering-audit/examples/taster-rules"
+      }
+    }
+  }
+}
 ```
 
-The extension registers the MCP server, adds an `/audit` command, and carries the inline
-trigger fragment as its context file. Manual alternative and details:
+Then start `gemini` in the repository you want audited and paste:
+
+```
+Audit this repository against the engineering rules. Read AUDIT.md from the
+engineering-audit repository and follow it, driving the engineering-audit MCP tools
+through to a rendered report.
+```
+
+Inline triggers work too, and need no extension: generate the fragment and merge it into
+whichever `GEMINI.md` tier you want it to apply to.
+
+```sh
+uvx --from git+https://github.com/rodlunt/engineering-audit@v0.7.0 engineering-audit-fragments \
+    --rules-dir /path/to/engineering-audit/examples/taster-rules --out-dir .
+cat GEMINI-fragment.md >> GEMINI.md
+```
+
+Gemini support is **documented, untested**: Gemini CLI was not available to exercise any of
+it. Check `gemini --help` before an unattended run. Details and caveats:
 [integrations/gemini/](integrations/gemini/).
 
 #### Headless / CI
