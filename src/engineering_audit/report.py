@@ -1541,6 +1541,7 @@ def _issues_section(
     # expressed in the type system, only guarded by this comment and the
     # tests that pin it.
     seen: Counter[str] = Counter()
+    filed_urls: list[str | None] = []
     for index, (domain_id, finding) in enumerate(all_findings):
         # render_report has already confirmed every finding's rule_id is in
         # the pack and carries a cited source, so this lookup and the
@@ -1573,6 +1574,7 @@ def _issues_section(
         seen[finding.rule_id] += 1
         finding_key = f"{finding.rule_id}#{seen[finding.rule_id]}"
         filed_url = issue_urls.get(finding_key)
+        filed_urls.append(filed_url)
         textarea_id = f"issue-text-{index}"
         status_id = f"issue-status-{index}"
 
@@ -1623,22 +1625,39 @@ def _issues_section(
             "</div>"
         )
 
+    # A finding that was already filed this run renders as a disabled,
+    # unticked "already filed" link above (see the `if filed_url:` branch),
+    # regardless of severity or fetch status. Both counts below must exclude
+    # it too, or the note claims a box is ticked (or unticked-for-being-
+    # unfetched) that is actually unticked-for-being-filed (issue #154).
     preticked = sum(
         1
-        for domain_id, f in all_findings
-        if f.severity.value in _PRETICKED_SEVERITIES and fetch_status[domain_id] != "no"
+        for (domain_id, f), filed_url in zip(all_findings, filed_urls)
+        if f.severity.value in _PRETICKED_SEVERITIES
+        and fetch_status[domain_id] != "no"
+        and not filed_url
     )
     unfetched_high_priority = sum(
         1
-        for domain_id, f in all_findings
-        if f.severity.value in _PRETICKED_SEVERITIES and fetch_status[domain_id] == "no"
+        for (domain_id, f), filed_url in zip(all_findings, filed_urls)
+        if f.severity.value in _PRETICKED_SEVERITIES
+        and fetch_status[domain_id] == "no"
+        and not filed_url
     )
+    # The verb agrees with the raw ticked count ("3 of 7 issues are", "1 of 7
+    # issues is"), except when there is only one issue in total: "1 issue"
+    # is then the whole subject, a single thing that either is or is not
+    # ticked, so the verb stays singular even when preticked is 0 ("0 of 1
+    # issue is ticked", never "...issue are ticked"). Excluding filed
+    # findings from preticked (issue #154) made that zero case reachable
+    # for the first time, which is what surfaced this.
+    ticked_verb_count = 1 if len(all_findings) == 1 else preticked
     note_text = (
         f"{preticked} of {len(all_findings)} {_plural(len(all_findings), 'issue')} "
-        f"{_plural(preticked, 'is', 'are')} ticked: the critical and high findings. "
-        "The medium and low ones are listed unticked, not hidden. Tick any you also "
-        "want to file, or untick one you do not. An issue already filed this run is "
-        "shown unticked with a link to it."
+        f"{_plural(ticked_verb_count, 'is', 'are')} ticked: the critical and high "
+        "findings. The medium and low ones are listed unticked, not hidden. Tick any "
+        "you also want to file, or untick one you do not. An issue already filed "
+        "this run is shown unticked with a link to it."
     )
     if unfetched_high_priority:
         note_text += (

@@ -3016,3 +3016,232 @@ def test_unfetched_critical_finding_is_unticked_despite_severity() -> None:
         "1 critical or high finding from a domain whose rules were never fetched "
         "this run is listed unticked too" in rendered
     )
+
+
+def test_preticked_note_matches_boxes_actually_ticked_when_a_finding_is_filed() -> None:
+    # Issue #154: a finding already filed this run renders as a disabled,
+    # unticked "already filed" link (the `if filed_url:` branch a few lines
+    # above the note this test checks), no matter its severity or fetch
+    # status. The "N of M issues are ticked" note has to count what actually
+    # ended up ticked, not what severity alone would have ticked, or it
+    # overstates the selection: a run that filed its critical findings would
+    # have the note claim boxes are ticked when every one of them is a
+    # disabled link.
+    #
+    # Deliberately does not recompute the expected N from the input
+    # findings' severities: doing that would let this test repeat the same
+    # "ignores filed_url" mistake the production code made and pass while
+    # the bug is still present. Instead it pulls both numbers out of the
+    # rendered HTML independently, the note's own claim and a count of
+    # actual `checked` attributes, and asserts they agree.
+    pack = _pack()
+    d01 = pack.get_domain("d01")
+    d02 = pack.get_domain("d02")
+    d01_verdicts = _all_pass_verdicts(d01)
+    d01_verdicts[0] = RuleVerdict(rule_id="D01-R01", verdict=Verdict.FINDING)
+    d01_verdicts[1] = RuleVerdict(rule_id="D01-R02", verdict=Verdict.FINDING)
+    d01_verdicts[2] = RuleVerdict(rule_id="D01-R03", verdict=Verdict.FINDING)
+    d02_verdicts = _all_pass_verdicts(d02)
+    d02_verdicts[0] = RuleVerdict(rule_id="D02-R01", verdict=Verdict.FINDING)
+
+    run_state = RunState(
+        meta=_meta(),
+        config=AuditConfig(selected_domain_ids=["d01", "d02"], issue_mode="report"),
+        domain_results={
+            "d01": DomainResult(
+                domain_id="d01",
+                status="completed",
+                rule_verdicts=d01_verdicts,
+                findings=[
+                    Finding(
+                        rule_id="D01-R01",
+                        severity=Severity.CRITICAL,
+                        title="not filed, stays ticked",
+                        location="ledger/gnomes.py:1",
+                        body_md="x",
+                        issue_title="x",
+                        issue_body="x",
+                    ),
+                    Finding(
+                        rule_id="D01-R02",
+                        severity=Severity.HIGH,
+                        title="already filed this run",
+                        location="ledger/beds.py:42",
+                        body_md="x",
+                        issue_title="x",
+                        issue_body="x",
+                    ),
+                    Finding(
+                        rule_id="D01-R03",
+                        severity=Severity.LOW,
+                        title="low severity, never ticked either way",
+                        location="ledger/beards.py:1",
+                        body_md="x",
+                        issue_title="x",
+                        issue_body="x",
+                    ),
+                ],
+            ),
+            "d02": DomainResult(
+                domain_id="d02",
+                status="completed",
+                rule_verdicts=d02_verdicts,
+                findings=[
+                    Finding(
+                        rule_id="D02-R01",
+                        severity=Severity.CRITICAL,
+                        title="not filed, stays ticked",
+                        location="crates/manifest.py:1",
+                        body_md="x",
+                        issue_title="x",
+                        issue_body="x",
+                    )
+                ],
+            ),
+        },
+        rules_fetched_domain_ids=["d01", "d02"],
+        filed_issue_urls={"D01-R02#1": "https://example.invalid/issues/1"},
+    )
+    rendered = render_report(run_state, pack)
+
+    # The filed finding renders as a disabled link, not a live checkbox.
+    assert 'href="https://example.invalid/issues/1"' in rendered
+
+    actually_ticked = len(
+        re.findall(r'<input type="checkbox" id="issue-check-\d+" checked', rendered)
+    )
+    note_match = re.search(r"(\d+) of 4 issues? (?:is|are) ticked", rendered)
+    assert note_match is not None, "no 'N of 4 issues are ticked' note found"
+    note_claims = int(note_match.group(1))
+
+    assert note_claims == actually_ticked, (
+        f"note claims {note_claims} ticked but the rendered HTML actually has "
+        f"{actually_ticked} checked box(es)"
+    )
+    # Not a vacuous 0 == 0: this run does have ticked boxes, just fewer than
+    # severity alone would suggest, because one of the three critical/high
+    # findings was already filed.
+    assert actually_ticked > 0
+
+
+# Rule ids from the fixture pack that carry a cited source, so a Finding
+# referencing one passes render_report's "every finding has a sourced rule"
+# check. Deliberately excludes D01-R04, which the fixture pack marks
+# "Deliberately unsourced".
+_SOURCED_RULE_IDS = ["D01-R01", "D01-R02", "D01-R03", "D02-R01", "D02-R02", "D02-R03"]
+
+
+def _run_state_with_findings(pack, severities: list[Severity]) -> RunState:
+    """One finding per entry of ``severities``, spread across d01 and d02.
+
+    Every domain is marked fetched and nothing is filed, so the only thing
+    that can untick a box here is severity: this isolates the note's own
+    pluralisation and verb agreement from the other two things that also
+    untick one (the unfetched-domain rule from issue #130, the filed check
+    from issue #154).
+    """
+    if len(severities) > len(_SOURCED_RULE_IDS):
+        raise ValueError("not enough fixture rule ids with a source for this test")
+    d01 = pack.get_domain("d01")
+    d02 = pack.get_domain("d02")
+    d01_verdicts = _all_pass_verdicts(d01)
+    d02_verdicts = _all_pass_verdicts(d02)
+    d01_rule_positions = {r.id: i for i, r in enumerate(d01.rules)}
+    d02_rule_positions = {r.id: i for i, r in enumerate(d02.rules)}
+    d01_findings: list[Finding] = []
+    d02_findings: list[Finding] = []
+    for rule_id, severity in zip(_SOURCED_RULE_IDS, severities):
+        finding = Finding(
+            rule_id=rule_id,
+            severity=severity,
+            title=f"finding for {rule_id}",
+            location="somewhere.py:1",
+            body_md="x",
+            issue_title="x",
+            issue_body="x",
+        )
+        if rule_id in d01_rule_positions:
+            d01_verdicts[d01_rule_positions[rule_id]] = RuleVerdict(
+                rule_id=rule_id, verdict=Verdict.FINDING
+            )
+            d01_findings.append(finding)
+        else:
+            d02_verdicts[d02_rule_positions[rule_id]] = RuleVerdict(
+                rule_id=rule_id, verdict=Verdict.FINDING
+            )
+            d02_findings.append(finding)
+
+    return RunState(
+        meta=_meta(),
+        config=AuditConfig(selected_domain_ids=["d01", "d02"], issue_mode="report"),
+        domain_results={
+            "d01": DomainResult(
+                domain_id="d01",
+                status="completed",
+                rule_verdicts=d01_verdicts,
+                findings=d01_findings,
+            ),
+            "d02": DomainResult(
+                domain_id="d02",
+                status="completed",
+                rule_verdicts=d02_verdicts,
+                findings=d02_findings,
+            ),
+        },
+        rules_fetched_domain_ids=["d01", "d02"],
+    )
+
+
+def test_ticked_note_grammar_across_the_four_count_combinations() -> None:
+    # Follow-up to issue #154: excluding filed findings from preticked made
+    # "0 ticked" reachable even when the total is 1, and the note's noun
+    # ("issue" vs "issues") agrees with the total while its verb agreed with
+    # the raw ticked count, which together produced "0 of 1 issue are
+    # ticked". Asserting the exact sentence, not just a number, because the
+    # defect lives entirely in the words between the numbers.
+    pack = _pack()
+
+    # 0 ticked of 1 total: the one issue is not critical/high, so nothing
+    # is preticked. Still singular "issue", and "is" because there is only
+    # ever one thing being talked about, ticked or not.
+    rendered = render_report(_run_state_with_findings(pack, [Severity.MEDIUM]), pack)
+    assert "0 of 1 issue is ticked: the critical and high findings." in rendered
+
+    # 1 ticked of 1 total: the one issue is critical, so it is preticked.
+    rendered = render_report(_run_state_with_findings(pack, [Severity.CRITICAL]), pack)
+    assert "1 of 1 issue is ticked: the critical and high findings." in rendered
+
+    # 1 ticked of several: one critical finding among five others that are
+    # not, six issues in total.
+    rendered = render_report(
+        _run_state_with_findings(
+            pack,
+            [
+                Severity.CRITICAL,
+                Severity.MEDIUM,
+                Severity.LOW,
+                Severity.MEDIUM,
+                Severity.LOW,
+                Severity.MEDIUM,
+            ],
+        ),
+        pack,
+    )
+    assert "1 of 6 issues is ticked: the critical and high findings." in rendered
+
+    # Several ticked of several: three critical/high findings among six.
+    rendered = render_report(
+        _run_state_with_findings(
+            pack,
+            [
+                Severity.CRITICAL,
+                Severity.HIGH,
+                Severity.MEDIUM,
+                Severity.CRITICAL,
+                Severity.LOW,
+                Severity.MEDIUM,
+            ],
+        ),
+        pack,
+    )
+    assert "3 of 6 issues are ticked: the critical and high findings." in rendered
