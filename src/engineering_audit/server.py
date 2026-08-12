@@ -69,6 +69,7 @@ from engineering_audit.issues import (
 from engineering_audit.output_location import (
     REPORT_FILENAME,
     RUN_STATE_FILENAME,
+    UnresolvableOutputLocation,
     deliverables_dir_for,
     resolve_deliverables_dir,
     validate_deliverables_dir,
@@ -1546,7 +1547,18 @@ def _register_config_tools(mcp: MCPServer, state: AppState) -> None:
                 # writable, no report already sitting there) run again
                 # here. "The page is not the only possible caller" is
                 # exactly this path (issue #109).
-                resolved = resolve_deliverables_dir(config.deliverables_dir)
+                try:
+                    resolved = resolve_deliverables_dir(config.deliverables_dir)
+                except UnresolvableOutputLocation as exc:
+                    # Same clean-error treatment as any other unusable
+                    # deliverables_dir here: an unknown ~user must reach the
+                    # assistant as something it can act on, not the bare
+                    # RuntimeError Path.expanduser()/resolve() themselves
+                    # raise (issue #152).
+                    raise ValueError(
+                        f"ENGINEERING_AUDIT_CONFIG file '{path}' names a deliverables_dir "
+                        f"that cannot be used: {exc}"
+                    ) from exc
                 path_error = validate_deliverables_dir(resolved)
                 if path_error:
                     raise ValueError(
