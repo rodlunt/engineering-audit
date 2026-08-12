@@ -50,6 +50,35 @@ function _readJsonData(elementId) {
 
 /* Feedback */
 
+// reader_conclusions (issue #135) is the one consent-gated section whose
+// content is answered live in the browser, after the report has actually
+// been read, rather than computed at render time from repository data:
+// every other section's server-baked data[key] is already the full text to
+// send. The server cannot know a reader's answer in advance, so it bakes
+// in an "A1: (left blank)" / "A2: (left blank)" placeholder for each
+// question instead; this substitutes the reader's own words for that
+// placeholder when they typed one. The substitution is additive only,
+// never a rebuild of the section text, so data[key] (the value
+// build_feedback_sections computed) is always still present in what this
+// returns whether or not either question was answered. That is what keeps
+// this section subject to the same consent-integrity guarantee (issue
+// #120's guard tests, tests/js/feedback_payload.test.js) as every other
+// section: those tests fake data[key] as an opaque marker with nothing to
+// substitute into, so the replace() calls below are no-ops against it and
+// the marker still comes through unchanged.
+function _readerConclusionsText(baseText) {
+  var text = baseText;
+  var headline = document.getElementById("reader-conclusion-headline");
+  if (headline && headline.value.trim()) {
+    text = text.replace("A1: (left blank)", "A1: " + headline.value.trim());
+  }
+  var fixFirst = document.getElementById("reader-conclusion-fix-first");
+  if (fixFirst && fixFirst.value.trim()) {
+    text = text.replace("A2: (left blank)", "A2: " + fixFirst.value.trim());
+  }
+  return text;
+}
+
 function buildFeedbackPayload() {
   // consent_keys is every section build_feedback_sections returned, minus
   // run_metadata (always included below, never a consent choice), computed
@@ -70,7 +99,10 @@ function buildFeedbackPayload() {
   parts.push(data.run_metadata);
   (data.consent_keys || []).forEach(function (key) {
     var checkbox = document.getElementById("consent-" + key.split("_").join("-"));
-    if (checkbox && checkbox.checked) { parts.push(data[key]); }
+    if (!checkbox || !checkbox.checked) { return; }
+    var text = data[key];
+    if (key === "reader_conclusions") { text = _readerConclusionsText(text); }
+    parts.push(text);
   });
   return parts.join("\n\n");
 }

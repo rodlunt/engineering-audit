@@ -1656,6 +1656,11 @@ _CONSENT_LABELS: dict[str, str] = {
         "Rules fetched (per domain, whether this run's rule text was fetched via "
         "get_domain. Shows only that it was fetched, never that it was read or applied.)"
     ),
+    "reader_conclusions": (
+        "Your own conclusions after reading this report (what it told you, in one "
+        "sentence, and what you would fix first; answered below, in your own words, "
+        "not derived from anything the tool recorded)"
+    ),
 }
 
 
@@ -1713,6 +1718,18 @@ def _feedback_section(run_state: RunState, feedback_issue_url: str | None) -> st
     return (
         f"{filed_html}"
         '<div class="feedback-form">'
+        '<div class="reader-conclusions">'
+        "<p>Answering these two is optional, and tells the tool author whether the report "
+        'itself worked, not just how the run went. Tick "Your own conclusions" below to '
+        "include them if you answer.</p>"
+        '<label for="reader-conclusion-headline">In one sentence, what did this report '
+        "tell you about your repository?</label>"
+        '<textarea id="reader-conclusion-headline" class="reader-conclusion-textarea" '
+        'rows="2"></textarea>'
+        '<label for="reader-conclusion-fix-first">What would you fix first?</label>'
+        '<textarea id="reader-conclusion-fix-first" class="reader-conclusion-textarea" '
+        'rows="2"></textarea>'
+        "</div>"
         '<label for="feedback-textarea">Freeform feedback</label>'
         f'<textarea id="feedback-textarea" rows="6">{_esc(text)}</textarea>'
         '<div class="consent-rows">'

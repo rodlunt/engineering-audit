@@ -1428,6 +1428,7 @@ def test_feedback_consent_checkboxes_prefilled_true_from_config() -> None:
         verdict_distribution=True,
         duration=True,
         rules_fetched=True,
+        reader_conclusions=True,
     )
     rendered = render_report(run_state, pack)
 
@@ -1440,6 +1441,7 @@ def test_feedback_consent_checkboxes_prefilled_true_from_config() -> None:
         "consent-verdict-distribution",
         "consent-duration",
         "consent-rules-fetched",
+        "consent-reader-conclusions",
     ):
         match = re.search(rf'<input type="checkbox" id="{input_id}"([^>]*)>', rendered)
         assert match is not None, f"checkbox {input_id!r} not found"
@@ -1458,6 +1460,7 @@ def test_feedback_consent_checkboxes_prefilled_false_from_config() -> None:
         verdict_distribution=False,
         duration=False,
         rules_fetched=False,
+        reader_conclusions=False,
     )
     rendered = render_report(run_state, pack)
 
@@ -1470,6 +1473,7 @@ def test_feedback_consent_checkboxes_prefilled_false_from_config() -> None:
         "consent-verdict-distribution",
         "consent-duration",
         "consent-rules-fetched",
+        "consent-reader-conclusions",
     ):
         match = re.search(rf'<input type="checkbox" id="{input_id}"([^>]*)>', rendered)
         assert match is not None, f"checkbox {input_id!r} not found"

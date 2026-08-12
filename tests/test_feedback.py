@@ -277,7 +277,7 @@ def test_feedback_repo_constant_is_the_tool_authors_repo() -> None:
     assert FEEDBACK_REPO == "rodlunt/engineering-audit"
 
 
-def test_build_feedback_sections_returns_the_nine_fixed_sections_regardless_of_consent() -> (
+def test_build_feedback_sections_returns_the_ten_fixed_sections_regardless_of_consent() -> (
     None
 ):
     # build_feedback_sections computes every section unconditionally; only
@@ -294,6 +294,7 @@ def test_build_feedback_sections_returns_the_nine_fixed_sections_regardless_of_c
         "verdict_distribution",
         "duration",
         "rules_fetched",
+        "reader_conclusions",
     }
     assert "Run metadata" in sections["run_metadata"]
     assert "widgets-app" in sections["run_metadata"]
@@ -301,6 +302,77 @@ def test_build_feedback_sections_returns_the_nine_fixed_sections_regardless_of_c
     assert "Total: 1" in sections["rollup"]
     assert "d01: confidence high." in sections["self_assessment"]
     assert "D01-R01: https://example.invalid/standard" in sections["consulted_sources"]
+
+
+def test_reader_conclusions_section_shows_left_blank_when_no_answer_given() -> None:
+    # Issue #135: with neither question answered, the honest render is
+    # "(left blank)", not an empty string or an omitted section: the caller
+    # (report.py at render time) never has an answer to pass, since the
+    # report has not been read yet.
+    section = build_feedback_sections(_meta(), _domain_results())["reader_conclusions"]
+    assert "Reader's own conclusions" in section
+    assert (
+        "Q1: In one sentence, what did this report tell you about your repository?"
+        in (section)
+    )
+    assert "A1: (left blank)" in section
+    assert "Q2: What would you fix first?" in section
+    assert "A2: (left blank)" in section
+
+
+def test_reader_conclusions_section_carries_the_answers_when_given() -> None:
+    # The MCP path (server.py's submit_feedback) can supply both answers
+    # directly, when the reader dictated them back to the assistant.
+    sections = build_feedback_sections(
+        _meta(),
+        _domain_results(),
+        reader_conclusion_headline="It told me my error handling swallows exceptions.",
+        reader_conclusion_fix_first="The bare except in ledger/beds.py.",
+    )
+    section = sections["reader_conclusions"]
+    assert "A1: It told me my error handling swallows exceptions." in section
+    assert "A2: The bare except in ledger/beds.py." in section
+    assert "(left blank)" not in section
+
+
+def test_reader_conclusions_section_treats_whitespace_only_answers_as_blank() -> None:
+    section = build_feedback_sections(
+        _meta(),
+        _domain_results(),
+        reader_conclusion_headline="   ",
+        reader_conclusion_fix_first="\n",
+    )["reader_conclusions"]
+    assert "A1: (left blank)" in section
+    assert "A2: (left blank)" in section
+
+
+def test_reader_conclusions_section_is_omitted_from_feedback_body_unless_consented() -> (
+    None
+):
+    body = build_feedback_body(
+        None,
+        _meta(),
+        TelemetryConsent(reader_conclusions=False),
+        _domain_results(),
+        reader_conclusion_headline="It told me my error handling swallows exceptions.",
+        reader_conclusion_fix_first="The bare except in ledger/beds.py.",
+    )
+    assert "Reader's own conclusions" not in body
+    assert "error handling swallows exceptions" not in body
+
+
+def test_reader_conclusions_section_included_in_feedback_body_when_consented() -> None:
+    body = build_feedback_body(
+        None,
+        _meta(),
+        TelemetryConsent(reader_conclusions=True),
+        _domain_results(),
+        reader_conclusion_headline="It told me my error handling swallows exceptions.",
+        reader_conclusion_fix_first="The bare except in ledger/beds.py.",
+    )
+    assert "Reader's own conclusions" in body
+    assert "A1: It told me my error handling swallows exceptions." in body
+    assert "A2: The bare except in ledger/beds.py." in body
 
 
 def test_verdict_distribution_section_reports_per_domain_and_run_total_counts() -> None:
@@ -534,6 +606,7 @@ def test_build_feedback_body_matches_build_feedback_sections_for_every_consent_c
         "verdict_distribution",
         "duration",
         "rules_fetched",
+        "reader_conclusions",
     )
     combinations = [
         {name: (name == chosen) for name in flag_names} for chosen in flag_names
