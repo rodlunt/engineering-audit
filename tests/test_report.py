@@ -1500,6 +1500,14 @@ def test_feedback_run_metadata_row_is_locked_checked_and_disabled() -> None:
 
 
 def test_feedback_embedded_json_parses_and_matches_build_feedback_sections() -> None:
+    # Issue #120: the section key list used to be hand-listed here (nine
+    # literal strings), which meant this test verified the sections that
+    # existed rather than proving every section build_feedback_sections
+    # returns is verified. A tenth key would simply not have been checked,
+    # and the test would still have passed. Iterating expected_sections'
+    # own keys, and cross-checking them against TelemetryConsent's own
+    # fields, means a section wired into one but not the other now fails
+    # this test immediately instead of shipping unnoticed.
     pack = _pack()
     run_state = _base_run_state(pack)
     rendered = render_report(run_state, pack)
@@ -1512,42 +1520,37 @@ def test_feedback_embedded_json_parses_and_matches_build_feedback_sections() -> 
         rules_fetch_unknown_domain_ids=run_state.rules_fetch_unknown_domain_ids,
     )
 
-    assert data["run_metadata"] == expected_sections["run_metadata"]
-    assert data["coverage"] == expected_sections["coverage"]
-    assert data["rollup"] == expected_sections["rollup"]
-    assert data["self_assessment"] == expected_sections["self_assessment"]
-    assert data["environment"] == expected_sections["environment"]
-    assert data["consulted_sources"] == expected_sections["consulted_sources"]
-    assert data["verdict_distribution"] == expected_sections["verdict_distribution"]
-    assert data["duration"] == expected_sections["duration"]
-    assert data["rules_fetched"] == expected_sections["rules_fetched"]
+    for key, expected_text in expected_sections.items():
+        assert key in data, (
+            f"{key!r} is one of build_feedback_sections' returned keys but is missing "
+            "from the report's embedded feedback-sections-data JSON block"
+        )
+        assert data[key] == expected_text
     assert data["email"] == "rodneylunt79+audit-feedback@gmail.com"
+
+    # Every section except run_metadata (always sent, never a consent
+    # choice) must correspond to exactly one TelemetryConsent flag: neither
+    # side may have a key the other lacks. This is schema.py's half of the
+    # cross-check.
+    consent_keys = set(expected_sections) - {"run_metadata"}
+    consent_fields = set(TelemetryConsent.model_fields)
+    assert consent_keys == consent_fields, (
+        "build_feedback_sections' keys and TelemetryConsent's fields have drifted "
+        f"apart: sections only has {consent_keys - consent_fields or 'nothing'}, "
+        f"TelemetryConsent only has {consent_fields - consent_keys or 'nothing'}"
+    )
+
+    # The embedded JSON also carries the same key list explicitly (report.js
+    # derives its payload loop from it), so that must agree too.
+    assert set(data["consent_keys"]) == consent_keys
 
     # Cross-check against the MCP path's own builder: with only one section
     # consented, build_feedback_body's output must be exactly the always-on
     # run-metadata chunk plus that one section, joined the same way the
     # report's own JS joins ticked sections.
-    base_consent = {
-        "coverage": False,
-        "rollup": False,
-        "self_assessment": False,
-        "environment": False,
-        "consulted_sources": False,
-        "verdict_distribution": False,
-        "duration": False,
-        "rules_fetched": False,
-    }
-    for key in (
-        "coverage",
-        "rollup",
-        "self_assessment",
-        "environment",
-        "consulted_sources",
-        "verdict_distribution",
-        "duration",
-        "rules_fetched",
-    ):
-        consent_kwargs = {**base_consent, key: True}
+    for key in consent_keys:
+        consent_kwargs = {field: False for field in consent_fields}
+        consent_kwargs[key] = True
         body = build_feedback_body(
             None,
             run_state.meta,

@@ -1620,6 +1620,45 @@ def _consent_row(input_id: str, label: str, checked: bool) -> str:
     )
 
 
+# Wording for each consent-gated section's checkbox, keyed by the same name
+# build_feedback_sections uses. This is the one place left where a new
+# section's label text is hand-written, and it has to be: the copy carries
+# nuance (consulted_sources' privacy caveat, duration's note about token
+# counts) that cannot be derived from the key name. Everything else about a
+# section, whether it exists at all, its checkbox id, and whether it is
+# ticked, is derived from build_feedback_sections' own keys and
+# TelemetryConsent below (issue #120), so a key present in one and missing
+# from this dict fails loudly with a KeyError at render time rather than
+# silently rendering without a label.
+#
+# Same wording as the configuration page's consent section, so a user who
+# saw one recognises the other.
+_CONSENT_LABELS: dict[str, str] = {
+    "coverage": "Coverage statistics (files inspected, files skipped)",
+    "rollup": "Findings rollup (counts by severity and domain, not the finding text)",
+    "self_assessment": "Self assessment (confidence and limits per domain)",
+    "environment": "Environment information (assistant, model, tool version)",
+    "consulted_sources": (
+        "Send fetched references to the maintainer (rule id, URL and why, for each "
+        "source consulted outside the rules pack). Off by default: URLs fetched while "
+        "auditing a private repository can hint at what that repository is about."
+    ),
+    "verdict_distribution": (
+        "Rule verdict distribution (counts of pass, finding, not-applicable and "
+        "could-not-evaluate, per domain and in total; not the finding text)"
+    ),
+    "duration": (
+        "Run duration (the assistant-reported span, the server-measured span, and "
+        "whether they agree). Token counts are not included, since the server never "
+        "sees them: paste them into the feedback text above if you want to share them."
+    ),
+    "rules_fetched": (
+        "Rules fetched (per domain, whether this run's rule text was fetched via "
+        "get_domain. Shows only that it was fetched, never that it was read or applied.)"
+    ),
+}
+
+
 def _feedback_section(run_state: RunState, feedback_issue_url: str | None) -> str:
     config = run_state.config
     consent = config.telemetry_consent
@@ -1642,68 +1681,30 @@ def _feedback_section(run_state: RunState, feedback_issue_url: str | None) -> st
         rules_fetched_domain_ids=run_state.rules_fetched_domain_ids,
         rules_fetch_unknown_domain_ids=run_state.rules_fetch_unknown_domain_ids,
     )
+    # Every section build_feedback_sections returns except run_metadata
+    # (always included, never a consent choice) is consent-gated. This list
+    # drives both the consent checkboxes below and the JS payload loop in
+    # static/report.js (issue #120): a section added to build_feedback_sections
+    # without a matching TelemetryConsent flag surfaces here as an
+    # AttributeError from getattr(consent, key) below, rather than silently
+    # rendering with no way to consent to it, or being read by the client-side
+    # payload builder without a checkbox to gate it.
+    consent_keys = [key for key in sections if key != "run_metadata"]
     feedback_data = {
         "email": FEEDBACK_EMAIL,
         "subject": feedback_subject(run_state.meta),
-        "run_metadata": sections["run_metadata"],
-        "coverage": sections["coverage"],
-        "rollup": sections["rollup"],
-        "self_assessment": sections["self_assessment"],
-        "environment": sections["environment"],
-        "consulted_sources": sections["consulted_sources"],
-        "verdict_distribution": sections["verdict_distribution"],
-        "duration": sections["duration"],
-        "rules_fetched": sections["rules_fetched"],
+        "consent_keys": consent_keys,
+        **sections,
     }
 
-    # Same wording as the configuration page's consent section, so a user
-    # who saw one recognises the other.
     consent_rows = (
-        _consent_row(
-            "consent-coverage",
-            "Coverage statistics (files inspected, files skipped)",
-            consent.coverage,
-        )
-        + _consent_row(
-            "consent-rollup",
-            "Findings rollup (counts by severity and domain, not the finding text)",
-            consent.rollup,
-        )
-        + _consent_row(
-            "consent-self-assessment",
-            "Self assessment (confidence and limits per domain)",
-            consent.self_assessment,
-        )
-        + _consent_row(
-            "consent-environment",
-            "Environment information (assistant, model, tool version)",
-            consent.environment,
-        )
-        + _consent_row(
-            "consent-consulted-sources",
-            "Send fetched references to the maintainer (rule id, URL and why, for each "
-            "source consulted outside the rules pack). Off by default: URLs fetched while "
-            "auditing a private repository can hint at what that repository is about.",
-            consent.consulted_sources,
-        )
-        + _consent_row(
-            "consent-verdict-distribution",
-            "Rule verdict distribution (counts of pass, finding, not-applicable and "
-            "could-not-evaluate, per domain and in total; not the finding text)",
-            consent.verdict_distribution,
-        )
-        + _consent_row(
-            "consent-duration",
-            "Run duration (the assistant-reported span, the server-measured span, and "
-            "whether they agree). Token counts are not included, since the server never "
-            "sees them: paste them into the feedback text above if you want to share them.",
-            consent.duration,
-        )
-        + _consent_row(
-            "consent-rules-fetched",
-            "Rules fetched (per domain, whether this run's rule text was fetched via "
-            "get_domain. Shows only that it was fetched, never that it was read or applied.)",
-            consent.rules_fetched,
+        "".join(
+            _consent_row(
+                f"consent-{key.replace('_', '-')}",
+                _CONSENT_LABELS[key],
+                getattr(consent, key),
+            )
+            for key in consent_keys
         )
         + '<label class="consent-row locked"><input type="checkbox" checked disabled> '
         "Run metadata (always included when sending feedback)</label>"

@@ -51,20 +51,27 @@ function _readJsonData(elementId) {
 /* Feedback */
 
 function buildFeedbackPayload() {
+  // consent_keys is every section build_feedback_sections returned, minus
+  // run_metadata (always included below, never a consent choice), computed
+  // server-side in report.py's _feedback_section from the same dict that
+  // built data itself. Looping over it here, rather than naming each
+  // section's checkbox id and data key by hand, is what closes issue #120:
+  // a section server-side data carries with no matching entry in this list
+  // would previously be silently dropped from what the report assembles,
+  // even though its checkbox was present and tickable. Deriving the loop
+  // from consent_keys means a section only ever appears here if the server
+  // said it exists, and only ever goes missing from the payload if its own
+  // checkbox is unticked, never because this function forgot about it.
   var data = _readJsonData("feedback-sections-data");
   var parts = [];
   var textarea = document.getElementById("feedback-textarea");
   var freeText = textarea ? textarea.value.trim() : "";
   if (freeText) { parts.push(freeText); }
   parts.push(data.run_metadata);
-  if (document.getElementById("consent-coverage").checked) { parts.push(data.coverage); }
-  if (document.getElementById("consent-rollup").checked) { parts.push(data.rollup); }
-  if (document.getElementById("consent-self-assessment").checked) { parts.push(data.self_assessment); }
-  if (document.getElementById("consent-environment").checked) { parts.push(data.environment); }
-  if (document.getElementById("consent-consulted-sources").checked) { parts.push(data.consulted_sources); }
-  if (document.getElementById("consent-verdict-distribution").checked) { parts.push(data.verdict_distribution); }
-  if (document.getElementById("consent-duration").checked) { parts.push(data.duration); }
-  if (document.getElementById("consent-rules-fetched").checked) { parts.push(data.rules_fetched); }
+  (data.consent_keys || []).forEach(function (key) {
+    var checkbox = document.getElementById("consent-" + key.split("_").join("-"));
+    if (checkbox && checkbox.checked) { parts.push(data[key]); }
+  });
   return parts.join("\n\n");
 }
 
@@ -340,5 +347,8 @@ function fileSelectedIssues() {
 // Node, where it lets the test runner call these functions directly
 // instead of only checking their source text is present.
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { _githubErrorMessage: _githubErrorMessage };
+  module.exports = {
+    _githubErrorMessage: _githubErrorMessage,
+    buildFeedbackPayload: buildFeedbackPayload,
+  };
 }
