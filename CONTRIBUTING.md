@@ -75,8 +75,9 @@ uv run python scripts/bump-version.py X.Y.Z
 ```
 
 This writes `pyproject.toml`'s version, rewrites every other version pin to match (see
-`scripts/version_pins.py` for the exact list: install command refs, integration docs, the
-Gemini extension manifest, and a few known prose mentions), and runs
+`scripts/version_pins.py` for the exact list: install command refs, integration docs, a
+few known prose mentions, and the top-level `"version"` field of any tracked JSON
+manifest, of which this repository currently ships none), and runs
 `scripts/check-version-pins.py` itself as a self-check before reporting success. Review the
 diff, commit as `chore(release): X.Y.Z`, and push it through the normal pull request flow.
 Once merged, tag `vX.Y.Z` on `main`. `tag-version-guard.yml` fails the tag push if the

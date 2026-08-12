@@ -48,7 +48,7 @@ your `~/.gemini/settings.json` (or the project-level `.gemini/settings.json`)
       "command": "uvx",
       "args": [
         "--from",
-        "git+https://github.com/rodlunt/engineering-audit@v0.7.0",
+        "git+https://github.com/rodlunt/engineering-audit@v0.8.0",
         "engineering-audit-mcp"
       ],
       "env": {
@@ -59,7 +59,7 @@ your `~/.gemini/settings.json` (or the project-level `.gemini/settings.json`)
 }
 ```
 
-`@v0.7.0` pins the install to the current tagged release rather than the moving `main` branch;
+`@v0.8.0` pins the install to the current tagged release rather than the moving `main` branch;
 see the root README's [How to use](../../README.md#how-to-use) section for how to find the latest tag
 and update to it deliberately.
 
