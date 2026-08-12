@@ -207,6 +207,12 @@
     padding: 0.5rem 0.75rem;
     border-radius: 6px;
   }
+  /* The four severity definitions next to the by-severity list (issue
+     #129), copied verbatim from AUDIT.md so the report and the protocol
+     the assistant followed cannot describe "critical" differently. */
+  .severity-definitions { margin: 0.4rem 0 0.6rem; font-size: 0.9rem; }
+  .severity-definitions dt { font-weight: 600; text-transform: capitalize; }
+  .severity-definitions dd { margin: 0 0 0.5rem 0; color: var(--muted); }
   .finding {
     background: var(--card-bg);
     border: 1px solid var(--border);
@@ -233,6 +239,13 @@
     font-family: ui-monospace, monospace;
     overflow-wrap: anywhere;
   }
+  /* A finding's own domain confidence and rules-fetched status (issue
+     #130). Muted by default, matching the location line above it; not
+     muted, and bold rather than coloured, when this finding's domain was
+     never fetched this run, so it stays visible in greyscale and on a
+     photocopy (D16-R16) rather than relying on a colour a reader might not
+     be able to tell apart. */
+  .finding-domain-note { font-size: 0.85rem; margin: 0.2rem 0 0.5rem; }
   .finding-body p { margin: 0.4rem 0; }
   .severity-badge {
     display: inline-block;

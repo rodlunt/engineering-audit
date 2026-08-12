@@ -15,6 +15,7 @@ the one place that wording is built.
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 from datetime import datetime
 from urllib.parse import quote
@@ -34,6 +35,8 @@ __all__ = [
     "feedback_subject",
     "rules_pack_label",
     "duration_text",
+    "strip_markdown_emphasis",
+    "domain_confidence_note",
     "build_feedback_sections",
     "build_feedback_body",
     "build_mailto_url",
@@ -52,6 +55,102 @@ _VERDICT_ORDER = (
     Verdict.NOT_APPLICABLE,
     Verdict.COULD_NOT_EVALUATE,
 )
+
+# Issue #128's decision: strip markdown emphasis markers rather than render
+# them. Rendering untrusted assistant-authored finding text into HTML would
+# need a mature CommonMark renderer plus a mature HTML sanitiser, two
+# dependencies this project does not carry, for a gain that is purely
+# cosmetic (bold text). Stripping is the safe, boring choice, but the first
+# cut of it (blanket-removing every literal asterisk) was too blunt: this
+# tool's whole output is claims about code, and code is full of legitimate,
+# unpaired asterisks. A blanket strip turned "def handler(*args, **kwargs):"
+# into "def handler(args, kwargs):", "SELECT * FROM users" into
+# "SELECT  FROM users", and "rm -rf build/*" into "rm -rf build/", the last
+# of which silently rewrites a shell command into a different shell command
+# on its way into a filed GitHub issue. This is the boundary-guard strip
+# hardened against that: it still adds no markdown library and still never
+# turns anything into markup, but it now only removes an asterisk that is
+# genuinely part of a matched emphasis pair, and never touches a code span.
+_CODE_SPAN_RE = re.compile(r"(`+)(.*?)\1", re.DOTALL)
+_ASTERISK_RUN_RE = re.compile(r"\*+")
+
+
+def strip_markdown_emphasis(text: str) -> str:
+    """Strip markdown emphasis, leaving code and unpaired asterisks alone
+    (issue #128).
+
+    Two safeguards, both required, neither sufficient alone:
+
+    1. **Code spans are protected outright.** Anything between two matching
+       runs of backticks (an inline `` `code span` `` or a fenced code
+       block, which is the same shape with a longer backtick run) is never
+       inspected by step 2 below. Without this, two unrelated code spans
+       that each hold one multiplication asterisk, e.g.
+       "`a * b` and `c * d`", would still get incorrectly paired with each
+       other (both are length-1 runs), stripping an asterisk out of code
+       that was never markdown.
+    2. **Only a matched pair of same-length delimiter runs is stripped,
+       never a lone run.** A naive per-character regex (``\\*(.+?)\\*``)
+       matches the first '*' of a '**' run as the closing half of an
+       earlier, unrelated single '*', so
+       "def handler(*args, **kwargs):" corrupts to
+       "def handler(args, *kwargs):": a run of length 1 (before "args")
+       gets paired against the first character of the run of length 2
+       (before "kwargs"), rather than the two runs being recognised as
+       different delimiters. Pairing by matching run *length* instead (a
+       single '*' can only close another single '*'; a '**' can only close
+       another '**') leaves that line untouched entirely, along with a
+       bare "SELECT * FROM users", "glob pattern **/*.py" and
+       "rm -rf build/*": none of those contain two runs of the same
+       length, so nothing in them is a genuine pair.
+
+    This is still deliberately not a markdown parser: it does not resolve
+    CommonMark's left/right-flanking rules, and a genuinely intended,
+    unpaired double asterisk in prose is still lost, same as before. The
+    safest parser is the one that is never run; this makes the boundary
+    strip more conservative, not a step towards becoming a renderer.
+    """
+    protected_spans = [match.span() for match in _CODE_SPAN_RE.finditer(text)]
+
+    def _is_protected(position: int) -> bool:
+        return any(start <= position < end for start, end in protected_spans)
+
+    runs = [
+        match
+        for match in _ASTERISK_RUN_RE.finditer(text)
+        if not _is_protected(match.start())
+    ]
+    if not runs:
+        return text
+
+    # Nearest-neighbour pairing per run length, left to right: the first
+    # unmatched run of a given length is a candidate opener; the next run
+    # of that same length closes it. Two runs of different lengths never
+    # pair with each other, which is the property the docstring above
+    # depends on.
+    pending: dict[
+        int, int
+    ] = {}  # run length -> index into `runs` of its open candidate
+    drop: set[int] = set()  # indices into `runs` whose asterisks are removed
+    for index, run in enumerate(runs):
+        length = len(run.group())
+        opener_index = pending.pop(length, None)
+        if opener_index is None:
+            pending[length] = index
+        else:
+            drop.add(opener_index)
+            drop.add(index)
+    if not drop:
+        return text
+
+    pieces = []
+    cursor = 0
+    for index in sorted(drop):
+        run = runs[index]
+        pieces.append(text[cursor : run.start()])
+        cursor = run.end()
+    pieces.append(text[cursor:])
+    return "".join(pieces)
 
 
 def feedback_subject(meta: RunMeta) -> str:
@@ -490,16 +589,70 @@ def build_mailto_url(email: str, subject: str, body: str) -> str:
     return f"mailto:{email}?subject={quote(subject)}&body={quote(body)}"
 
 
-def build_issue_trailing_line(finding: Finding, rule: Rule) -> str:
+def _confidence_clause(confidence: str | None) -> str:
+    return (
+        f"self-assessed confidence {confidence}"
+        if confidence
+        else "no self-assessed confidence reported"
+    )
+
+
+def _rules_fetched_clause(rules_fetched: bool | None) -> str:
+    # Wording discipline carried over from issue #110, unchanged here: this
+    # says only that the rule text was served by get_domain, never that it
+    # was read or applied, in either direction. A domain that fetched its
+    # rules and guessed anyway would read the same as one that read them
+    # properly; this clause cannot and does not tell the two apart.
+    if rules_fetched is True:
+        return "its rule text was fetched from the server this run"
+    if rules_fetched is False:
+        return (
+            "its rule text was never fetched from the server this run: treat "
+            "this finding as unsupported until the domain is redone"
+        )
+    return "whether its rule text was fetched this run is not recorded"
+
+
+def domain_confidence_note(confidence: str | None, rules_fetched: bool | None) -> str:
+    """One line carrying a finding's domain confidence and rules-fetched
+    status onto the finding itself (issue #130).
+
+    The report's Tool performance summary states a domain's confidence and
+    fetch status once, and until now a finding card or filed issue never
+    repeated either: a low-confidence finding from a domain whose rules
+    were never fetched rendered identically to a high-confidence one whose
+    rules were. Shared by report.py's per-finding card and
+    build_issue_trailing_line below, so a finding's report card and its
+    filed-issue text can never describe the same domain differently.
+    """
+    return f"This finding's domain: {_confidence_clause(confidence)}; {_rules_fetched_clause(rules_fetched)}."
+
+
+def build_issue_trailing_line(
+    finding: Finding,
+    rule: Rule,
+    *,
+    confidence: str | None = None,
+    rules_fetched: bool | None = None,
+) -> str:
     """Build the trailing attribution line appended after every filed or
     copyable issue body: "Found by an engineering-practice audit (rule
-    <id>, severity <sev>, at <loc>). Reference: <capped citation>".
+    <id>, severity <sev>, at <loc>). [<domain confidence note>.] Reference:
+    <capped citation>".
 
     This is the single place that wording is built. `server.py`'s
     `file_issues` (issues filed via the user's own `gh` CLI) and
     `report.py`'s issues section (issues copied from, or filed via a PAT
     from, the rendered report) both call this, so a filed issue and its
     in-report copy text can never describe the same finding differently.
+
+    ``confidence`` and ``rules_fetched`` are the finding's own domain's
+    :attr:`SelfAssessment.confidence` and fetch status (issue #130): pass
+    both to carry a domain-confidence note into the built line, or leave
+    both at their default ``None`` to omit it entirely, which reproduces
+    this function's pre-#130 output byte for byte. Passing only one is
+    still honoured (the note names the other as not reported/not recorded)
+    since a caller that has one may not have the other.
     """
     if not rule.source:
         raise ValueError(
@@ -507,7 +660,15 @@ def build_issue_trailing_line(finding: Finding, rule: Rule) -> str:
             "rules pack. A finding is a published claim; this tool does not publish "
             "claims without evidence."
         )
-    return (
+    parts = [
         f"Found by an engineering-practice audit (rule {finding.rule_id}, severity "
-        f"{finding.severity.value}, at {finding.location}). Reference: {citation(rule.source)}"
-    )
+        f"{finding.severity.value}, at {finding.location})."
+    ]
+    if confidence is not None or rules_fetched is not None:
+        parts.append(domain_confidence_note(confidence, rules_fetched))
+    # Issue #128: a citation copied from the rules pack can carry markdown
+    # emphasis (nested *italic* titles, or a whole footer wrapped in
+    # asterisks); this is the boundary where it is stripped before
+    # publication, same as report.py's own _reference_line.
+    parts.append(f"Reference: {strip_markdown_emphasis(citation(rule.source))}")
+    return " ".join(parts)

@@ -13,8 +13,10 @@ from engineering_audit.feedback import (
     build_feedback_sections,
     build_issue_trailing_line,
     build_mailto_url,
+    domain_confidence_note,
     duration_text,
     feedback_subject,
+    strip_markdown_emphasis,
 )
 from engineering_audit.rules import Rule
 from engineering_audit.schema import (
@@ -573,11 +575,16 @@ def test_verdict_distribution_duration_and_rules_fetched_appear_when_consented()
 
 
 def test_build_issue_trailing_line_matches_the_wording_file_issues_sends() -> None:
-    # Byte-identical to the trailing line asserted in
-    # test_server.py::test_file_issues_confirm_files_one_issue_per_finding
-    # for the same finding: the two callers (file_issues and the report's
-    # issues section) must never be able to describe the same finding
-    # differently.
+    # This is the trailing line's core sentence with no domain context
+    # supplied, i.e. the shape every caller gets regardless of what it
+    # knows about the finding's domain. Both real callers (server.py's
+    # file_issues and report.py's issues section) now supply real domain
+    # context every time, so their parity is pinned separately, by
+    # test_file_issues_and_report_issues_section_produce_the_same_body
+    # below: this test only pins that the no-context shape stays this
+    # exact text (byte-identical to what test_server.py's
+    # test_file_issues_confirm_files_one_issue_per_finding asserted before
+    # issue #130 added the domain note both callers now include).
     rule = Rule(
         id="D01-R02",
         title="Never assign two gnomes to the same garden bed without a shared-bed flag.",
@@ -621,3 +628,189 @@ def test_build_issue_trailing_line_raises_for_a_sourceless_rule() -> None:
     )
     with pytest.raises(ValueError, match="no cited source"):
         build_issue_trailing_line(finding, rule)
+
+
+# ---------------------------------------------------------------------------
+# Issue #128: strip_markdown_emphasis, and citation stripping inside
+# build_issue_trailing_line.
+# ---------------------------------------------------------------------------
+
+
+def test_strip_markdown_emphasis_removes_matched_pairs() -> None:
+    assert strip_markdown_emphasis("**bold** and *italic* and plain") == (
+        "bold and italic and plain"
+    )
+    assert strip_markdown_emphasis("no asterisks here") == "no asterisks here"
+    assert strip_markdown_emphasis("***triple***") == "triple"
+
+
+# ---------------------------------------------------------------------------
+# Regression: a blanket "remove every asterisk" strip corrupted code in
+# finding bodies (a naive first cut of issue #128's fix). This tool's whole
+# output is claims about code, so a finding body containing code is the
+# normal case. The four inputs below are the exact regressions flagged in
+# review; each must survive strip_markdown_emphasis byte for byte, because
+# none of them contains a matched pair of same-length asterisk runs.
+# ---------------------------------------------------------------------------
+
+_CODE_INPUTS_THAT_MUST_SURVIVE_INTACT = (
+    "def handler(*args, **kwargs):",
+    "SELECT * FROM users WHERE id = ?",
+    "glob pattern **/*.py matches nested files",
+    "rm -rf build/*",
+)
+
+
+def test_unpaired_asterisks_in_code_survive_the_strip_intact() -> None:
+    for code in _CODE_INPUTS_THAT_MUST_SURVIVE_INTACT:
+        assert strip_markdown_emphasis(code) == code, (
+            f"strip_markdown_emphasis corrupted code that contains no matched "
+            f"emphasis pair: {code!r} -> {strip_markdown_emphasis(code)!r}"
+        )
+
+
+def test_a_finding_body_mixing_prose_and_code_only_strips_the_prose_emphasis() -> None:
+    # A realistic finding body: markdown bold in the prose (which must
+    # still be stripped, per #128's original decision) sitting next to a
+    # shell command with an unpaired asterisk (which must not be).
+    body = (
+        "**The issue**: the build script leaves stale artefacts.\n\n"
+        "**Suggested fix**: run `rm -rf build/*` before packaging."
+    )
+    stripped = strip_markdown_emphasis(body)
+    assert stripped == (
+        "The issue: the build script leaves stale artefacts.\n\n"
+        "Suggested fix: run `rm -rf build/*` before packaging."
+    )
+
+
+def test_asterisks_inside_a_code_span_are_never_paired_across_it() -> None:
+    # Two code spans, each holding one length-1 asterisk run that would
+    # incorrectly pair with the other if code spans were not protected
+    # before pairing is attempted.
+    text = "Use `*args` and `*kwargs` for varargs."
+    assert strip_markdown_emphasis(text) == text
+
+
+def test_asterisks_inside_unrelated_code_spans_do_not_pair_with_each_other() -> None:
+    text = "`a * b` and `c * d`"
+    assert strip_markdown_emphasis(text) == text
+
+
+def test_a_fenced_code_block_is_protected_like_an_inline_code_span() -> None:
+    text = "Before:\n```\nrm -rf build/*\n```\nAfter."
+    assert strip_markdown_emphasis(text) == text
+
+
+def test_build_issue_trailing_line_strips_markdown_from_the_citation() -> None:
+    rule = Rule(
+        id="D01-R01",
+        title="A rule",
+        number=1,
+        volatility="durable",
+        source="A paper (Halpin, *An Overview*, example.invalid), step 1",
+    )
+    finding = Finding(
+        rule_id="D01-R01",
+        severity=Severity.LOW,
+        title="x",
+        location="x.py",
+        body_md="x",
+        issue_title="x",
+        issue_body="x",
+    )
+    line = build_issue_trailing_line(finding, rule)
+    assert "*" not in line
+    assert "An Overview" in line
+
+
+# ---------------------------------------------------------------------------
+# Issue #130: domain_confidence_note, and build_issue_trailing_line's
+# optional confidence/rules_fetched kwargs.
+# ---------------------------------------------------------------------------
+
+
+def test_domain_confidence_note_never_claims_rules_were_read_or_applied() -> None:
+    # Wording discipline carried over from issue #110: "fetched" means only
+    # that the rule text was served by get_domain, never that it was read
+    # or applied, in either direction.
+    for confidence in (None, "high", "medium", "low"):
+        for rules_fetched in (True, False, None):
+            note = domain_confidence_note(confidence, rules_fetched)
+            assert "was read" not in note
+            assert "was applied" not in note
+
+
+def test_domain_confidence_note_names_confidence_and_fetch_status() -> None:
+    assert domain_confidence_note("high", True) == (
+        "This finding's domain: self-assessed confidence high; its rule text was "
+        "fetched from the server this run."
+    )
+    assert domain_confidence_note(None, False) == (
+        "This finding's domain: no self-assessed confidence reported; its rule "
+        "text was never fetched from the server this run: treat this finding as "
+        "unsupported until the domain is redone."
+    )
+    assert domain_confidence_note("medium", None) == (
+        "This finding's domain: self-assessed confidence medium; whether its rule "
+        "text was fetched this run is not recorded."
+    )
+
+
+def test_build_issue_trailing_line_with_no_domain_context_matches_pre_130_output() -> (
+    None
+):
+    # Backward compatibility: a caller (server.py's file_issues) that
+    # passes neither confidence nor rules_fetched must get exactly the
+    # trailing line this function built before issue #130.
+    rule = Rule(
+        id="D01-R02",
+        title="A rule",
+        number=2,
+        volatility="volatile",
+        source="invented for test fixtures only, no external source",
+    )
+    finding = Finding(
+        rule_id="D01-R02",
+        severity=Severity.HIGH,
+        title="x",
+        location="ledger/beds.py:42",
+        body_md="x",
+        issue_title="x",
+        issue_body="x",
+    )
+    line = build_issue_trailing_line(finding, rule)
+    assert line == (
+        "Found by an engineering-practice audit (rule D01-R02, severity high, "
+        "at ledger/beds.py:42). Reference: invented for test fixtures only, "
+        "no external source"
+    )
+
+
+def test_build_issue_trailing_line_inserts_the_domain_note_when_given_context() -> None:
+    rule = Rule(
+        id="D01-R02",
+        title="A rule",
+        number=2,
+        volatility="volatile",
+        source="invented for test fixtures only, no external source",
+    )
+    finding = Finding(
+        rule_id="D01-R02",
+        severity=Severity.HIGH,
+        title="x",
+        location="ledger/beds.py:42",
+        body_md="x",
+        issue_title="x",
+        issue_body="x",
+    )
+    line = build_issue_trailing_line(
+        finding, rule, confidence="low", rules_fetched=False
+    )
+    assert line == (
+        "Found by an engineering-practice audit (rule D01-R02, severity high, "
+        "at ledger/beds.py:42). This finding's domain: self-assessed confidence "
+        "low; its rule text was never fetched from the server this run: treat "
+        "this finding as unsupported until the domain is redone. Reference: "
+        "invented for test fixtures only, no external source"
+    )

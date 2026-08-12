@@ -229,6 +229,18 @@ For each domain id in `selected_domain_ids`, in order:
      issue on its own, understand the problem, and know how to fix it. Do not write "see rule
      D01-R02 for details"; restate the reasoning inline. Write issue text in plain punctuation
      (commas, colons, parentheses); do not use em or en dashes.
+   - **Write `body_md`, `issue_title` and `issue_body` as plain prose, never markdown.** No
+     `**bold**`, `*italic*` or `#` headings. The report renders none of this text through a
+     markdown parser, on purpose: it displays exactly what you write. Markdown you write does not
+     turn into formatting, it appears as literal asterisks in the finished report and in any filed
+     issue, which is a defect, not a stylistic choice.
+   - **Do wrap code, file paths, globs and shell commands in single backticks**, e.g.
+     `` `rm -rf build/*` `` or `` `**/*.py` ``. This is not decoration: the report strips markdown
+     emphasis before publishing your text (issue #128), and it treats a backtick-wrapped span as
+     code it must never alter, asterisks and all. An asterisk left unwrapped is usually still safe
+     (the strip only removes an asterisk that pairs with another of the same length elsewhere in
+     the text), but wrapping is what makes it safe on purpose rather than by coincidence of what
+     else the body happens to contain.
    - **Be terse.** Both `body_md` and `issue_body` follow a strict three-part shape and nothing
      else:
      1. **The issue**: what is wrong, with the location. One or two sentences.

@@ -24,9 +24,11 @@ from engineering_audit.feedback import (
     FEEDBACK_EMAIL,
     build_feedback_sections,
     build_issue_trailing_line,
+    domain_confidence_note,
     duration_text,
     feedback_subject,
     rules_pack_label,
+    strip_markdown_emphasis,
 )
 from engineering_audit.rules import citation, Rule, RulesPack
 from engineering_audit.schema import (
@@ -64,6 +66,32 @@ _SEVERITY_ORDER = ("critical", "high", "medium", "low")
 # The severities whose issue checkbox is ticked when the report loads. See
 # _issues_section for why this is not all four.
 _PRETICKED_SEVERITIES = ("critical", "high")
+
+# Word for word from AUDIT.md's own guidance for the agent choosing a
+# finding's severity ("Have a `severity` chosen with this guidance", step 4).
+# Copied here rather than read from AUDIT.md at render time, since AUDIT.md
+# is a document for the driving assistant to read, not a file this package
+# ships or opens at run time; test_severity_definitions_match_audit_md
+# parses AUDIT.md's own bullets and asserts they still equal this dict, so
+# the two cannot drift apart silently (issue #129). The report never showed
+# these definitions at all until now: a reader had no way to know what
+# "critical" meant on this page, or that it was an assistant's judgement
+# call rather than a measurement (see _findings_rollup).
+_SEVERITY_DEFINITIONS: dict[str, str] = {
+    "critical": (
+        "exploitable now, or causes data loss (a secret committed to history, an "
+        "auth bypass, an unguarded destructive migration)"
+    ),
+    "high": (
+        "not on fire today, but will bite soon under normal operation (a race "
+        "condition in a hot path, a silently-swallowed error in a payment flow)"
+    ),
+    "medium": (
+        "should be fixed, but is not urgent (a missing test for a common path, an "
+        "inconsistent naming convention that will cause a mistake eventually)"
+    ),
+    "low": "hygiene (a stale comment, a formatting inconsistency, a missing docstring)",
+}
 
 
 class ReportError(Exception):
@@ -152,16 +180,21 @@ def _require_href_scheme(url: str, allowed: tuple[str, ...], context: str) -> No
 
 
 def _markdownish(text: str) -> str:
-    """Escape then apply the barest paragraph/line-break formatting.
+    """Strip markdown emphasis, escape, then apply the barest
+    paragraph/line-break formatting.
 
     No markdown library is a dependency here (mcp + pydantic only), so this
     is deliberately not a markdown renderer: it escapes first, then turns
     blank-line-separated chunks into paragraphs and single newlines into
-    line breaks.
+    line breaks. finding.body_md is assistant-authored and untrusted, and
+    assistants write markdown by default (issue #128); the recorded
+    decision is to strip it rather than render it, so this is the boundary
+    that turns "**The issue**: ..." into plain "The issue: ...".
     """
     # Normalise CRLF (and lone CR) to LF first: a paragraph split on a literal
     # '\n\n' would otherwise miss every blank line in CRLF-sourced text.
     normalised = text.replace("\r\n", "\n").replace("\r", "\n")
+    normalised = strip_markdown_emphasis(normalised)
     escaped = html.escape(normalised)
     paragraphs = [p for p in escaped.split("\n\n") if p.strip()]
     if not paragraphs:
@@ -450,6 +483,25 @@ def _rules_fetched_status(
     return status
 
 
+def _fetch_status_to_bool(status: str) -> bool | None:
+    """Map _rules_fetched_status's four-way per-domain answer to the
+    True/False/None a single finding's own domain-confidence note needs
+    (issue #130).
+
+    "no verdicts to check" folds into None here rather than getting its own
+    branch: it is unreachable for a domain that produced a finding (a
+    finding requires a finding-verdict, so such a domain is always in
+    ``considered``), and where it is reachable (a domain with no findings
+    at all) nothing calls this for it, since there is no finding card or
+    issue to attach the note to.
+    """
+    if status == "yes":
+        return True
+    if status == "no":
+        return False
+    return None
+
+
 def _files_cell(result: DomainResult) -> str:
     if result.coverage is None:
         return "no coverage reported"
@@ -651,9 +703,36 @@ def _self_assessment_limits(
     )
 
 
+def _severity_definitions_block(assistant: str, model: str) -> str:
+    """The four severity definitions from AUDIT.md, plus a sentence saying
+    they were assigned by this run's assistant while writing each finding,
+    not measured against a fixed instrument (issue #129).
+
+    d16 review evidence: an external tester's write-up opened by supplying
+    its own definitions of "high", "medium" and "low", because the artefact
+    never carried them; the definitions themselves were close to
+    AUDIT.md's, showing the protocol was sound and simply never reached the
+    page. Matches the voice of _RULES_FETCHED_LIMIT: what the label is,
+    what it is not, stated the same way on every rendering.
+    """
+    definitions = "".join(
+        f"<dt>{_esc(severity)}</dt><dd>{_esc(definition)}.</dd>"
+        for severity, definition in _SEVERITY_DEFINITIONS.items()
+    )
+    return (
+        f'<dl class="severity-definitions">{definitions}</dl>'
+        f"<p>{_esc(assistant)} ({_esc(model)}) judged each finding's severity against "
+        "these four definitions while writing it. It is not a measurement: the same "
+        "evidence graded by a different assistant or model could come back a different "
+        "severity, and nothing on this page recalibrates the two to agree.</p>"
+    )
+
+
 def _findings_rollup(
     all_findings: list[tuple[str, Finding]],
     selected: dict[str, DomainResult],
+    assistant: str,
+    model: str,
 ) -> str:
     """The run's totals: findings by severity, and every rule verdict by
     verdict.
@@ -667,6 +746,10 @@ def _findings_rollup(
     report from thirty against 244 rules mostly set aside. And the pass
     count appears, which it never did anywhere in the visible report despite
     being computed for the feedback payload all along.
+
+    ``assistant`` and ``model`` (this run's own, from the header) are for
+    the severity-definitions block issue #129 adds after the by-severity
+    list: naming who assigned these labels, not just what they mean.
     """
     severity_counts: Counter[str] = Counter(f.severity.value for _, f in all_findings)
     total = len(all_findings)
@@ -688,6 +771,7 @@ def _findings_rollup(
         f"{domains_with_verdicts} of {len(selected)} "
         f"{_plural(len(selected), 'domain')}.</p>"
         f"<h3>Findings by severity</h3><ul>{sev_items}</ul>"
+        f"{_severity_definitions_block(assistant, model)}"
         f"<h3>Rule verdicts</h3><ul>{verdict_items}</ul>"
     )
 
@@ -1121,6 +1205,13 @@ def _reference_line(rule: Rule, pack_is_v2: bool) -> str:
     does not publish claims without evidence: a rule with no parsed source
     is refused upstream (see the render_report gate), so by the time this
     runs the source is always present.
+
+    The citation is our own text from the rules pack, not assistant text,
+    but the pack's own authoring convention wraps a footer (and any nested
+    title inside it) in markdown emphasis (issue #128): stripped here,
+    immediately after citation() returns, so the length ceiling below is
+    measured against what a reader actually sees, never inflated by
+    markup characters that carry no information.
     """
     if not rule.source:
         raise ReportError(
@@ -1128,7 +1219,7 @@ def _reference_line(rule: Rule, pack_is_v2: bool) -> str:
             "rules pack. A finding is a published claim; this tool does not publish "
             "claims without evidence. Fix the rule's Source: footer or drop the finding."
         )
-    cited = citation(rule.source, pack_is_v2=pack_is_v2)
+    cited = strip_markdown_emphasis(citation(rule.source, pack_is_v2=pack_is_v2))
     if len(cited) > _MAX_REFERENCE_LENGTH:
         raise ReportError(
             f"finding references rule {rule.id}, whose citation is {len(cited)} "
@@ -1139,23 +1230,50 @@ def _reference_line(rule: Rule, pack_is_v2: bool) -> str:
     return f"Reference: {rule.id}: {cited}"
 
 
+def _finding_domain_note_html(
+    confidence: str | None, rules_fetched: bool | None
+) -> str:
+    """The muted line under a finding card's location: this finding's
+    domain confidence and rules-fetched status (issue #130).
+
+    Rendered in full contrast and bold, not muted, when rules_fetched is
+    False: that is the one state the Tool performance summary already
+    calls out as "unsupported" (the Rules fetched block), and a finding
+    from such a domain must not read as visually identical to one whose
+    rules were fetched. Weight carries the emphasis rather than colour, the
+    same convention _severity_cell uses for a nonzero critical/high count,
+    so it survives greyscale and a photocopy (D16-R16).
+    """
+    note = _esc(domain_confidence_note(confidence, rules_fetched))
+    if rules_fetched is False:
+        return f'<div class="finding-domain-note"><strong>{note}</strong></div>'
+    return f'<div class="finding-domain-note muted">{note}</div>'
+
+
 def _finding_card(
     domain_title: str,
     finding: Finding,
     rule_index: dict[str, Rule],
     pack_is_v2: bool,
+    confidence: str | None,
+    rules_fetched: bool | None,
 ) -> str:
     severity = finding.severity.value
     badge = f'<span class="severity-badge severity-{_esc(severity)}">{_esc(severity)}</span>'
     # render_report has already confirmed every finding's rule_id is in the
     # pack, so this lookup cannot miss.
     rule = rule_index[finding.rule_id]
+    # finding.title is assistant-authored, same as body_md; stripped for the
+    # same reason (issue #128), just without _markdownish's paragraph
+    # wrapping, since a card heading is one line, not prose.
+    title = strip_markdown_emphasis(finding.title)
     return (
         f'<div class="finding sev-{_esc(severity)}">'
-        f'<div class="finding-head">{badge} <strong>{_esc(finding.title)}</strong> '
+        f'<div class="finding-head">{badge} <strong>{_esc(title)}</strong> '
         f'<span class="finding-rule">({_esc(finding.rule_id)})</span> '
         f'<span class="finding-domain">{_esc(domain_title)}</span></div>'
         f'<div class="finding-location">{_esc(finding.location)}</div>'
+        f"{_finding_domain_note_html(confidence, rules_fetched)}"
         f'<div class="finding-body">{_markdownish(finding.body_md)}</div>'
         f'<div class="finding-reference">{_esc(_reference_line(rule, pack_is_v2))}</div>'
         "</div>"
@@ -1237,6 +1355,8 @@ def _findings_section(
     domain_titles: dict[str, str],
     rule_index: dict[str, Rule],
     pack_is_v2: bool,
+    fetch_status: dict[str, str],
+    confidence_map: dict[str, str | None],
 ) -> str:
     """Every finding in the run, ordered by severity rather than by the order
     the rules pack happens to list domains in (issue #122, point 3).
@@ -1251,6 +1371,13 @@ def _findings_section(
     each severity group. It is one short string per finding either way, and
     a subheading level that often holds a single card is furniture
     (D16-R06).
+
+    ``fetch_status`` (from :func:`_rules_fetched_status`) and
+    ``confidence_map`` (domain id -> ``self_assessment.confidence`` or
+    ``None``) carry each finding's own domain confidence and fetch status
+    onto its card (issue #130), computed once by the caller and shared with
+    the per-domain table and the Issues section so none of the three can
+    disagree about the same domain.
     """
     if not selected:
         return "<p>No domains selected.</p>"
@@ -1268,7 +1395,14 @@ def _findings_section(
         if not group:
             continue
         cards = "".join(
-            _finding_card(domain_titles[domain_id], finding, rule_index, pack_is_v2)
+            _finding_card(
+                domain_titles[domain_id],
+                finding,
+                rule_index,
+                pack_is_v2,
+                confidence_map[domain_id],
+                _fetch_status_to_bool(fetch_status[domain_id]),
+            )
             for domain_id, finding in group
         )
         blocks.append(
@@ -1321,8 +1455,20 @@ def _issues_section(
     rule_index: dict[str, Rule],
     issue_urls: dict[str, str] | None,
     repo_prefill: str,
+    fetch_status: dict[str, str],
+    confidence_map: dict[str, str | None],
 ) -> str:
-    all_findings = [f for result in selected.values() for f in result.findings]
+    """``fetch_status`` and ``confidence_map`` are the same per-domain maps
+    _findings_section takes (issue #130): they carry each finding's domain
+    confidence and fetch status into its filed-or-copied issue text via
+    build_issue_trailing_line, and they decide which critical/high findings
+    are excluded from the default pre-tick below.
+    """
+    all_findings = [
+        (domain_id, finding)
+        for domain_id, result in selected.items()
+        for finding in result.findings
+    ]
     if not all_findings:
         return "<p>No findings, so nothing to file as an issue.</p>"
 
@@ -1341,19 +1487,31 @@ def _issues_section(
     # expressed in the type system, only guarded by this comment and the
     # tests that pin it.
     seen: Counter[str] = Counter()
-    for index, finding in enumerate(all_findings):
+    for index, (domain_id, finding) in enumerate(all_findings):
         # render_report has already confirmed every finding's rule_id is in
         # the pack and carries a cited source, so this lookup and the
         # trailing-line build below cannot fail.
         rule = rule_index[finding.rule_id]
-        trailing_line = build_issue_trailing_line(finding, rule)
-        body_with_trailing = f"{finding.issue_body}\n\n{trailing_line}"
-        full_text = f"{finding.issue_title}\n\n{body_with_trailing}"
+        rules_fetched = _fetch_status_to_bool(fetch_status[domain_id])
+        trailing_line = build_issue_trailing_line(
+            finding,
+            rule,
+            confidence=confidence_map[domain_id],
+            rules_fetched=rules_fetched,
+        )
+        # issue_title and issue_body are assistant-authored and untrusted,
+        # same as body_md; stripped here for the same reason (issue #128) so
+        # a filed or copied issue reads as plain prose, never leaking the
+        # "**Suggested fix**"-style markdown an assistant defaults to.
+        issue_title = strip_markdown_emphasis(finding.issue_title)
+        issue_body = strip_markdown_emphasis(finding.issue_body)
+        body_with_trailing = f"{issue_body}\n\n{trailing_line}"
+        full_text = f"{issue_title}\n\n{body_with_trailing}"
 
         issues_data.append(
             {
                 "rule_id": finding.rule_id,
-                "title": finding.issue_title,
+                "title": issue_title,
                 "body": body_with_trailing,
             }
         )
@@ -1381,8 +1539,19 @@ def _issues_section(
             # the opposite of the ordering the report now leads with. The
             # rest are one click away, and the note above the list says so:
             # nothing is hidden, only unticked.
+            #
+            # A critical or high finding from a domain whose rules were
+            # never fetched this run is excluded from that pre-tick too
+            # (issue #130): rules_fetched is False composes with the
+            # severity check rather than replacing it, so an unfetched
+            # critical finding ends up unticked even though its severity
+            # alone would otherwise tick it. See
+            # test_unfetched_critical_finding_is_unticked_despite_severity.
             checked = (
-                " checked" if finding.severity.value in _PRETICKED_SEVERITIES else ""
+                " checked"
+                if finding.severity.value in _PRETICKED_SEVERITIES
+                and rules_fetched is not False
+                else ""
             )
             checkbox_html = (
                 f'<input type="checkbox" id="issue-check-{index}"{checked} '
@@ -1392,7 +1561,7 @@ def _issues_section(
         blocks.append(
             '<div class="issue-block">'
             f'<label class="issue-select">{checkbox_html}</label>'
-            f"<p><strong>{_esc(finding.issue_title)}</strong></p>"
+            f"<p><strong>{_esc(issue_title)}</strong></p>"
             f'<textarea id="{textarea_id}" readonly rows="6">{_esc(full_text)}</textarea>'
             f'<button type="button" onclick="copyIssueText(\'{textarea_id}\', this)">'
             "Copy issue text</button> "
@@ -1401,16 +1570,30 @@ def _issues_section(
         )
 
     preticked = sum(
-        1 for f in all_findings if f.severity.value in _PRETICKED_SEVERITIES
+        1
+        for domain_id, f in all_findings
+        if f.severity.value in _PRETICKED_SEVERITIES and fetch_status[domain_id] != "no"
     )
-    selection_note = (
-        f'<p class="muted">{preticked} of {len(all_findings)} '
-        f"{_plural(len(all_findings), 'issue')} "
+    unfetched_high_priority = sum(
+        1
+        for domain_id, f in all_findings
+        if f.severity.value in _PRETICKED_SEVERITIES and fetch_status[domain_id] == "no"
+    )
+    note_text = (
+        f"{preticked} of {len(all_findings)} {_plural(len(all_findings), 'issue')} "
         f"{_plural(preticked, 'is', 'are')} ticked: the critical and high findings. "
         "The medium and low ones are listed unticked, not hidden. Tick any you also "
         "want to file, or untick one you do not. An issue already filed this run is "
-        "shown unticked with a link to it.</p>"
+        "shown unticked with a link to it."
     )
+    if unfetched_high_priority:
+        note_text += (
+            f" {unfetched_high_priority} critical or high "
+            f"{_plural(unfetched_high_priority, 'finding')} from a domain whose rules "
+            f"were never fetched this run {_plural(unfetched_high_priority, 'is', 'are')} "
+            "listed unticked too: treat them as unsupported until the domain is redone."
+        )
+    selection_note = f'<p class="muted">{note_text}</p>'
 
     button_row = _issue_button_row()
     data_script = (
@@ -1630,11 +1813,24 @@ def render_report(run_state: RunState, pack: RulesPack) -> str:
         for finding in result.findings
     ]
 
+    # Computed once and threaded through the findings and issues sections
+    # (issue #130), the same way the per-domain table already computes and
+    # shows both: a finding card, its filed-issue text and the Issues
+    # section's pre-tick state must all agree with the table about the same
+    # domain's confidence and fetch status.
+    fetch_status = _rules_fetched_status(run_state, selected)
+    confidence_map: dict[str, str | None] = {
+        domain_id: (
+            result.self_assessment.confidence if result.self_assessment else None
+        )
+        for domain_id, result in selected.items()
+    }
+
     performance_summary = (
         f'<div class="perf-block"><h3>Every domain, side by side</h3>'
         f"{_domain_table(run_state, selected, domain_titles, all_findings)}</div>"
         f'<div class="perf-block"><h3>Run totals</h3>'
-        f"{_findings_rollup(all_findings, selected)}</div>"
+        f"{_findings_rollup(all_findings, selected, run_state.meta.assistant, run_state.meta.model)}</div>"
         f'<div class="perf-block prominent">'
         f"{_could_not_evaluate_list(selected, rule_index, domain_titles)}</div>"
         f'<div class="perf-block prominent">'
@@ -1659,10 +1855,20 @@ def render_report(run_state: RunState, pack: RulesPack) -> str:
         meta_block=_render_meta_block(run_state),
         performance_summary=performance_summary,
         findings_section=_findings_section(
-            selected, domain_titles, rule_index, pack.is_v2
+            selected,
+            domain_titles,
+            rule_index,
+            pack.is_v2,
+            fetch_status,
+            confidence_map,
         ),
         issues_section=_issues_section(
-            selected, rule_index, run_state.filed_issue_urls or None, repo_prefill
+            selected,
+            rule_index,
+            run_state.filed_issue_urls or None,
+            repo_prefill,
+            fetch_status,
+            confidence_map,
         ),
         feedback_section=_feedback_section(run_state, run_state.feedback_issue_url),
         footer_block=_render_footer(run_state),
