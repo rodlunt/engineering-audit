@@ -3557,3 +3557,96 @@ def test_a_legacy_resume_still_judges_domains_audited_after_it(
     saved = _saved(out_dir)
     assert saved.rules_fetched_domain_ids == ["d01"]
     assert saved.rules_fetch_unknown_domain_ids == ["d02"]
+
+
+# ---------------------------------------------------------------------------
+# Issue #155: the legacy not-applicable relaxation must survive a resave
+# ---------------------------------------------------------------------------
+
+
+def _rewrite_progress_with_legacy_not_applicable(
+    out_dir: Path, schema_version: int
+) -> None:
+    """Rewrite the saved recovery file to look like one a pre-#100 build
+    wrote: a not-applicable verdict with no note at all, at a schema_version
+    below the one that started requiring it (NOT_APPLICABLE_NOTE_SCHEMA_VERSION,
+    currently 4). d02's one recorded verdict is repurposed for this, the same
+    way _strip_fetch_fields_from_progress repurposes the saved file above for
+    its own pre-#110 scenario."""
+    path = _progress_file(out_dir)
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    d02_verdict = saved["domain_results"]["d02"]["rule_verdicts"][0]
+    d02_verdict["verdict"] = "not-applicable"
+    d02_verdict["note"] = None
+    saved["schema_version"] = schema_version
+    path.write_text(json.dumps(saved), encoding="utf-8")
+
+
+def test_a_legacy_run_survives_two_interruptions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #155. A run-progress file written before #100 tolerates an
+    unjustified not-applicable verdict on load, because it declares a
+    schema_version below NOT_APPLICABLE_NOTE_SCHEMA_VERSION.
+
+    The defect this guards against: _resume_run immediately re-persists the
+    resumed run via a freshly built RunProgress (_run_progress), not a
+    re-serialisation of what was loaded. Before this fix, that fresh object
+    always declared the CURRENT schema_version regardless of what was
+    loaded, so the file on disk now claimed to be fully compliant while
+    still holding the unjustified verdict its own declared version says
+    should not exist. A second resume then loaded that file at face value
+    (version 4, no relaxation) and failed with a ValidationError, making the
+    run permanently unresumable after exactly one more interruption.
+    """
+    out_dir = tmp_path / "audit-output"
+    _interrupted_run(tmp_path, monkeypatch, out_dir)
+    _rewrite_progress_with_legacy_not_applicable(out_dir, schema_version=3)
+
+    # First interruption's resume: this already works today, and must keep
+    # working. The point under test is what it leaves on disk afterwards.
+    first_resume_server, _s1 = build_server(FIXTURE_PACK)
+    first = _begin_run(first_resume_server, out_dir, resume=True)
+    assert first["resumed"] is True
+
+    saved_after_first_resume = json.loads(
+        _progress_file(out_dir).read_text(encoding="utf-8")
+    )
+    # The file still holds the unjustified verdict, so it must still say so.
+    assert saved_after_first_resume["schema_version"] == 3
+
+    # Second interruption: resume again from exactly what the first resume
+    # wrote. Before the fix this raises ToolError wrapping a ValidationError
+    # ("verdict is not-applicable but no note (reason) was given"), because
+    # the file now (wrongly) declared schema_version 4.
+    second_resume_server, _s2 = build_server(FIXTURE_PACK)
+    second = _begin_run(second_resume_server, out_dir, resume=True)
+    assert second["resumed"] is True
+
+    # The run can still be finished and re-rendered afterwards.
+    result = _call(
+        second_resume_server, "render_report", {"finished": "2026-08-09T10:00:00Z"}
+    )
+    assert Path(result["report_path"]).is_file()
+
+
+def test_record_domain_result_still_rejects_a_fresh_unjustified_not_applicable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The legacy relaxation this fix carries through resumes and resaves
+    must not become a general escape hatch. A verdict recorded now, not
+    carried in from an old file, still needs its reason (issue #100)."""
+    out_dir = tmp_path / "audit-output"
+    mcp, _state = build_server(FIXTURE_PACK)
+    _begin_run(mcp, out_dir)
+    _preset_config_env(monkeypatch, tmp_path)
+    _call(mcp, "start_config", {})
+    _call(mcp, "get_config", {"timeout_s": 1})
+    _fetch_domain(mcp, "d01")
+
+    verdicts = _all_pass_verdicts(_domain(mcp, "d01"))
+    verdicts[0] = {"rule_id": verdicts[0]["rule_id"], "verdict": "not-applicable"}
+    result = {"domain_id": "d01", "status": "completed", "rule_verdicts": verdicts}
+
+    with pytest.raises(ToolError, match="not-applicable"):
+        _call(mcp, "record_domain_result", {"result": result})

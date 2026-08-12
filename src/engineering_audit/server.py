@@ -90,6 +90,7 @@ from engineering_audit.run_state_io import (
     save_run_progress,
 )
 from engineering_audit.schema import (
+    RUN_STATE_SCHEMA_VERSION,
     AuditConfig,
     DomainResult,
     Finding,
@@ -304,6 +305,29 @@ class RunTracker:
 
     meta: RunMeta
     output_dir: Path
+    # The schema_version this run's already-recorded domain_results were
+    # loaded at, carried forward rather than left to default to the current
+    # RUN_STATE_SCHEMA_VERSION. A fresh run (no prior file) has nothing
+    # loaded, so the current version is exactly right here; a resumed run
+    # sets this from the file it resumed (see _resume_run), because that
+    # file's domain_results may still hold verdicts recorded under an older,
+    # more lenient rule (issue #100's not-applicable note requirement,
+    # relaxed for anything below NOT_APPLICABLE_NOTE_SCHEMA_VERSION in
+    # schema.py). _run_progress and render_report both build a fresh
+    # RunProgress/RunState from this tracker rather than re-serialising
+    # whatever was loaded, and Pydantic does not revalidate the
+    # already-validated DomainResult/RuleVerdict instances that construction
+    # carries over, so that write always succeeds regardless of this value.
+    # What this value protects is the file's own honesty: declaring the
+    # current version while still holding a verdict that predates its rule
+    # would tell the next load "hold this to the full requirement" about
+    # data that cannot honestly meet it, and the next load would refuse it
+    # (issue #155). Carrying the true version forward is safe to keep doing
+    # indefinitely, including once every domain in the file is fully
+    # compliant: relaxing an already-satisfied requirement changes nothing,
+    # since record_domain_result enforces the requirement in full for every
+    # verdict recorded from here on, independent of this field.
+    schema_version: int = RUN_STATE_SCHEMA_VERSION
     repo_dir: Path | None = None
     config: AuditConfig | None = None
     config_mode: str | None = None
@@ -526,8 +550,14 @@ def _progress_path(output_dir: Path) -> Path:
 
 
 def _run_progress(run: RunTracker, *, completed: bool = False) -> RunProgress:
-    """Snapshot the tracker as the record written to disk."""
+    """Snapshot the tracker as the record written to disk.
+
+    schema_version is carried from the tracker rather than left to its field
+    default: see RunTracker.schema_version for why a resumed run must keep
+    declaring whatever version it was loaded at (issue #155).
+    """
     return RunProgress(
+        schema_version=run.schema_version,
         meta=run.meta,
         config=run.config,
         config_mode=run.config_mode,
@@ -906,6 +936,15 @@ def _resume_run(
     run = RunTracker(
         meta=resumed_meta,
         output_dir=output_dir,
+        # See RunTracker.schema_version: this run's domain_results were just
+        # loaded from progress, which may hold verdicts recorded under a
+        # more lenient version of the not-applicable note rule. Carrying the
+        # file's own declared version forward is what keeps the record
+        # honest through however many more resumes this run takes (issue
+        # #155); defaulting to the current version here, the way the fresh
+        # RunProgress/RunState construction below already did before this
+        # fix, is exactly the bug.
+        schema_version=progress.schema_version,
         repo_dir=resolved_repo_dir,
         config=config,
         rules_fetched=rules_fetched,
@@ -2083,6 +2122,12 @@ def _register_report_tools(mcp: MCPServer, state: AppState) -> None:
         )
 
         run_state = RunState(
+            # See RunTracker.schema_version: a run resumed from a file that
+            # predates the not-applicable note requirement carries that
+            # version through to its own finished run-state.json too, so
+            # engineering-audit-render can still re-render it later (issue
+            # #155).
+            schema_version=run.schema_version,
             meta=finished_meta,
             config=config,
             domain_results=run.domain_results,
