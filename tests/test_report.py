@@ -2485,8 +2485,14 @@ def test_rules_fetched_column_and_the_block_below_agree_about_a_domain() -> None
     run_state.rules_fetched_domain_ids = ["d01"]
     rendered = render_report(run_state, pack)
 
-    assert _domain_row(rendered, "d01").endswith("<td>yes</td></tr>")
-    assert _domain_row(rendered, "d02").endswith("<td>no</td></tr>")
+    # data-label carries the column header onto the cell for the narrow
+    # breakpoint (issue #165); the visible value is unchanged.
+    assert _domain_row(rendered, "d01").endswith(
+        '<td data-label="Rules fetched">yes</td></tr>'
+    )
+    assert _domain_row(rendered, "d02").endswith(
+        '<td data-label="Rules fetched">no</td></tr>'
+    )
     assert (
         "1 domain(s) recorded rule verdicts without their rule text ever being "
         "fetched this run" in rendered
@@ -2500,8 +2506,12 @@ def test_rules_fetched_column_says_not_recorded_for_a_legacy_run_state() -> None
     run_state.rules_fetched_domain_ids = None
     rendered = render_report(run_state, pack)
 
-    assert _domain_row(rendered, "d01").endswith("<td>not recorded</td></tr>")
-    assert _domain_row(rendered, "d02").endswith("<td>not recorded</td></tr>")
+    assert _domain_row(rendered, "d01").endswith(
+        '<td data-label="Rules fetched">not recorded</td></tr>'
+    )
+    assert _domain_row(rendered, "d02").endswith(
+        '<td data-label="Rules fetched">not recorded</td></tr>'
+    )
 
 
 def test_totals_row_refuses_to_sum_files_across_domains() -> None:
@@ -2618,12 +2628,25 @@ def test_domains_with_no_findings_summary_splits_the_three_kinds_of_zero() -> No
     )
 
 
-def test_rule_id_lists_are_never_put_behind_a_closed_details() -> None:
-    # #124's second trap. Find-in-page inside a closed <details> varies by
-    # browser, and a reader who cannot find a rule id with Ctrl+F concludes
-    # it is not in the report. Domain ids are safe to collapse because the
-    # per-domain table always carries them; rule ids have no such
-    # always-open home, so their lists stay expanded.
+def test_rule_id_lists_stay_out_of_every_closed_details_except_the_two_164_allows() -> (
+    None
+):
+    # #124's second trap, revisited by #164. Find-in-page inside a closed
+    # <details> varies by browser, and #124 originally left every rule-id
+    # list expanded rather than risk a reader concluding a rule id it could
+    # not Ctrl+F was not in the report at all.
+    #
+    # That blanket rule is deliberately inverted here for exactly two
+    # blocks: could-not-evaluate and not-applicable. A real reader test of a
+    # 181-rule report (issue #164) showed what the old trade-off costs on a
+    # phone instead: screen after screen of rule ids between the reader and
+    # everything below. The maintainer's call on seeing that artefact was to
+    # collapse those two blocks too, their headline carrying the count the
+    # same way every other collapsed summary in this report already does.
+    # This is a scoped exception, not a repeal: every other collapsed block
+    # (the meta grid, self-assessment limits, domains-with-no-findings) is
+    # still held to the original rule, and this test still fails if a rule
+    # id turns up behind any of those.
     pack = _pack()
     d01 = pack.get_domain("d01")
     verdicts = _all_pass_verdicts(d01)
@@ -2657,12 +2680,38 @@ def test_rule_id_lists_are_never_put_behind_a_closed_details() -> None:
     # d16 rule ids in its own comments, and "<details {" in a CSS selector
     # is not an element.
     body = rendered[rendered.index("</style>") :]
+    exempt_summary_prefixes = ("Could not evaluate:", "Not applicable:")
+    exempt_blocks_seen = {prefix: False for prefix in exempt_summary_prefixes}
+    violations = []
     for match in re.finditer(
-        r'<details(?: class="[^"]*")?>(.*?)</details>', body, re.DOTALL
+        r"<details(?: class=\"[^\"]*\")?><summary>(.*?)</summary>(.*?)</details>",
+        body,
+        re.DOTALL,
     ):
-        assert not re.search(r"\bD\d{2}-R\d{2}\b", match.group(1)), (
-            f"a rule id was put behind a collapsed <details>: {match.group(1)[:200]!r}"
+        summary, contents = match.group(1), match.group(2)
+        carries_rule_id = re.search(r"\bD\d{2}-R\d{2}\b", contents)
+        exempt = next(
+            (p for p in exempt_summary_prefixes if summary.startswith(p)), None
         )
+        if exempt is not None:
+            assert carries_rule_id, (
+                f"issue #164's exception assumes the collapsed {summary!r} block "
+                "carries rule ids; this one carries none, so the exception is "
+                "buying nothing here"
+            )
+            exempt_blocks_seen[exempt] = True
+        elif carries_rule_id:
+            violations.append(f"{summary!r}: {contents[:200]!r}")
+
+    assert not violations, (
+        "a rule id was put behind a closed <details> outside the #164 "
+        "exception:\n" + "\n".join(violations)
+    )
+    # Control: this fixture must actually exercise both exempted blocks, or
+    # the assertions above would pass vacuously.
+    assert all(exempt_blocks_seen.values()), (
+        f"fixture did not exercise both #164 blocks: {exempt_blocks_seen}"
+    )
 
 
 def test_collapsed_blocks_are_closed_by_default() -> None:
