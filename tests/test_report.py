@@ -704,6 +704,49 @@ def test_provenance_blind_notice_does_not_fire_for_not_checked_or_unset() -> Non
     assert "Both provenance checks are blind" not in rendered2
 
 
+# ---------------------------------------------------------------------------
+# Modified tool notice (issue #169): a dirty tool_commit renders a caveat
+# ---------------------------------------------------------------------------
+
+
+def test_modified_tool_notice_fires_for_a_dirty_tool_commit() -> None:
+    # Issue #169: a dirty tool_commit means the code that produced this run's
+    # verdicts is a development checkout, not a build that matches any
+    # released commit. Exactly as caveat-worthy as a dirty rules pack.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.meta.tool_commit = f"{'f' * 40}-dirty"
+    rendered = render_report(run_state, pack)
+
+    assert "This run used a modified tool build" in rendered
+    assert "development checkout" in rendered
+    assert "cannot be reproduced from a release tag" in rendered
+    # Never the stronger claim: the caveat says nothing about the verdicts
+    # below being wrong, only that the build cannot be reproduced or
+    # compared against a release.
+    assert "not evidence the findings below are wrong" in rendered
+
+
+def test_modified_tool_notice_is_silent_for_a_clean_tool_commit() -> None:
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.meta.tool_commit = "f" * 40
+    rendered = render_report(run_state, pack)
+
+    assert "This run used a modified tool build" not in rendered
+
+
+def test_modified_tool_notice_is_silent_when_tool_commit_is_unknown() -> None:
+    # None is a materially different, separately honest state (provenance
+    # could not be determined at all), and must not be folded into "dirty".
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.meta.tool_commit = None
+    rendered = render_report(run_state, pack)
+
+    assert "This run used a modified tool build" not in rendered
+
+
 def test_not_applicable_verdict_for_unknown_rule_id_raises() -> None:
     # Same loudness the could-not-evaluate path already has: a verdict for a
     # rule id absent from the pack is a broken run, not a cosmetic gap.
