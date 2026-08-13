@@ -205,10 +205,30 @@ def _run_git(args: list[str], path: Path) -> subprocess.CompletedProcess[str] | 
         return None
 
 
-def _git_commit(path: Path) -> str | None:
+def _git_commit(path: Path, *, subtree_only: bool) -> str | None:
     """Best-effort: the full HEAD SHA of the git repository containing
     ``path``, with a ``-dirty`` suffix appended when the working tree has
     uncommitted changes.
+
+    ``subtree_only`` decides what "dirty" is scoped to, and every call site
+    must say which it means: there is no default, so a new call site cannot
+    silently pick the wrong one by omission.
+
+    - ``True``: only changes within the ``path`` subtree count (``git
+      status --porcelain -- .``, run with cwd at ``path``). Used for the
+      rules pack (issue #168): ``load_pack`` reads only that directory, so
+      an untracked file elsewhere in a containing repository (a stray
+      .DS_Store at the clone root, an audit-output/ directory, editor
+      droppings) cannot affect what gets audited, and must not cost the
+      reader their pack staleness comparison by tripping a dirty flag it
+      has nothing to do with.
+    - ``False``: any change anywhere in the containing repository counts
+      (plain ``git status --porcelain``, no pathspec). Used for the tool's
+      own source tree (issue #169): the whole tree *is* the running code,
+      so dirt anywhere in it is genuinely worth recording, unlike the pack
+      case above. Do not "harmonise" these two call sites into one scope;
+      the difference is deliberate, not an oversight left over from before
+      #168.
 
     None means could-not-determine (git not installed, ``path`` is not
     inside a repository, or either git call timed out or exited non-zero),
@@ -220,7 +240,10 @@ def _git_commit(path: Path) -> str | None:
     sha = rev_parse.stdout.strip()
     if not sha:
         return None
-    status = _run_git(["status", "--porcelain"], path)
+    status_args = ["status", "--porcelain"]
+    if subtree_only:
+        status_args += ["--", "."]
+    status = _run_git(status_args, path)
     if status is None or status.returncode != 0:
         return None
     return f"{sha}-dirty" if status.stdout.strip() else sha
@@ -887,7 +910,10 @@ def _resume_run(
             "produced by the same one. Tell the user."
         )
 
-    current_pack_commit = _git_commit(state.pack.root)
+    # subtree_only=True (#168): the pack directory may sit inside a larger
+    # clone, and load_pack reads only this subtree, so dirt elsewhere in
+    # that clone must not count. See _git_commit's docstring.
+    current_pack_commit = _git_commit(state.pack.root, subtree_only=True)
     if progress.meta.rules_pack_commit != current_pack_commit:
         warnings.append(
             f"The saved run was started against rules pack commit "
@@ -1477,7 +1503,10 @@ def _register_run_tools(mcp: MCPServer, state: AppState) -> None:
         tool_version_value = tool_version or _default_tool_version()
         tool_commit_value = _default_tool_commit()
         pack_version_value = _git_release_version(state.pack.root)
-        pack_commit_value = _git_commit(state.pack.root)
+        # subtree_only=True (#168): see the comment on the resume path above,
+        # and _git_commit's docstring, for why the pack and the tool are
+        # scoped differently.
+        pack_commit_value = _git_commit(state.pack.root, subtree_only=True)
         update_check_enabled = state.update_check_enabled
         meta = RunMeta(
             tool_version=tool_version_value,

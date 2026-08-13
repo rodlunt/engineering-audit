@@ -715,7 +715,7 @@ def test_git_commit_returns_the_head_sha_for_a_real_git_repo(tmp_path: Path) -> 
     repo.mkdir()
     _init_git_repo(repo)
 
-    assert _git_commit(repo) == _head_sha(repo)
+    assert _git_commit(repo, subtree_only=False) == _head_sha(repo)
 
 
 def test_git_commit_appends_dirty_suffix_when_working_tree_has_uncommitted_changes(
@@ -726,14 +726,72 @@ def test_git_commit_appends_dirty_suffix_when_working_tree_has_uncommitted_chang
     _init_git_repo(repo)
     (repo / "untracked.txt").write_text("uncommitted", encoding="utf-8")
 
-    result = _git_commit(repo)
+    result = _git_commit(repo, subtree_only=False)
     assert result == f"{_head_sha(repo)}-dirty"
 
 
 def test_git_commit_returns_none_for_a_non_repo_directory(tmp_path: Path) -> None:
     not_a_repo = tmp_path / "plain-dir"
     not_a_repo.mkdir()
-    assert _git_commit(not_a_repo) is None
+    assert _git_commit(not_a_repo, subtree_only=False) is None
+
+
+# ---------------------------------------------------------------------------
+# _git_commit subtree_only scoping (issue #168): dirty must mean "changes
+# within the scoped subtree", not "changes anywhere in the containing repo".
+# ---------------------------------------------------------------------------
+
+
+def test_git_commit_subtree_only_ignores_an_untracked_file_outside_the_scoped_dir(
+    tmp_path: Path,
+) -> None:
+    # The real tester bug: a stray file anywhere else in the containing
+    # clone (a .DS_Store at the clone root, a saved audit-output/
+    # directory) must not dirty a commit scoped to a subdirectory the tool
+    # actually reads, like the rules pack.
+    repo = tmp_path / "repo"
+    rules_dir = repo / "rules"
+    rules_dir.mkdir(parents=True)
+    (rules_dir / "d01.md").write_text("# domain\n", encoding="utf-8")
+    _init_git_repo(repo)
+    (repo / ".DS_Store").write_text("junk", encoding="utf-8")
+
+    # Proves the untracked file really does dirty the old, repo-wide scope
+    # (subtree_only=False): the fix must change the answer only because
+    # subtree_only=True was asked for, not because the file stopped
+    # mattering some other way.
+    assert _git_commit(rules_dir, subtree_only=False) == f"{_head_sha(repo)}-dirty"
+
+    assert _git_commit(rules_dir, subtree_only=True) == _head_sha(repo)
+
+
+def test_git_commit_subtree_only_reports_dirty_for_an_untracked_file_inside_the_scoped_dir(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    rules_dir = repo / "rules"
+    rules_dir.mkdir(parents=True)
+    (rules_dir / "d01.md").write_text("# domain\n", encoding="utf-8")
+    _init_git_repo(repo)
+    # A new domain file load_pack would actually pick up: genuinely changes
+    # the pack, so this must count even though it is untracked.
+    (rules_dir / "d99-new-domain.md").write_text("# new domain\n", encoding="utf-8")
+
+    assert _git_commit(rules_dir, subtree_only=True) == f"{_head_sha(repo)}-dirty"
+
+
+def test_git_commit_subtree_only_reports_dirty_for_a_modified_tracked_file_inside_the_scoped_dir(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    rules_dir = repo / "rules"
+    rules_dir.mkdir(parents=True)
+    domain_file = rules_dir / "d01.md"
+    domain_file.write_text("# domain\n", encoding="utf-8")
+    _init_git_repo(repo)
+    domain_file.write_text("# domain, modified\n", encoding="utf-8")
+
+    assert _git_commit(rules_dir, subtree_only=True) == f"{_head_sha(repo)}-dirty"
 
 
 # ---------------------------------------------------------------------------
