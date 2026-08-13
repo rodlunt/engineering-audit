@@ -188,7 +188,42 @@ For each domain id in `selected_domain_ids`, in order:
    names that domain as one whose verdicts were reached without its rules. Fetching is not the
    point and satisfying the check is not the point: reading the rules is. Do not call
    `get_domain` to clear the flag on a domain you then bulk-mark from memory.
-2. Sweep the repository, applying every rule in the domain. For each rule, reach one of four
+2. Using the rule text you just fetched, decide whether the domain can be attempted in this
+   repository **before** verdicting any individual rule: this decides whether the domain is
+   `could-not-run`, in which case it carries no rule verdicts at all, or whether it runs, in
+   which case every rule below gets a verdict of its own.
+
+   - `could-not-run` is for the case where **no rule in the domain can be evaluated against
+     anything present in the repository**: not one of the domain's rules has anything to check
+     itself against, because the subject matter the whole domain is about is not here at all.
+     Write a `reason` naming what you looked for and did not find, the same discipline as a
+     `not-applicable` note below, and go straight to step 7: do not sweep individual rules for
+     this domain.
+   - If **even one rule** in the domain can reach a verdict against something actually present
+     in the repository, the domain runs. Continue to the per-rule sweep below, and let the rules
+     that genuinely have nothing to check against reach their own `not-applicable` verdict, each
+     with its own reason, rather than pulling the whole domain out.
+
+   **When in doubt, run the domain.** A `could-not-run` removes every rule in the domain from
+   the report's accounting in one move, with a single reason covering all of them. A
+   `not-applicable` verdict on each rule that does not apply keeps every exclusion visible and
+   individually justified, rule by rule, which is what lets a reader see what was excluded and
+   why instead of trusting one blanket claim. Reserve `could-not-run` for when the domain's
+   subject matter is genuinely absent, not for when the first artefact you expected to find is
+   merely missing.
+
+   Worked example: a React single-page app with no database still has forms, and those forms
+   persist data somewhere, local storage, an API call, a parent callback that saves it further
+   up. A data-modelling domain is not `could-not-run` here just because there is no database:
+   rules about submission atomicity or input validation are still evaluable against those forms,
+   so the domain runs, and only the rules with truly nothing to check against (one specific to
+   schema migrations, say) get `not-applicable`. Two audits of the same repository at the same
+   commit have reached opposite calls on exactly this domain: one ran it and found a real
+   high-severity finding in it, the other declared it `could-not-run` and never looked, and both
+   were defensible under guidance that named no criteria. `could-not-run` is for when nothing in
+   the domain is evaluable, not for when the obvious artefact is absent but the domain's subject
+   matter is not.
+3. Sweep the repository, applying every rule in the domain. For each rule, reach one of four
    honest verdicts:
    - `pass`: you checked, and the repository satisfies the rule.
    - `finding`: you checked, and the repository violates the rule. Attach a `Finding` (see
@@ -212,7 +247,7 @@ For each domain id in `selected_domain_ids`, in order:
    `not-applicable` verdict with no note, and the report counts these per domain and lists your
    reasons, so a domain you set aside in full reads as set aside, not as swept clean.
 
-3. Every `Finding` must:
+4. Every `Finding` must:
    - Cite a **real `path:line` location you actually read**. Never fabricate a plausible-looking
      location, and never guess a line number from a search-result snippet without opening the
      file. If a finding spans a whole file rather than a line, `path` alone is acceptable.
@@ -254,7 +289,7 @@ For each domain id in `selected_domain_ids`, in order:
      a plain statement that the rule carries none) is appended automatically from the rules pack
      after every rendered finding; do not restate sources or the rule's literature-review rationale
      in the body yourself. Keep the three parts about the repository, not about the literature.
-4. If reaching a verdict on a rule involved fetching or reading anything **outside the rules
+5. If reaching a verdict on a rule involved fetching or reading anything **outside the rules
    pack itself** (a documentation page, a standard, a spec, a paper, anything not already inside
    `get_domain`'s text), record it in that `DomainResult`'s `consulted_sources`: `{rule_id, url,
    title, why, accessed}`. `rule_id` must be one of this domain's own rule ids; `why` is a
@@ -263,14 +298,14 @@ For each domain id in `selected_domain_ids`, in order:
    cannot back.** Do this for every rule as you go, not as a memory exercise at the end of the
    sweep. Leave `consulted_sources` empty for a rule you verdicted from the rules pack and the
    repository alone, which is the common case.
-5. Once every rule in the domain has a verdict, decide the domain's overall `status`:
-   - `completed`, if you were able to sweep the repository at all (even if some individual rules
-     ended up could-not-evaluate).
-   - `could-not-run`, only if the whole domain could not be attempted (e.g. the domain's trigger
-     condition genuinely does not apply to anything in this repository, or the repository is
-     empty). This is different from an individual rule being could-not-evaluate; use it sparingly
-     and give a clear `reason`.
-6. Call `record_domain_result` with the full `DomainResult` payload. If it errors:
+6. Once every rule in the domain has a verdict, the domain's overall `status` is `completed`
+   (even if some individual rules ended up could-not-evaluate or not-applicable). You already
+   decided in step 2 above whether this domain runs at all or is `could-not-run`; do not revisit
+   that call here, and a domain that reached this step by sweeping its rules is `completed` by
+   definition.
+7. Call `record_domain_result` with the full `DomainResult` payload. A `could-not-run` domain
+   from step 2 carries no rule verdicts and no findings, only the `status` and `reason`; every
+   other domain carries a verdict for each of its rules. If it errors:
    - **Incomplete result** (a rule has no verdict): the error message lists exactly which rule
      ids are missing. Go back, verdict them, and resubmit. Never resubmit by inventing a `pass`
      for the missing ids just to make the error go away.
