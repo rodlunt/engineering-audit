@@ -415,6 +415,32 @@ class RunMeta(BaseModel):
             "a repo, or the lookup failed), never a fabricated value."
         ),
     )
+    rules_pack_format: int | None = Field(
+        default=None,
+        description=(
+            "The 'format' key from the loaded rules pack's optional pack.toml (issue "
+            "#170), naming the rule-file format the pack's authors wrote it to. None "
+            "means pack.toml is absent, unreadable, silent on this key, or this field "
+            "predates this build (an older run-state file); any of those is a normal, "
+            "unremarked case, never an error. Compared against "
+            "rules.PACK_FORMAT_MIN/PACK_FORMAT_MAX, the range this build's parser "
+            "actually reads, to decide whether the 'unreadable rule-file format' "
+            "notice fires."
+        ),
+    )
+    rules_pack_requires_tool: str | None = Field(
+        default=None,
+        description=(
+            "The 'requires_tool' key from the loaded rules pack's optional pack.toml "
+            "(issue #170): the oldest engineering-audit release the pack's authors "
+            "wrote its rules to assume. None means pack.toml is absent, unreadable, "
+            "silent on this key, or this field predates this build. Compared against "
+            "tool_version above to decide whether the 'this pack asks for a newer "
+            "tool' notice fires; the pack declares only what it needs, never its own "
+            "version (see rules_pack_version above and issue #136), which this tool "
+            "derives from git instead."
+        ),
+    )
     update_check: str | None = Field(
         default=None,
         description=(
