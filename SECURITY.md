@@ -16,7 +16,7 @@ quickly; there is no long-term support branch.
 
 | Version | Supported |
 |---|---|
-| latest tag (currently v0.8.0) | yes |
+| latest tag (currently v0.8.1) | yes |
 | anything older | no |
 
 If you are running an older tag or an untagged checkout of `main`, update to the latest release
