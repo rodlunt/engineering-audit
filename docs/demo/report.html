@@ -105,11 +105,18 @@
   .headline-caveat { font-size: 1rem; color: var(--muted); }
   /* Collapsed sections (issue #124). Only content whose signal is already
      on the visible summary line, or repeated somewhere that never
-     collapses, is ever put behind one of these: the rule-id lists in the
-     could-not-evaluate and not-applicable blocks are deliberately left
-     expanded, because find-in-page behaviour inside a closed <details>
+     collapses, is ever put behind one of these.
+
+     Update (issue #164): the could-not-evaluate and not-applicable
+     blocks' rule-id lists used to be a deliberate exception, left
+     expanded because find-in-page behaviour inside a closed <details>
      varies by browser and a reader who cannot find a rule id concludes it
-     is not in the report. */
+     is not in the report. A real reader test of a 181-rule report showed
+     what that trade-off costs on a phone: screen after screen of rule ids
+     between the reader and everything below. The maintainer's call on
+     seeing that was to collapse them too, so the exception is gone; every
+     collapsed summary in this report, including those two, carries its
+     own numbers so a reader loses nothing by not opening it. */
   details { margin: 0.35rem 0; }
   summary { cursor: pointer; }
   summary::marker { color: var(--muted); }
@@ -120,7 +127,16 @@
   }
   .meta-details .meta-grid { margin-top: 0.5rem; }
   .meta-label { color: var(--muted); }
-  .meta-value { font-weight: 500; }
+  /* A grid track sizes to its content's intrinsic min-content width by
+     default, same trap as a table cell (issue #166): the 40-char commit
+     hash, the tool commit and the rules-pack-update sentence have no
+     spaces to wrap the ordinary way, so the 1fr track grows to fit the
+     unbroken token instead of wrapping it, and the value escapes the
+     card on a narrow viewport. overflow-wrap: anywhere lets the browser
+     break inside the token itself; min-width: 0 stops the grid track's
+     min-content size (not overflow-wrap) from winning the argument in the
+     first place, the same pairing #126 used for .finding-location. */
+  .meta-value { font-weight: 500; overflow-wrap: anywhere; min-width: 0; }
   .perf-block {
     background: var(--card-bg);
     border: 1px solid var(--border);
@@ -160,6 +176,72 @@
   .verdict-cell { min-width: 13rem; }
   .findings-cell { min-width: 8.5rem; }
   .files-cell { min-width: 7.5rem; }
+  /* Issue #165: measured against the rendered table at 412px (chrome-devtools,
+     16 synthetic domains) rather than guessed from the rule above. The three
+     column min-widths alone sum to 29rem, before the domain name and the two
+     unconstrained columns (Confidence, Rules fetched); a 412px phone has
+     roughly a third of that after body padding and card padding. The table
+     scrolled sideways as designed, but with only ~2rem of it in view per
+     swipe, and the domain-name column (no min-width) and the verdict cell's
+     sentence both wrapped hard inside that sliver, so a row that should read
+     as two short lines measured 93-100px tall and the reader saw a name, a
+     bar and a wall of wrapped text before the next domain, with four columns
+     never brought into view at all.
+
+     Below this breakpoint the table stops being a table: every row becomes
+     its own block, and each cell's value is preceded by its column's own
+     header text (the desktop <thead> stays in the DOM, off-screen, so the
+     labels shown here and the ones a screen reader hears above the table are
+     the same source of truth, never two copies that could drift apart).
+     Nothing here touches the table above this breakpoint; .domain-table-wrap
+     keeps overflow-x: auto for any width this query does not match, and
+     @media print (later in this stylesheet, so it wins the cascade when
+     both match) turns the table back into a normal table regardless of the
+     printing device's reported width. */
+  @media screen and (max-width: 640px) {
+    .domain-table-wrap { overflow-x: visible; }
+    .domain-table, .domain-table tbody, .domain-table tfoot,
+    .domain-table tr, .domain-table th, .domain-table td {
+      display: block;
+      width: auto;
+    }
+    /* Visually hidden, not display: none: the column headers stay in the
+       accessibility tree so a screen reader still announces "Findings"
+       before a stacked row's findings cell, the same way it would with the
+       table shown in its desktop shape. */
+    .domain-table thead {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+      white-space: nowrap;
+      border: 0;
+      padding: 0;
+      margin: -1px;
+    }
+    .domain-table tbody tr, .domain-table tfoot tr {
+      border-top: 1px solid var(--border);
+      padding: 0.6rem 0;
+    }
+    .domain-table tbody tr:first-child { border-top: none; }
+    .domain-table th, .domain-table td {
+      border-bottom: none;
+      padding: 0.15rem 0;
+    }
+    .domain-table tfoot th, .domain-table tfoot td { border-top: none; }
+    .domain-table tbody th { padding-bottom: 0.3rem; }
+    /* The label a sighted reader would otherwise only see once, at the top
+       of a column that no longer exists at this width. Generated content,
+       so it does not appear in copied or selected text, the trade-off every
+       version of this technique makes; the value itself is always real
+       markup either way. */
+    .domain-table td[data-label]::before {
+      content: attr(data-label) ": ";
+      color: var(--muted);
+    }
+    .verdict-cell, .findings-cell, .files-cell { min-width: 0; }
+  }
   /* The bar's track is the full width of the cell; the bar itself is drawn
      to a share of it set by how many rules the domain verdicted against the
      largest domain in the run, so length carries quantity (D16-R05) rather
@@ -512,7 +594,7 @@ every finding is available in the on-screen version of this report.</p>
   what could not be evaluated and why, what was set aside as not applicable and why, and the
   assistant's own confidence. It says nothing about the audited codebase's qualities; see
   Findings above for that.</p>
-  <div class="perf-block"><h3>Every domain, side by side</h3><p>One row per selected domain. The bar in the verdicts column is drawn to the same scale in every row, so a domain with fewer rules draws a shorter bar, and every value it draws is written out beside it.</p><ul class="vbar-legend"><li><span class="vkey seg-pass" aria-hidden="true"></span>pass</li><li><span class="vkey seg-finding" aria-hidden="true"></span>finding</li><li><span class="vkey seg-na" aria-hidden="true"></span>not applicable</li><li><span class="vkey seg-cne" aria-hidden="true"></span>could not evaluate</li></ul><div class="domain-table-wrap"><table class="domain-table"><thead><tr><th scope="col">Domain</th><th scope="col">Rule verdicts</th><th scope="col">Findings</th><th scope="col">Files</th><th scope="col">Confidence</th><th scope="col">Rules fetched</th></tr></thead><tbody><tr><th scope="row"><span class="domain-id">d01</span> Gnome Husbandry Record Keeping</th><td class="verdict-cell"><span class="vbar-track" aria-hidden="true"><span class="vbar" style="width:100.0000%"><span class="vseg seg-pass" style="width:25.0000%"></span><span class="vseg seg-finding" style="width:25.0000%"></span><span class="vseg seg-na" style="width:25.0000%"></span><span class="vseg seg-cne" style="width:25.0000%"></span></span></span><span class="verdict-numerals">pass: 1, finding: 1, not applicable: 1, could not evaluate: 1, of 4 rules verdicted</span></td><td class="findings-cell">1 of 1<br><span class="muted">0 critical, <strong>1 high</strong>, 0 medium, 0 low</span></td><td class="files-cell">14 inspected, 1 skipped <span class="muted">(one binary hat-colour swatch skipped)</span></td><td>high</td><td>yes</td></tr><tr><th scope="row"><span class="domain-id">d02</span> Teacup Logistics Handling</th><td class="verdict-cell"><span class="vbar-track" aria-hidden="true"><span class="vbar" style="width:75.0000%"><span class="vseg seg-pass" style="width:100.0000%"></span></span></span><span class="verdict-numerals">pass: 3, finding: 0, not applicable: 0, could not evaluate: 0, of 3 rules verdicted</span></td><td class="findings-cell">0 of 1<br><span class="muted">0 critical, 0 high, 0 medium, 0 low</span></td><td class="files-cell">6 inspected, 0 skipped</td><td>medium</td><td>yes</td></tr></tbody><tfoot><tr><th scope="row">All 2 selected domains</th><td class="verdict-cell"><span class="verdict-numerals">pass: 4, finding: 1, not applicable: 1, could not evaluate: 1, of 7 rules verdicted</span></td><td>1 of 1</td><td class="muted">not summed: a file two domains both opened would count twice</td><td class="muted">per domain</td><td class="muted">per domain</td></tr></tfoot></table></div></div><div class="perf-block"><h3>Run totals</h3><p><strong>1</strong> finding across 7 rules verdicted in 2 of 2 domains.</p><h3>Findings by severity</h3><ul><li>critical: 0 of 1</li><li>high: 1 of 1</li><li>medium: 0 of 1</li><li>low: 0 of 1</li></ul><dl class="severity-definitions"><dt>critical</dt><dd>exploitable now, or causes data loss (a secret committed to history, an auth bypass, an unguarded destructive migration).</dd><dt>high</dt><dd>not on fire today, but will bite soon under normal operation (a race condition in a hot path, a silently-swallowed error in a payment flow).</dd><dt>medium</dt><dd>should be fixed, but is not urgent (a missing test for a common path, an inconsistent naming convention that will cause a mistake eventually).</dd><dt>low</dt><dd>hygiene (a stale comment, a formatting inconsistency, a missing docstring).</dd></dl><p>claude-code (claude-sonnet-5) judged each finding's severity against these four definitions while writing it. It is not a measurement: the same evidence graded by a different assistant or model could come back a different severity, and nothing on this page recalibrates the two to agree.</p><h3>Rule verdicts</h3><ul><li>pass: 4 of 7</li><li>finding: 1 of 7</li><li>not applicable: 1 of 7</li><li>could not evaluate: 1 of 7</li></ul></div><div class="perf-block prominent"><h3>Could not evaluate: 1 of 7 rules verdicted</h3><p>These are rules the audit could not reach a verdict on, usually because the evidence lives outside the repository. They are not findings.</p><ul><li><strong>the garden bed ledger file could not be located in this demo repository</strong><br>D01-R03 (1 rule)</li></ul></div><div class="perf-block prominent"><h3>Not applicable: 1 of 7 rules verdicted</h3><p>These are rules the audit set aside because the thing they are about is not present in this repository. They were not checked against it, and they are not findings: a rule set aside is a claim about the repository, so each one carries the reason it was set aside. The per-domain counts are in the table at the top of this section.</p><ul><li><strong>this demo repository stores no beard-length average to recalculate: the roster summary computes it on read</strong><br>D01-R04 (1 rule)</li></ul></div><div class="perf-block prominent"><h3>Rules fetched</h3><p class="ok">All 2 domain(s) that recorded verdicts had their rule text fetched from this server first.</p><p>This says the rule text was fetched from the server, and nothing more. It is not evidence that the rules were read, or applied, or that the verdicts below follow from them: a run that fetched every domain and then guessed would look the same here. What it can show is the opposite case, where the rules were never even asked for.</p></div><div class="perf-block"><h3>Self-assessment limits</h3><p>Each domain's confidence is in the table above.</p><details><summary>2 of 2 domains reported a limit on their own assessment</summary><ul><li>d01: Gnome Husbandry Record Keeping: did not check gnome beds outside the main garden plot</li><li>d02: Teacup Logistics Handling: did not check archived shipment routes</li></ul></details></div><div class="perf-block"><h3>Environment</h3><p>No environment information reported for this run.</p></div><div class="perf-block"><h3>Sources consulted this run</h3><h4>D01-R01 (Record every gnome&#x27;s hat colour before assigning a garden bed.)</h4><ul><li><a href="https://example.invalid/garden-bed-standards">Garden Bed Allocation Standard, section 3</a>: checked the shared-bed flag&#x27;s documented meaning before verdicting this rule <span class="muted">(accessed 2026-08-09T09:02:00+00:00)</span></li></ul></div>
+  <div class="perf-block"><h3>Every domain, side by side</h3><p>One row per selected domain. The bar in the verdicts column is drawn to the same scale in every row, so a domain with fewer rules draws a shorter bar, and every value it draws is written out beside it.</p><ul class="vbar-legend"><li><span class="vkey seg-pass" aria-hidden="true"></span>pass</li><li><span class="vkey seg-finding" aria-hidden="true"></span>finding</li><li><span class="vkey seg-na" aria-hidden="true"></span>not applicable</li><li><span class="vkey seg-cne" aria-hidden="true"></span>could not evaluate</li></ul><div class="domain-table-wrap"><table class="domain-table"><thead><tr><th scope="col">Domain</th><th scope="col">Rule verdicts</th><th scope="col">Findings</th><th scope="col">Files</th><th scope="col">Confidence</th><th scope="col">Rules fetched</th></tr></thead><tbody><tr><th scope="row"><span class="domain-id">d01</span> Gnome Husbandry Record Keeping</th><td class="verdict-cell" data-label="Rule verdicts"><span class="vbar-track" aria-hidden="true"><span class="vbar" style="width:100.0000%"><span class="vseg seg-pass" style="width:25.0000%"></span><span class="vseg seg-finding" style="width:25.0000%"></span><span class="vseg seg-na" style="width:25.0000%"></span><span class="vseg seg-cne" style="width:25.0000%"></span></span></span><span class="verdict-numerals">pass: 1, finding: 1, not applicable: 1, could not evaluate: 1, of 4 rules verdicted</span></td><td class="findings-cell" data-label="Findings">1 of 1<br><span class="muted">0 critical, <strong>1 high</strong>, 0 medium, 0 low</span></td><td class="files-cell" data-label="Files">14 inspected, 1 skipped <span class="muted">(one binary hat-colour swatch skipped)</span></td><td data-label="Confidence">high</td><td data-label="Rules fetched">yes</td></tr><tr><th scope="row"><span class="domain-id">d02</span> Teacup Logistics Handling</th><td class="verdict-cell" data-label="Rule verdicts"><span class="vbar-track" aria-hidden="true"><span class="vbar" style="width:75.0000%"><span class="vseg seg-pass" style="width:100.0000%"></span></span></span><span class="verdict-numerals">pass: 3, finding: 0, not applicable: 0, could not evaluate: 0, of 3 rules verdicted</span></td><td class="findings-cell" data-label="Findings">0 of 1<br><span class="muted">0 critical, 0 high, 0 medium, 0 low</span></td><td class="files-cell" data-label="Files">6 inspected, 0 skipped</td><td data-label="Confidence">medium</td><td data-label="Rules fetched">yes</td></tr></tbody><tfoot><tr><th scope="row">All 2 selected domains</th><td class="verdict-cell" data-label="Rule verdicts"><span class="verdict-numerals">pass: 4, finding: 1, not applicable: 1, could not evaluate: 1, of 7 rules verdicted</span></td><td data-label="Findings">1 of 1</td><td class="muted" data-label="Files">not summed: a file two domains both opened would count twice</td><td class="muted" data-label="Confidence">per domain</td><td class="muted" data-label="Rules fetched">per domain</td></tr></tfoot></table></div></div><div class="perf-block"><h3>Run totals</h3><p><strong>1</strong> finding across 7 rules verdicted in 2 of 2 domains.</p><h3>Findings by severity</h3><ul><li>critical: 0 of 1</li><li>high: 1 of 1</li><li>medium: 0 of 1</li><li>low: 0 of 1</li></ul><dl class="severity-definitions"><dt>critical</dt><dd>exploitable now, or causes data loss (a secret committed to history, an auth bypass, an unguarded destructive migration).</dd><dt>high</dt><dd>not on fire today, but will bite soon under normal operation (a race condition in a hot path, a silently-swallowed error in a payment flow).</dd><dt>medium</dt><dd>should be fixed, but is not urgent (a missing test for a common path, an inconsistent naming convention that will cause a mistake eventually).</dd><dt>low</dt><dd>hygiene (a stale comment, a formatting inconsistency, a missing docstring).</dd></dl><p>claude-code (claude-sonnet-5) judged each finding's severity against these four definitions while writing it. It is not a measurement: the same evidence graded by a different assistant or model could come back a different severity, and nothing on this page recalibrates the two to agree.</p><h3>Rule verdicts</h3><ul><li>pass: 4 of 7</li><li>finding: 1 of 7</li><li>not applicable: 1 of 7</li><li>could not evaluate: 1 of 7</li></ul></div><div class="perf-block prominent"><details><summary>Could not evaluate: 1 of 7 rules verdicted</summary><p>These are rules the audit could not reach a verdict on, usually because the evidence lives outside the repository. They are not findings.</p><ul><li><strong>the garden bed ledger file could not be located in this demo repository</strong><br>D01-R03 (1 rule)</li></ul></details></div><div class="perf-block prominent"><details><summary>Not applicable: 1 of 7 rules verdicted</summary><p>These are rules the audit set aside because the thing they are about is not present in this repository. They were not checked against it, and they are not findings: a rule set aside is a claim about the repository, so each one carries the reason it was set aside. The per-domain counts are in the table at the top of this section.</p><ul><li><strong>this demo repository stores no beard-length average to recalculate: the roster summary computes it on read</strong><br>D01-R04 (1 rule)</li></ul></details></div><div class="perf-block prominent"><h3>Rules fetched</h3><p class="ok">All 2 domain(s) that recorded verdicts had their rule text fetched from this server first.</p><p>This says the rule text was fetched from the server, and nothing more. It is not evidence that the rules were read, or applied, or that the verdicts below follow from them: a run that fetched every domain and then guessed would look the same here. What it can show is the opposite case, where the rules were never even asked for.</p></div><div class="perf-block"><h3>Self-assessment limits</h3><p>Each domain's confidence is in the table above.</p><details><summary>2 of 2 domains reported a limit on their own assessment</summary><ul><li>d01: Gnome Husbandry Record Keeping: did not check gnome beds outside the main garden plot</li><li>d02: Teacup Logistics Handling: did not check archived shipment routes</li></ul></details></div><div class="perf-block"><h3>Environment</h3><p>No environment information reported for this run.</p></div><div class="perf-block"><h3>Sources consulted this run</h3><h4>D01-R01 (Record every gnome&#x27;s hat colour before assigning a garden bed.)</h4><ul><li><a href="https://example.invalid/garden-bed-standards">Garden Bed Allocation Standard, section 3</a>: checked the shared-bed flag&#x27;s documented meaning before verdicting this rule <span class="muted">(accessed 2026-08-09T09:02:00+00:00)</span></li></ul></div>
 </section>
 
 <section id="feedback">

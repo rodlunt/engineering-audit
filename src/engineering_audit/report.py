@@ -605,14 +605,20 @@ def _domain_table(
             severity_cell = _severity_cell(
                 findings_by_domain[domain_id], total_findings
             )
+        # data-label carries each column's header text onto its own cell
+        # (issue #165). Unused by any browser at desktop width; the narrow
+        # breakpoint below 640px turns each row into a block and reveals it
+        # via a ::before rule, so a stacked cell still says what it is
+        # without the table's header row, which stacking makes impractical
+        # to keep visible.
         rows.append(
             "<tr>"
             f"{label}"
-            f'<td class="verdict-cell">{verdict_cell}</td>'
-            f'<td class="findings-cell">{severity_cell}</td>'
-            f'<td class="files-cell">{_files_cell(result)}</td>'
-            f"<td>{confidence}</td>"
-            f"<td>{_esc(fetch_status[domain_id])}</td>"
+            f'<td class="verdict-cell" data-label="Rule verdicts">{verdict_cell}</td>'
+            f'<td class="findings-cell" data-label="Findings">{severity_cell}</td>'
+            f'<td class="files-cell" data-label="Files">{_files_cell(result)}</td>'
+            f'<td data-label="Confidence">{confidence}</td>'
+            f'<td data-label="Rules fetched">{_esc(fetch_status[domain_id])}</td>'
             "</tr>"
         )
 
@@ -621,18 +627,19 @@ def _domain_table(
     totals_cells = (
         '<th scope="row">All '
         f"{len(selected)} selected {_plural(len(selected), 'domain')}</th>"
-        f'<td class="verdict-cell">{_verdict_numerals(totals, verdicted_total)}</td>'
-        f"<td>{total_findings} of {total_findings}</td>"
+        f'<td class="verdict-cell" data-label="Rule verdicts">'
+        f"{_verdict_numerals(totals, verdicted_total)}</td>"
+        f'<td data-label="Findings">{total_findings} of {total_findings}</td>'
         # Deliberately not summed. Each domain audits the same repository
         # from its own angle, so a file that sixteen domains each declined to
         # open is sixteen skips in a naive total: a 344-file repository
         # rendered "5320 skipped" before issue #87 removed the figure. The
         # cell says why rather than going blank, which would read as missing
         # data.
-        '<td class="muted">not summed: a file two domains both opened would '
-        "count twice</td>"
-        '<td class="muted">per domain</td>'
-        '<td class="muted">per domain</td>'
+        '<td class="muted" data-label="Files">not summed: a file two domains both '
+        "opened would count twice</td>"
+        '<td class="muted" data-label="Confidence">per domain</td>'
+        '<td class="muted" data-label="Rules fetched">per domain</td>'
     )
 
     legend = "".join(
@@ -881,10 +888,8 @@ def _could_not_evaluate_list(
         )
 
     verdicted = sum(_run_totals(selected).values())
-    parts = [
-        f"<h3>Could not evaluate: {total} of {verdicted} "
-        f"{_plural(verdicted, 'rule')} verdicted</h3>"
-    ]
+    summary = f"Could not evaluate: {total} of {verdicted} {_plural(verdicted, 'rule')} verdicted"
+    parts = []
     if reason_to_rule_ids:
         parts.append(
             "<p>These are rules the audit could not reach a verdict on, usually because "
@@ -905,7 +910,15 @@ def _could_not_evaluate_list(
             f"<p><strong>{len(not_run_domain_ids)} selected domain(s) did not run at all</strong> "
             f"and had no rules evaluated, which is not the same as a clean result: {names}.</p>"
         )
-    return "".join(parts)
+    # Collapsed behind its headline (issue #164), which is why the rule-id
+    # lists inside it are now allowed inside a closed <details>: #124 left
+    # them expanded because find-in-page inside a closed <details> was
+    # judged unreliable across engines, but a real reader test of a 181-rule
+    # report showed screen after screen of rule ids between the reader and
+    # everything below, and the maintainer's call on seeing that was to
+    # collapse. The headline carries the count on its own, same as every
+    # other collapsed summary in this report.
+    return f"<details><summary>{_esc(summary)}</summary>{''.join(parts)}</details>"
 
 
 def _not_applicable_counts(
@@ -972,9 +985,11 @@ def _not_applicable_list(
     # eye. Its denominators went with it into the table's verdicts column,
     # rather than being dropped on the way.
     verdicted_total = sum(_run_totals(selected).values())
+    summary = (
+        f"Not applicable: {total} of {verdicted_total} "
+        f"{_plural(verdicted_total, 'rule')} verdicted"
+    )
     parts = [
-        f"<h3>Not applicable: {total} of {verdicted_total} "
-        f"{_plural(verdicted_total, 'rule')} verdicted</h3>",
         "<p>These are rules the audit set aside because the thing they are about is not "
         "present in this repository. They were not checked against it, and they are not "
         "findings: a rule set aside is a claim about the repository, so each one carries "
@@ -1001,7 +1016,10 @@ def _not_applicable_list(
             )
         )
     )
-    return "".join(parts)
+    # Collapsed behind its headline (issue #164): same trade-off as the
+    # could-not-evaluate block above, and for the same reason. See that
+    # block's comment for the history.
+    return f"<details><summary>{_esc(summary)}</summary>{''.join(parts)}</details>"
 
 
 # The one sentence this block is allowed to claim, and the limit that comes

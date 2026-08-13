@@ -503,3 +503,199 @@ def test_rendered_table_carries_the_bar_markup_and_its_numerals() -> None:
         # so only the legend swatch is guaranteed for every segment.
         assert f'class="vkey {segment}"' in rendered
     assert '<span class="verdict-numerals">' in rendered
+
+
+# ---------------------------------------------------------------------------
+# #164: the two prominent yellow blocks collapse behind their headline.
+# ---------------------------------------------------------------------------
+
+
+def _rendered_report_with_na_and_cne() -> str:
+    """A run with one not-applicable and one could-not-evaluate verdict, so
+    both prominent blocks render their non-empty (collapsed) form rather
+    than the "nothing to report" paragraph."""
+    pack = load_pack(FIXTURE_PACK)
+    d01 = pack.get_domain("d01")
+    verdicts = [RuleVerdict(rule_id=r.id, verdict=Verdict.pass_) for r in d01.rules]
+    verdicts[2] = RuleVerdict(
+        rule_id="D01-R03",
+        verdict=Verdict.NOT_APPLICABLE,
+        note="this repository ships no gnome roster",
+    )
+    verdicts[3] = RuleVerdict(
+        rule_id="D01-R04",
+        verdict=Verdict.COULD_NOT_EVALUATE,
+        note="the beard-length ledger lives outside this repository",
+    )
+    result = DomainResult(
+        domain_id="d01",
+        status="completed",
+        rule_verdicts=verdicts,
+        self_assessment=SelfAssessment(confidence="high", limits=""),
+        coverage=Coverage(files_inspected=12, files_skipped=0),
+    )
+    run_state = RunState(
+        meta=_meta(),
+        config=AuditConfig(selected_domain_ids=["d01"], issue_mode="report"),
+        domain_results={"d01": result},
+    )
+    return render_report(run_state, pack)
+
+
+def test_could_not_evaluate_block_is_a_closed_details_with_the_count_in_summary() -> (
+    None
+):
+    # Issue #164: on a phone this block used to render every rule id
+    # expanded, screens of them between the reader and everything below.
+    # #124's collapsed-section rule already requires the summary to carry
+    # its own numbers; this only checks the block now uses that mechanism.
+    rendered = _rendered_report_with_na_and_cne()
+    match = re.search(
+        r"<details><summary>(Could not evaluate: \d+ of \d+ rules? verdicted)"
+        r"</summary>(.*?)</details>",
+        rendered,
+        re.DOTALL,
+    )
+    assert match is not None, "could-not-evaluate block is not a closed <details>"
+    summary, body = match.group(1), match.group(2)
+    assert re.search(r"\d", summary), "summary carries no count"
+    # The rule id is deliberately inside this one (issue #164's inversion of
+    # the #124 guard): collapsing the evidence is the point of this issue.
+    assert "D01-R04" in body
+
+
+def test_not_applicable_block_is_a_closed_details_with_the_count_in_summary() -> None:
+    rendered = _rendered_report_with_na_and_cne()
+    match = re.search(
+        r"<details><summary>(Not applicable: \d+ of \d+ rules? verdicted)"
+        r"</summary>(.*?)</details>",
+        rendered,
+        re.DOTALL,
+    )
+    assert match is not None, "not-applicable block is not a closed <details>"
+    summary, body = match.group(1), match.group(2)
+    assert re.search(r"\d", summary), "summary carries no count"
+    assert "D01-R03" in body
+
+
+def test_prominent_blocks_are_closed_by_default() -> None:
+    # An always-open <details> discloses nothing; this is the collapse #164
+    # asked for, not a decoration.
+    rendered = _rendered_report_with_na_and_cne()
+    assert "<details open" not in rendered
+
+
+# ---------------------------------------------------------------------------
+# #165: the per-domain table stacks into blocks below a narrow breakpoint
+# instead of scrolling sideways with squeezed columns.
+# ---------------------------------------------------------------------------
+
+
+def test_narrow_viewport_rule_turns_table_rows_into_blocks() -> None:
+    # Measured against the rendered table at 412px (16 synthetic domains,
+    # chrome-devtools): the six columns need ~750px of min-width between
+    # them, several times a phone's actual width, so the table scrolled
+    # sideways with only a sliver of each row in view and both the domain
+    # name and the verdict sentence wrapped hard inside that sliver. Below
+    # this breakpoint the row becomes a block instead.
+    style = _style_block()
+    match = re.search(
+        r"@media screen and \(max-width:\s*640px\)\s*\{(.*?)\n  \}",
+        style,
+        re.DOTALL,
+    )
+    assert match is not None, "no narrow-viewport rule for the domain table found"
+    narrow_block = match.group(1)
+    assert re.search(
+        r"\.domain-table,\s*\.domain-table tbody,\s*\.domain-table tfoot,\s*\n"
+        r"\s*\.domain-table tr,\s*\.domain-table th,\s*\.domain-table td\s*\{"
+        r"[^}]*display:\s*block",
+        narrow_block,
+    ), "table, rows and cells must switch to display: block below the breakpoint"
+    assert "overflow-x: visible" in narrow_block, (
+        "the horizontal-scroll container must be switched off once rows are "
+        "blocks, the same way @media print already does"
+    )
+
+
+def test_narrow_viewport_rule_keeps_column_headers_for_assistive_tech() -> None:
+    # The header row is visually hidden, not display: none, so a screen
+    # reader still announces "Findings" before a stacked row's findings
+    # cell. display: none would drop it from the accessibility tree too.
+    style = _style_block()
+    match = re.search(
+        r"@media screen and \(max-width:\s*640px\)\s*\{(.*?)\n  \}",
+        style,
+        re.DOTALL,
+    )
+    assert match is not None
+    narrow_block = match.group(1)
+    thead_match = re.search(r"\.domain-table thead\s*\{([^}]*)\}", narrow_block)
+    assert thead_match is not None, "no narrow-viewport rule for the table header"
+    declarations = thead_match.group(1)
+    assert "display: none" not in declarations
+    assert "clip:" in declarations or "clip-path:" in declarations
+
+
+def test_narrow_viewport_rule_generates_a_label_before_each_stacked_value() -> None:
+    style = _style_block()
+    match = re.search(
+        r"@media screen and \(max-width:\s*640px\)\s*\{(.*?)\n  \}",
+        style,
+        re.DOTALL,
+    )
+    assert match is not None
+    narrow_block = match.group(1)
+    assert re.search(
+        r"\.domain-table td\[data-label\]::before\s*\{[^}]*content:\s*attr\(data-label\)",
+        narrow_block,
+    )
+
+
+def test_rendered_domain_table_cells_carry_data_label() -> None:
+    # The CSS rule above only does something if the markup carries the
+    # attribute it reads.
+    rendered = _rendered_report()
+    for label in ("Rule verdicts", "Findings", "Files", "Confidence", "Rules fetched"):
+        assert f'data-label="{label}"' in rendered
+
+
+def test_desktop_table_layout_declarations_are_unchanged_outside_the_narrow_query() -> (
+    None
+):
+    # The #165 fix must not touch how the table renders above the
+    # breakpoint. This does not re-render at 1172px (that is done with a
+    # real browser, see the PR description); it checks the desktop-scoped
+    # declarations for display and overflow are exactly what they were
+    # before this issue, i.e. absent from the unscoped rule bodies (a table
+    # element's default display is already "table" et al, so #123 never had
+    # to say so) and that .domain-table-wrap's unscoped rule still says
+    # overflow-x: auto, not visible.
+    style = _style_block()
+    unscoped_wrap_match = re.search(
+        r"(?<!\{)\n  \.domain-table-wrap\s*\{([^}]*)\}", style
+    )
+    assert unscoped_wrap_match is not None
+    assert "overflow-x: auto" in unscoped_wrap_match.group(1)
+    unscoped_table_match = re.search(r"\n  \.domain-table\s*\{([^}]*)\}", style)
+    assert unscoped_table_match is not None
+    assert "display" not in unscoped_table_match.group(1)
+
+
+# ---------------------------------------------------------------------------
+# #166: the meta grid's value cells wrap an unbroken token instead of
+# letting the cell grow past the card's edge.
+# ---------------------------------------------------------------------------
+
+
+def test_meta_value_uses_overflow_wrap_anywhere_and_min_width_zero() -> None:
+    # #126 gave .finding-location the same pair for the same reason: a table
+    # or grid cell's intrinsic min-content width is set by its longest
+    # unbroken token (here, a 40-character commit hash), so the track grows
+    # to fit it instead of wrapping unless min-width: 0 stops that first.
+    style = _style_block()
+    rule_match = re.search(r"\.meta-value\s*\{([^}]*)\}", style)
+    assert rule_match is not None, ".meta-value rule not found"
+    declarations = rule_match.group(1)
+    assert "overflow-wrap: anywhere" in declarations
+    assert "min-width: 0" in declarations
