@@ -1089,6 +1089,40 @@ def _provenance_blind_notice(meta: RunMeta) -> str:
     )
 
 
+def _modified_tool_notice(meta: RunMeta) -> str:
+    """A loud line when the tool build that produced this run was itself
+    modified (issue #169): ``tool_commit`` carries a ``-dirty`` suffix,
+    which server.py's ``_git_commit`` only appends once the git fallback for
+    an editable or checkout install finds uncommitted changes in the tool's
+    own source tree.
+
+    Matches _RULES_FETCHED_LIMIT's and _provenance_blind_notice's register:
+    says what is known and claims nothing more. A run made by a modified
+    tool build is exactly as caveat-worthy as one made against a modified
+    rules pack (see check_pack_for_update's dirty branch): the code that
+    produced the verdicts below does not match any released commit, so it
+    cannot be reproduced or compared against one. That says nothing about
+    whether the verdicts themselves are right or wrong.
+
+    Fires on the ``-dirty`` suffix only, never on None (unknown provenance,
+    a materially different and separately honest state) and never on a
+    clean SHA.
+    """
+    tool_commit = meta.tool_commit or ""
+    if not tool_commit.endswith("-dirty"):
+        return ""
+    return (
+        '<div class="perf-block prominent">'
+        "<h3>This run used a modified tool build</h3>"
+        f"<p>The tool commit above (<code>{_esc(_short_commit(tool_commit))}</code>) has "
+        "uncommitted changes: this run was made by a development checkout, not a build "
+        "that matches any released commit. That is not evidence the findings below are "
+        "wrong, only that the code which produced them cannot be reproduced from a "
+        "release tag or compared against one.</p>"
+        "</div>"
+    )
+
+
 def _domain_ids_with_verdicts(selected: dict[str, DomainResult]) -> list[str]:
     """The selected domains that recorded at least one rule verdict.
 
@@ -1937,6 +1971,7 @@ def render_report(run_state: RunState, pack: RulesPack) -> str:
 
     performance_summary = (
         f"{_provenance_blind_notice(run_state.meta)}"
+        f"{_modified_tool_notice(run_state.meta)}"
         f'<div class="perf-block"><h3>Every domain, side by side</h3>'
         f"{_domain_table(run_state, selected, domain_titles, all_findings)}</div>"
         f'<div class="perf-block"><h3>Run totals</h3>'

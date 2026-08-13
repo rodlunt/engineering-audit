@@ -31,6 +31,8 @@ from importlib.metadata import PackageNotFoundError, distribution as _pkg_distri
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 from mcp.server import MCPServer
 from pydantic import ValidationError
@@ -167,18 +169,65 @@ def _parse_direct_url_commit(direct_url_json: str) -> str | None:
     return commit_id if isinstance(commit_id, str) and commit_id else None
 
 
-def _default_tool_commit() -> str | None:
-    """Best-effort: the git commit the installed tool build was made from,
-    read from the installed distribution's PEP 610 install record
-    (direct_url.json, present when installed via ``pip``/``uv`` from a git
-    URL; absent for a PyPI/wheel install or a source checkout that was
-    never installed).
+def _parse_direct_url_source_dir(direct_url_json: str) -> Path | None:
+    """Pull the local source directory out of a PEP 610 ``direct_url.json``
+    document's text, when it records a directory install (``dir_info``
+    present: an editable install, or a plain ``pip install /path/to/checkout``),
+    or None otherwise (a git-URL install, which carries ``vcs_info`` instead,
+    or a PyPI/wheel install, which carries neither).
 
-    This is provenance telemetry only, never load-bearing for the tool to
-    run, so any failure here (package not installed, no direct_url.json,
-    unreadable, malformed) is swallowed and reported as None: the caller
+    Factored out of :func:`_default_tool_commit` as a pure function for the
+    same reason :func:`_parse_direct_url_commit` is: testable with plain
+    string fixtures, no real installed distribution needed.
+    """
+    try:
+        data = json.loads(direct_url_json)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    dir_info = data.get("dir_info")
+    if not isinstance(dir_info, dict):
+        return None
+    url = data.get("url")
+    if not isinstance(url, str) or not url.startswith("file://"):
+        return None
+    path_str = url2pathname(urlparse(url).path)
+    return Path(path_str) if path_str else None
+
+
+def _default_tool_commit() -> str | None:
+    """Best-effort: the git commit the installed tool build was made from.
+
+    Two sources, tried in order:
+
+    1. ``vcs_info.commit_id`` from the installed distribution's PEP 610
+       install record (direct_url.json), present when installed via
+       ``pip``/``uv`` from a git URL. A git-URL install is an immutable
+       build, so this never carries a ``-dirty`` suffix.
+    2. Failing that, ``dir_info`` from the same record (issue #169): an
+       editable install, or a plain ``pip install /path/to/checkout``, has
+       no ``vcs_info`` at all but does record the local source directory it
+       was installed from. Falling back to :func:`_git_commit` over that
+       directory turns what used to be a flat "unknown" for every dev
+       checkout into a real SHA (or ``SHA-dirty`` when the tree has
+       uncommitted changes), which is the exact blind spot issue #136
+       documented: a developer running against a clone got no tool
+       provenance at all. This fallback is scoped repo-wide
+       (``subtree_only=False``), deliberately unlike the rules pack's
+       subtree-only scoping from #168: the tool's whole source tree *is*
+       the running code, so dirt anywhere in it is genuinely worth
+       recording. Do not "harmonise" the two call sites; the difference is
+       intentional. See :func:`_git_commit`'s docstring for the same point
+       made from the other side.
+
+    Neither source is load-bearing for the tool to run, so any failure here
+    (package not installed, no direct_url.json, unreadable, malformed, no
+    source tree, git missing) is swallowed and reported as None: the caller
     renders that as "unknown" in the report rather than fabricating a
-    commit the tool cannot actually vouch for.
+    commit the tool cannot actually vouch for. A wheel/PyPI install, which
+    has neither vcs_info nor dir_info, still reports unknown: there is no
+    source tree to fall back to.
     """
     try:
         direct_url_json = _pkg_distribution("engineering-audit").read_text(
@@ -188,7 +237,13 @@ def _default_tool_commit() -> str | None:
         return None
     if direct_url_json is None:
         return None
-    return _parse_direct_url_commit(direct_url_json)
+    commit = _parse_direct_url_commit(direct_url_json)
+    if commit is not None:
+        return commit
+    source_dir = _parse_direct_url_source_dir(direct_url_json)
+    if source_dir is None:
+        return None
+    return _git_commit(source_dir, subtree_only=False)
 
 
 def _run_git(args: list[str], path: Path) -> subprocess.CompletedProcess[str] | None:

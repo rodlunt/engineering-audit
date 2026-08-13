@@ -398,9 +398,11 @@ class RunMeta(BaseModel):
         default=None,
         description=(
             "Full git SHA the installed tool build was made from, read from the "
-            "package's PEP 610 install record. None means it could not be determined "
-            "(e.g. installed from a wheel with no VCS metadata, or a source checkout "
-            "never installed at all), never a fabricated value."
+            "package's PEP 610 install record for a git-URL install, or (issue #169) "
+            "from a git fallback over the package's own source tree for an editable or "
+            "checkout install, '-dirty' suffixed if that tree has uncommitted changes. "
+            "None means it could not be determined at all (e.g. a wheel/PyPI install, "
+            "which has neither), never a fabricated value."
         ),
     )
     rules_pack_name: str

@@ -206,6 +206,25 @@ def test_tool_repo_url_constant_points_at_the_real_repository() -> None:
     assert TOOL_REPO_URL == "https://github.com/rodlunt/engineering-audit"
 
 
+def test_check_for_update_with_a_dirty_installed_commit_is_could_not_check_never_current(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Issue #169: a dirty tool_commit (the git fallback for an editable or
+    # checkout install, server.py's _default_tool_commit) matches no
+    # release, exactly like a dirty pack commit (check_pack_for_update's
+    # existing dirty branch). Never a network call, and never "current".
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("git ls-remote must not run for a dirty installed commit")
+
+    monkeypatch.setattr(update_check_module, "_run_ls_remote", _fail_if_called)
+
+    result = check_for_update(f"{'a' * 40}-dirty", "0.8.0")
+
+    assert result.startswith("could-not-check")
+    assert not result.startswith("current")
+    assert "uncommitted changes" in result
+
+
 # ---------------------------------------------------------------------------
 # check_for_update / check_pack_for_update: the enabled=False opt-out
 # ---------------------------------------------------------------------------

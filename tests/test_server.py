@@ -870,6 +870,119 @@ def test_parse_direct_url_commit_returns_none_for_invalid_json() -> None:
 
 
 # ---------------------------------------------------------------------------
+# _parse_direct_url_source_dir / _default_tool_commit git fallback (issue #169)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_direct_url_source_dir_extracts_the_path_from_a_directory_install(
+    tmp_path: Path,
+) -> None:
+    payload = json.dumps({"url": tmp_path.as_uri(), "dir_info": {"editable": True}})
+    assert server_module._parse_direct_url_source_dir(payload) == tmp_path
+
+
+def test_parse_direct_url_source_dir_returns_none_for_a_git_style_payload() -> None:
+    payload = json.dumps(
+        {
+            "url": "https://github.com/rodlunt/engineering-audit",
+            "vcs_info": {
+                "vcs": "git",
+                "requested_revision": "main",
+                "commit_id": "8b158dda99f3c5e7714840296db550f7a4978c5",
+            },
+        }
+    )
+    assert server_module._parse_direct_url_source_dir(payload) is None
+
+
+def test_parse_direct_url_source_dir_returns_none_when_neither_block_is_present() -> (
+    None
+):
+    # The wheel/PyPI shape: no vcs_info, no dir_info, nothing to fall back to.
+    payload = json.dumps(
+        {
+            "url": "https://files.pythonhosted.org/packages/.../engineering_audit-0.8.0-py3-none-any.whl",
+            "archive_info": {"hash": "sha256=deadbeef"},
+        }
+    )
+    assert server_module._parse_direct_url_source_dir(payload) is None
+
+
+def test_parse_direct_url_source_dir_returns_none_for_invalid_json() -> None:
+    assert server_module._parse_direct_url_source_dir("not json at all {") is None
+
+
+class _FakeDistribution:
+    """Stand-in for importlib.metadata.Distribution: _default_tool_commit
+    only ever calls .read_text on it."""
+
+    def __init__(self, direct_url_json: str | None) -> None:
+        self._direct_url_json = direct_url_json
+
+    def read_text(self, filename: str) -> str | None:
+        assert filename == "direct_url.json"
+        return self._direct_url_json
+
+
+def test_default_tool_commit_falls_back_to_git_for_an_editable_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "checkout"
+    source.mkdir()
+    _init_git_repo(source)
+    direct_url_json = json.dumps(
+        {"url": source.as_uri(), "dir_info": {"editable": True}}
+    )
+    monkeypatch.setattr(
+        server_module,
+        "_pkg_distribution",
+        lambda name: _FakeDistribution(direct_url_json),
+    )
+
+    assert server_module._default_tool_commit() == _head_sha(source)
+
+
+def test_default_tool_commit_editable_install_with_a_modified_file_is_dirty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "checkout"
+    source.mkdir()
+    _init_git_repo(source)
+    (source / "scratch.py").write_text("x = 1\n", encoding="utf-8")
+    direct_url_json = json.dumps(
+        {"url": source.as_uri(), "dir_info": {"editable": True}}
+    )
+    monkeypatch.setattr(
+        server_module,
+        "_pkg_distribution",
+        lambda name: _FakeDistribution(direct_url_json),
+    )
+
+    assert server_module._default_tool_commit() == f"{_head_sha(source)}-dirty"
+
+
+def test_default_tool_commit_wheel_style_install_is_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # No vcs_info (not a git install) and no dir_info (not a directory
+    # install), the ordinary shape for a PyPI wheel install: there is no
+    # source tree to fall back to, so this must still report unknown.
+    direct_url_json = json.dumps(
+        {
+            "url": "https://files.pythonhosted.org/packages/.../engineering_audit-0.8.0-py3-none-any.whl",
+            "archive_info": {"hash": "sha256=deadbeef"},
+        }
+    )
+    monkeypatch.setattr(
+        server_module,
+        "_pkg_distribution",
+        lambda name: _FakeDistribution(direct_url_json),
+    )
+
+    assert server_module._default_tool_commit() is None
+
+
+# ---------------------------------------------------------------------------
 # start_config / get_config: preset (headless) path
 # ---------------------------------------------------------------------------
 

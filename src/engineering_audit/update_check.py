@@ -168,11 +168,26 @@ def check_for_update(
     is return a string starting with "current": an update check that could
     not run has no evidence the installed build is current, and reporting
     it as such would be worse than not checking at all.
+
+    A ``-dirty``-suffixed ``installed_commit`` (issue #169: the git fallback
+    for an editable/checkout install, via server.py's ``_default_tool_commit``)
+    is handled the same way :func:`check_pack_for_update` already handles a
+    dirty pack commit: a modified working tree may be ahead of, behind, or
+    equal to the latest release, so no comparison is meaningful, and this
+    returns ``could-not-check`` with a modified-build reason before the
+    network is ever touched. A git-URL install can never be dirty (the build
+    is immutable), so in practice only the #169 fallback path reaches this
+    branch.
     """
     if not enabled:
         return "not-checked: update check disabled by configuration"
     if installed_commit is None:
         return _resolve_update_status("", None, installed_version)
+    if installed_commit.endswith("-dirty"):
+        return (
+            "could-not-check: installed build has uncommitted changes, so it matches "
+            "no release"
+        )
 
     try:
         result = _run_ls_remote(repo_url)
