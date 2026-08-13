@@ -83,6 +83,7 @@ from engineering_audit.rules import (
     RulesPackError,
     get_domain_text,
     load_pack,
+    read_pack_metadata,
 )
 from engineering_audit.run_state_io import (
     PROGRESS_FILENAME,
@@ -306,8 +307,8 @@ def _git_commit(path: Path, *, subtree_only: bool) -> str | None:
 
 def _git_release_version(path: Path) -> str | None:
     """Best-effort: the release version of the rules pack at ``path``, as the
-    most recent version tag reachable from HEAD, with a ``+`` suffix when HEAD
-    has moved past that tag.
+    most recent version tag reachable from HEAD, with a ``+<count>`` suffix
+    naming how many commits HEAD has moved past that tag.
 
     A report identifies its rules by commit SHA, which is precise and tells a
     reader nothing without a checkout of the pack to resolve it against. The
@@ -321,21 +322,35 @@ def _git_release_version(path: Path) -> str | None:
     version, and saying so is the honest answer rather than guessing one from
     a commit date or a directory name.
 
-    The ``+`` suffix matters more than it looks. A pack sitting several commits
-    past v0.6.0 is not v0.6.0, and reporting it as such would attribute
+    The ``+<count>`` suffix matters more than it looks. A pack sitting several
+    commits past v0.6.0 is not v0.6.0, and reporting it as such would attribute
     findings to rule text that release does not contain. Same failure as
     reporting a resumed run's original model: a precise-looking provenance
-    value that is quietly wrong.
+    value that is quietly wrong. A bare ``+`` (the previous shape) said "past
+    the tag" but not how far, which left two runs' packs only comparable by
+    diffing their SHAs; ``git describe --long`` already counts the commits,
+    so this reports the count it gives instead of discarding it, e.g.
+    ``v0.6.1+14`` rather than ``v0.6.1+``.
     """
-    describe = _run_git(["describe", "--tags", "--abbrev=0", "--match", "v*"], path)
+    describe = _run_git(["describe", "--tags", "--long", "--match", "v*"], path)
     if describe is None or describe.returncode != 0:
         return None
-    tag = describe.stdout.strip()
-    if not tag:
+    output = describe.stdout.strip()
+    if not output:
         return None
-    exact = _run_git(["describe", "--tags", "--exact-match", "--match", "v*"], path)
-    at_tag = exact is not None and exact.returncode == 0
-    return tag if at_tag else f"{tag}+"
+    # --long always emits '<tag>-<count>-g<sha>', including at the tag itself
+    # ('<tag>-0-g<sha>'). count and the 'g<sha>' suffix are the last two
+    # hyphen-separated fields; the tag is everything before them, split from
+    # the right rather than the left because a tag name may itself contain
+    # hyphens (e.g. a pre-release suffix).
+    parts = output.rsplit("-", 2)
+    if len(parts) != 3:
+        return None
+    tag, count_str, _ghash = parts
+    if not tag or not count_str.isdigit():
+        return None
+    count = int(count_str)
+    return tag if count == 0 else f"{tag}+{count}"
 
 
 def _output_dir_ignore_warning(repo_dir: Path | None, output_dir: Path) -> str | None:
@@ -1562,6 +1577,11 @@ def _register_run_tools(mcp: MCPServer, state: AppState) -> None:
         # and _git_commit's docstring, for why the pack and the tool are
         # scoped differently.
         pack_commit_value = _git_commit(state.pack.root, subtree_only=True)
+        # Read once here, like rules_pack_version/rules_pack_commit above, and
+        # carried through RunMeta rather than re-read at render time (issue
+        # #170): a saved run-state.json must reproduce the same compatibility
+        # notice later even if the pack directory has since moved on or gone.
+        pack_metadata = read_pack_metadata(state.pack.root)
         update_check_enabled = state.update_check_enabled
         meta = RunMeta(
             tool_version=tool_version_value,
@@ -1569,6 +1589,10 @@ def _register_run_tools(mcp: MCPServer, state: AppState) -> None:
             rules_pack_name=state.pack.root.name,
             rules_pack_version=pack_version_value,
             rules_pack_commit=pack_commit_value,
+            rules_pack_format=pack_metadata.format if pack_metadata else None,
+            rules_pack_requires_tool=(
+                pack_metadata.requires_tool if pack_metadata else None
+            ),
             update_check=check_for_update(
                 tool_commit_value, tool_version_value, enabled=update_check_enabled
             ),

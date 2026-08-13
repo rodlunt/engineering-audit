@@ -30,7 +30,13 @@ from engineering_audit.feedback import (
     rules_pack_label,
     strip_markdown_emphasis,
 )
-from engineering_audit.rules import citation, Rule, RulesPack
+from engineering_audit.rules import (
+    PACK_FORMAT_MAX,
+    PACK_FORMAT_MIN,
+    citation,
+    Rule,
+    RulesPack,
+)
 from engineering_audit.schema import (
     ConsultedSource,
     DomainResult,
@@ -1123,6 +1129,88 @@ def _modified_tool_notice(meta: RunMeta) -> str:
     )
 
 
+_VERSION_TUPLE_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
+
+
+def _parse_version_tuple(value: str) -> tuple[int, int, int] | None:
+    """Parse a strict X.Y.Z version string into a comparable tuple, or None
+    if it is not in that exact shape.
+
+    A tuple compares numerically ('0.9.0' > '0.10.0' as strings, the wrong
+    answer; as tuples, (0, 9, 0) < (0, 10, 0), the right one), the same
+    choice update_check.py's _resolve_update_status already makes for the
+    same reason. None on a shape this does not recognise (a placeholder
+    like '0.0.0-dev', or a hand-edited pack.toml) is not an error here: the
+    caller treats it the same as absent metadata, no notice, never a
+    guessed comparison.
+    """
+    match = _VERSION_TUPLE_RE.match(value.strip())
+    if match is None:
+        return None
+    return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+
+
+def _pack_requires_tool_notice(meta: RunMeta) -> str:
+    """A loud line when the loaded pack's optional pack.toml (issue #170)
+    declares a requires_tool newer than the tool version that produced this
+    run.
+
+    Absent metadata (``rules_pack_requires_tool`` is None: no pack.toml, an
+    unreadable one, one silent on this key, or a run-state file that
+    predates this field) renders nothing and claims nothing, matching
+    _provenance_blind_notice's and _modified_tool_notice's None handling: an
+    unasserted requirement is not evidence of anything. An unparseable
+    requires_tool or tool_version (see :func:`_parse_version_tuple`) is
+    treated the same way: silently no notice, never a crash and never a
+    guessed comparison.
+
+    Matches the other two notices' register: names both versions, says only
+    what was checked, and never claims the findings below are wrong.
+    """
+    requires_tool = meta.rules_pack_requires_tool
+    if requires_tool is None:
+        return ""
+    required = _parse_version_tuple(requires_tool)
+    running = _parse_version_tuple(meta.tool_version)
+    if required is None or running is None or required <= running:
+        return ""
+    return (
+        '<div class="perf-block prominent">'
+        "<h3>This pack asks for a newer tool</h3>"
+        "<p>The rules pack's pack.toml declares "
+        f'<code>requires_tool = "{_esc(requires_tool)}"</code>, and this run used '
+        f"engineering-audit {_esc(meta.tool_version)}. That is not evidence the findings "
+        "below are wrong, only that this pack's rules were written assuming tool "
+        "behaviour this build may predate.</p>"
+        "</div>"
+    )
+
+
+def _pack_format_notice(meta: RunMeta) -> str:
+    """A loud line when the loaded pack's optional pack.toml (issue #170)
+    declares a rule-file format outside PACK_FORMAT_MIN..PACK_FORMAT_MAX,
+    the range this build's parser actually reads (rules.py, next to
+    is_v2).
+
+    Same None handling and register as _pack_requires_tool_notice: absent
+    metadata (``rules_pack_format`` is None) renders nothing, and the
+    notice never claims the findings below are wrong, only that this build
+    may not understand the pack's rule-file shape as its authors intended.
+    """
+    fmt = meta.rules_pack_format
+    if fmt is None or PACK_FORMAT_MIN <= fmt <= PACK_FORMAT_MAX:
+        return ""
+    return (
+        '<div class="perf-block prominent">'
+        "<h3>This pack declares an unreadable rule-file format</h3>"
+        f"<p>The rules pack's pack.toml declares <code>format = {fmt}</code>, and this "
+        f"tool reads format {PACK_FORMAT_MIN} to {PACK_FORMAT_MAX}. That is not evidence "
+        "the findings below are wrong, only that this build may not understand this "
+        "pack's rule-file shape as its authors intended.</p>"
+        "</div>"
+    )
+
+
 def _domain_ids_with_verdicts(selected: dict[str, DomainResult]) -> list[str]:
     """The selected domains that recorded at least one rule verdict.
 
@@ -1972,6 +2060,8 @@ def render_report(run_state: RunState, pack: RulesPack) -> str:
     performance_summary = (
         f"{_provenance_blind_notice(run_state.meta)}"
         f"{_modified_tool_notice(run_state.meta)}"
+        f"{_pack_requires_tool_notice(run_state.meta)}"
+        f"{_pack_format_notice(run_state.meta)}"
         f'<div class="perf-block"><h3>Every domain, side by side</h3>'
         f"{_domain_table(run_state, selected, domain_titles, all_findings)}</div>"
         f'<div class="perf-block"><h3>Run totals</h3>'

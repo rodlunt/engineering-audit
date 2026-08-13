@@ -9,12 +9,16 @@ import pytest
 
 from engineering_audit.rules import (
     _MAX_CITATION_LENGTH,
+    PACK_FORMAT_MAX,
+    PACK_FORMAT_MIN,
+    PackMetadata,
     citation,
     RulesPackDuplicateIdError,
     RulesPackError,
     RulesPackParseError,
     get_domain_text,
     load_pack,
+    read_pack_metadata,
 )
 
 FIXTURE_PACK = Path(__file__).parent / "fixture_pack"
@@ -425,3 +429,91 @@ def test_rules_pack_is_v2_true_when_any_domain_carries_the_marker(
     )
     pack = load_pack(scratch)
     assert pack.is_v2 is True
+
+
+# ---------------------------------------------------------------------------
+# pack.toml metadata (issue #170)
+# ---------------------------------------------------------------------------
+
+# A verbatim copy of the real framework pack's domains/pack.toml (its PR
+# #205, engineering-framework#204), comments and all: the parser must accept
+# exactly this shape, not a simplified stand-in for it.
+_REAL_FRAMEWORK_PACK_TOML = """\
+# Pack metadata for the engineering-audit tool (engineering-framework#204,
+# companion to engineering-audit#170). The tool reads this file if present and
+# renders an honest mismatch notice when it is older than requires_tool; absent,
+# nothing is claimed. It travels inside domains/ so it survives zips and vendored
+# copies where git provenance is blind.
+#
+# No self-version field here, deliberately. The audit tool derives this pack's
+# version from git (see engineering-audit's _git_release_version), which is
+# stronger than an asserted number could ever be, and engineering-audit#136
+# records why an asserted version was declined before. This file carries only
+# what git cannot derive: what the pack requires of the tool, not what the pack
+# itself currently is.
+
+# The rule-file format this pack is written in: the Source:/Verification: footer
+# split (METHOD.md, "Footer format: the citation and the trail are separate
+# fields"), which the tool detects as RulesPack.is_v2 in rules.py. Every domain
+# file in this pack carries a Verification: marker, so this pack is fully on
+# format 2, not partially migrated.
+format = 2
+
+# The oldest engineering-audit release that understands format 2: the
+# Source:/Verification: split was introduced in the commit that added is_v2
+# detection (4a9e3bf, "fix(report): make findings' references publishable"),
+# first released as v0.6.0. Checked against the tool's own history: no rule in
+# this pack depends on any engineering-audit behaviour newer than that, so this
+# is pinned to the version that introduced the format itself, not to whatever
+# happens to be current at release time.
+requires_tool = "0.6.0"
+"""
+
+
+def test_read_pack_metadata_parses_the_real_framework_pack_shape(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "pack.toml").write_text(_REAL_FRAMEWORK_PACK_TOML, encoding="utf-8")
+    metadata = read_pack_metadata(tmp_path)
+    assert metadata == PackMetadata(format=2, requires_tool="0.6.0")
+
+
+def test_read_pack_metadata_ignores_unknown_keys(tmp_path: Path) -> None:
+    (tmp_path / "pack.toml").write_text(
+        "format = 2\n"
+        'requires_tool = "0.6.0"\n'
+        'maintainer = "someone"\n'
+        "future_flag = true\n",
+        encoding="utf-8",
+    )
+    metadata = read_pack_metadata(tmp_path)
+    assert metadata == PackMetadata(format=2, requires_tool="0.6.0")
+
+
+def test_read_pack_metadata_handles_a_malformed_file_without_crashing(
+    tmp_path: Path,
+) -> None:
+    # Neither key is in a shape this parser recognises: an unquoted
+    # requires_tool and a non-numeric format. Must not raise, and must not
+    # fabricate a value for either field.
+    (tmp_path / "pack.toml").write_text(
+        "this is not valid TOML at all\nformat = two\nrequires_tool = 0.6.0\n",
+        encoding="utf-8",
+    )
+    metadata = read_pack_metadata(tmp_path)
+    assert metadata == PackMetadata(format=None, requires_tool=None)
+
+
+def test_read_pack_metadata_returns_none_when_pack_toml_is_absent(
+    tmp_path: Path,
+) -> None:
+    # Control: tmp_path exists and is a real directory, so a None result here
+    # is genuinely "no pack.toml", not a directory-lookup bug.
+    assert (tmp_path / "pack.toml").exists() is False
+    assert read_pack_metadata(tmp_path) is None
+
+
+def test_pack_format_range_covers_the_real_framework_pack() -> None:
+    # The real pack currently declares format = 2; this is the control that
+    # PACK_FORMAT_MIN/MAX are not accidentally narrower than what ships.
+    assert PACK_FORMAT_MIN <= 2 <= PACK_FORMAT_MAX

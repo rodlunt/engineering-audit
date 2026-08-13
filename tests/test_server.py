@@ -35,6 +35,7 @@ from engineering_audit.server import (
     AppState,
     TelemetryStripError,
     _git_commit,
+    _git_release_version,
     _output_dir_ignore_warning,
     _parse_direct_url_commit,
     _resolve_rules_dir,
@@ -734,6 +735,84 @@ def test_git_commit_returns_none_for_a_non_repo_directory(tmp_path: Path) -> Non
     not_a_repo = tmp_path / "plain-dir"
     not_a_repo.mkdir()
     assert _git_commit(not_a_repo, subtree_only=False) is None
+
+
+def _tag(path: Path, name: str) -> None:
+    subprocess.run(
+        ["git", "-C", str(path), "tag", name], check=True, capture_output=True
+    )
+
+
+def _commit(path: Path, message: str) -> None:
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "user.name=Test",
+            "-C",
+            str(path),
+            "commit",
+            "--allow-empty",
+            "-m",
+            message,
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# _git_release_version sharpening (issue #170): a bare '+' said "past the
+# tag" but not how far; the describe --long count says exactly how far, so
+# two runs' packs compare at a glance instead of by diffing SHAs.
+# ---------------------------------------------------------------------------
+
+
+def test_git_release_version_returns_the_bare_tag_at_an_exact_tag(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    _tag(repo, "v1.0.0")
+
+    assert _git_release_version(repo) == "v1.0.0"
+
+
+def test_git_release_version_names_the_commit_count_past_the_tag(
+    tmp_path: Path,
+) -> None:
+    # This is the sharpened shape itself: 'v1.0.0+14' says how far past the
+    # tag HEAD sits, not just that it is past it at all (the old 'v1.0.0+'
+    # shape this replaces).
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    _tag(repo, "v1.0.0")
+    for i in range(14):
+        _commit(repo, f"commit {i}")
+
+    assert _git_release_version(repo) == "v1.0.0+14"
+
+
+def test_git_release_version_returns_none_when_there_are_no_tags(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+
+    assert _git_release_version(repo) is None
+
+
+def test_git_release_version_returns_none_for_a_non_repo_directory(
+    tmp_path: Path,
+) -> None:
+    not_a_repo = tmp_path / "plain-dir"
+    not_a_repo.mkdir()
+    assert _git_release_version(not_a_repo) is None
 
 
 # ---------------------------------------------------------------------------
@@ -1845,6 +1924,34 @@ def test_begin_run_populates_rules_pack_commit_when_the_rules_dir_is_a_git_repo(
         Path(report_result["run_state_path"]).read_text(encoding="utf-8")
     )
     assert run_state.meta.rules_pack_commit == expected_sha
+
+
+def test_begin_run_populates_pack_format_and_requires_tool_from_pack_toml(
+    tmp_path: Path,
+) -> None:
+    # Issue #170: read once at begin_run, like rules_pack_version/_commit
+    # above, and carried through RunMeta rather than re-read at render time.
+    rules_dir = tmp_path / "rules-pack"
+    shutil.copytree(FIXTURE_PACK, rules_dir)
+    (rules_dir / "pack.toml").write_text(
+        'format = 2\nrequires_tool = "0.6.0"\n', encoding="utf-8"
+    )
+
+    mcp, _state = build_server(rules_dir)
+    result = _begin_run(mcp, tmp_path / "audit-output")
+
+    assert result["meta"]["rules_pack_format"] == 2
+    assert result["meta"]["rules_pack_requires_tool"] == "0.6.0"
+
+
+def test_begin_run_leaves_pack_format_and_requires_tool_none_without_pack_toml(
+    tmp_path: Path,
+) -> None:
+    mcp, _state = build_server(FIXTURE_PACK)
+    result = _begin_run(mcp, tmp_path / "audit-output")
+
+    assert result["meta"]["rules_pack_format"] is None
+    assert result["meta"]["rules_pack_requires_tool"] is None
 
 
 # ---------------------------------------------------------------------------

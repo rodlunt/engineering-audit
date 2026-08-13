@@ -747,6 +747,105 @@ def test_modified_tool_notice_is_silent_when_tool_commit_is_unknown() -> None:
     assert "This run used a modified tool build" not in rendered
 
 
+# ---------------------------------------------------------------------------
+# Pack metadata compatibility notices (issue #170): pack.toml's format and
+# requires_tool, compared against this build.
+# ---------------------------------------------------------------------------
+
+
+def test_pack_requires_tool_notice_fires_when_the_pack_asks_for_a_newer_tool() -> None:
+    # Control for the "notice CAN render" half of the contract: the satisfied
+    # and absent cases below must show nothing, and this is the proof that a
+    # silent renderer is not just broken.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.meta.tool_version = "0.8.0"
+    run_state.meta.rules_pack_requires_tool = "0.9.0"
+    rendered = render_report(run_state, pack)
+
+    assert "This pack asks for a newer tool" in rendered
+    assert 'requires_tool = "0.9.0"' in rendered
+    assert "engineering-audit 0.8.0" in rendered
+    assert "not evidence the findings below are wrong" in rendered
+
+
+def test_pack_requires_tool_notice_silent_when_satisfied() -> None:
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.meta.tool_version = "0.8.0"
+    run_state.meta.rules_pack_requires_tool = "0.6.0"
+    rendered = render_report(run_state, pack)
+
+    assert "This pack asks for a newer tool" not in rendered
+
+
+def test_pack_requires_tool_notice_silent_when_exactly_equal() -> None:
+    # Equal counts as satisfied: this run's tool is at least what the pack
+    # requires, not strictly ahead of it.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.meta.tool_version = "0.8.0"
+    run_state.meta.rules_pack_requires_tool = "0.8.0"
+    rendered = render_report(run_state, pack)
+
+    assert "This pack asks for a newer tool" not in rendered
+
+
+def test_pack_requires_tool_notice_silent_when_metadata_absent() -> None:
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    assert run_state.meta.rules_pack_requires_tool is None
+    rendered = render_report(run_state, pack)
+
+    assert "This pack asks for a newer tool" not in rendered
+
+
+def test_pack_requires_tool_notice_silent_on_an_unparseable_version() -> None:
+    # Neither value should occur in practice (both are meant to be strict
+    # X.Y.Z), but a hand-edited pack.toml or a dev placeholder tool_version
+    # must not crash the render or produce a guessed comparison.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.meta.tool_version = "0.0.0-dev"
+    run_state.meta.rules_pack_requires_tool = "0.9.0"
+    rendered = render_report(run_state, pack)
+
+    assert "This pack asks for a newer tool" not in rendered
+
+
+def test_pack_format_notice_fires_when_the_format_is_outside_the_supported_range() -> (
+    None
+):
+    # Control for the "notice CAN render" half of this contract too.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.meta.rules_pack_format = 3
+    rendered = render_report(run_state, pack)
+
+    assert "This pack declares an unreadable rule-file format" in rendered
+    assert "<code>format = 3</code>" in rendered
+    assert "this tool reads format 1 to 2" in rendered
+    assert "not evidence the findings below are wrong" in rendered
+
+
+def test_pack_format_notice_silent_when_within_the_supported_range() -> None:
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.meta.rules_pack_format = 2
+    rendered = render_report(run_state, pack)
+
+    assert "This pack declares an unreadable rule-file format" not in rendered
+
+
+def test_pack_format_notice_silent_when_metadata_absent() -> None:
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    assert run_state.meta.rules_pack_format is None
+    rendered = render_report(run_state, pack)
+
+    assert "This pack declares an unreadable rule-file format" not in rendered
+
+
 def test_not_applicable_verdict_for_unknown_rule_id_raises() -> None:
     # Same loudness the could-not-evaluate path already has: a verdict for a
     # rule id absent from the pack is a broken run, not a cosmetic gap.

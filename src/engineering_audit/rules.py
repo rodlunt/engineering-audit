@@ -31,7 +31,12 @@ __all__ = [
     "RulesPackError",
     "RulesPackParseError",
     "RulesPackDuplicateIdError",
+    "PackMetadata",
+    "PACK_TOML_FILENAME",
+    "PACK_FORMAT_MIN",
+    "PACK_FORMAT_MAX",
     "load_pack",
+    "read_pack_metadata",
     "citation",
     "get_domain_text",
 ]
@@ -163,6 +168,115 @@ class RulesPack:
         """Return the id of the domain that defines rule_id, or None if no
         domain in this pack defines it."""
         return self._domain_id_by_rule_id.get(rule_id)
+
+
+# --- Pack metadata (issue #170) ---------------------------------------------
+#
+# An optional pack.toml, sibling to the domain markdown files inside the
+# rules directory, lets a pack declare two facts only its authors know: what
+# rule-file format it is written in, and the oldest tool release its rules
+# assume (its own current version is deliberately not one of them; see
+# PackMetadata's docstring). server.py reads this once per run and carries
+# the result through RunMeta; report.py compares it against PACK_FORMAT_MIN/
+# MAX below and the running tool_version to decide whether a mismatch notice
+# fires.
+
+PACK_TOML_FILENAME = "pack.toml"
+
+# The rule-file format versions this build's parser actually reads. is_v2
+# above detects a *loaded* pack's footer shape by sniffing its content; this
+# constant instead says what value a pack.toml 'format' key may declare for
+# this tool to understand it, independent of any one pack. 1 is the original
+# Source:-only footer shape (no pack.toml existed to declare it at the time,
+# but citation()'s v1 fallback still reads it correctly today); 2 is the
+# Source:/Verification: split is_v2 detects. Move this range only when the
+# parser in this file actually gains or loses support for a shape, not when
+# a pack's own format number changes.
+PACK_FORMAT_MIN = 1
+PACK_FORMAT_MAX = 2
+
+_PACK_TOML_FORMAT_RE = re.compile(r"^format\s*=\s*(?P<value>\d+)\s*(?:#.*)?$")
+_PACK_TOML_REQUIRES_TOOL_RE = re.compile(
+    r'^requires_tool\s*=\s*"(?P<value>[^"]*)"\s*(?:#.*)?$'
+)
+
+
+@dataclass(frozen=True)
+class PackMetadata:
+    """The two facts an optional pack.toml may declare about the loaded
+    rules pack (issue #170).
+
+    ``format``: the rule-file format the pack is written in, compared
+    against :data:`PACK_FORMAT_MIN`/:data:`PACK_FORMAT_MAX`.
+
+    ``requires_tool``: the oldest engineering-audit release the pack's
+    rules assume, compared against the running tool's version. Deliberately
+    not paired with a self-asserted pack *version*: issue #136 declined a
+    version marker file because an asserted version is weaker than the
+    git-derived one this tool already computes (see server.py's
+    ``_git_release_version``). A requirement is a different claim git
+    cannot derive and only the pack's authors know, which is why this file
+    carries it and nothing more.
+
+    Either field is None when pack.toml omits that key, or declares it in a
+    shape :func:`read_pack_metadata` does not recognise: an unreadable
+    value is reported as absent, never guessed at.
+    """
+
+    format: int | None
+    requires_tool: str | None
+
+
+def read_pack_metadata(rules_dir: Path) -> PackMetadata | None:
+    """Read ``rules_dir/pack.toml``'s ``format`` and ``requires_tool`` keys,
+    or None if the file is absent or could not be read at all.
+
+    A narrow line-based parser, not a TOML library: this project's floor is
+    Python 3.10 and tomllib is 3.11+ (see requires-python in
+    pyproject.toml), the project deliberately declares exactly two
+    dependencies and ships an SBOM against them, and pack.toml only ever
+    needs two flat, known keys. Mirrors scripts/version_pins.py's
+    ``read_pyproject_version``, which regex-extracts pyproject.toml's own
+    version field for the identical reason.
+
+    Only the two known keys are recognised; any other line, including a key
+    this parser does not know about, is silently ignored rather than
+    treated as a parse failure, because a pack.toml is allowed to grow keys
+    a given build predates. A key present but not in the exact shape this
+    parser expects (an unquoted requires_tool, a non-numeric format) is
+    likewise left as None on that field rather than raising: a malformed or
+    unrecognised file is reported as unreadable metadata, never a crash and
+    never a fabricated value. Absent (no pack.toml at all) and malformed
+    (a pack.toml this parser could not make sense of) are kept distinguishable
+    by their return shape: absent is None, malformed is a PackMetadata whose
+    fields are None, so a caller that wants to tell the two apart still can,
+    even though both currently render the same "nothing to say" notice.
+    """
+    pack_toml = Path(rules_dir) / PACK_TOML_FILENAME
+    if not pack_toml.is_file():
+        return None
+    try:
+        text = pack_toml.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+    format_value: int | None = None
+    requires_tool_value: str | None = None
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        format_match = _PACK_TOML_FORMAT_RE.match(line)
+        if format_match is not None:
+            format_value = int(format_match.group("value"))
+            continue
+        requires_match = _PACK_TOML_REQUIRES_TOOL_RE.match(line)
+        if requires_match is not None:
+            requires_tool_value = requires_match.group("value")
+            continue
+        # Unknown key, or a known key in a shape this parser does not
+        # recognise: ignored, per the docstring above.
+    return PackMetadata(format=format_value, requires_tool=requires_tool_value)
 
 
 def _slug_from_filename(path: Path) -> str:
