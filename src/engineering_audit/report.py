@@ -17,6 +17,7 @@ import json
 import re
 import string
 from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -130,6 +131,148 @@ def _join_clauses(clauses: list[str]) -> str:
     if len(clauses) <= 1:
         return "".join(clauses)
     return f"{', '.join(clauses[:-1])} and {clauses[-1]}"
+
+
+@dataclass(frozen=True)
+class _CountedPopulation:
+    """The wording for one summary line that states a count over a population
+    some of whose members may never have been asked the question.
+
+    Wording only. The states, the sentence shapes and the rule that every
+    figure ships with the base it came out of all live in
+    :func:`_count_over_population`, so a new summary line supplies words and
+    inherits the behaviour rather than reimplementing it.
+
+    ``found_predicate`` and the two others are past tense on purpose: past
+    tense is number-invariant in English, so the same phrase reads correctly
+    after "0 of 16 domains" and after "1 of 16 domains" without a second
+    variant to keep in sync.
+
+    ``never_recorded_unit`` exists because the never-asked count is not always
+    in the same units as the found count. A rule that could not be evaluated is
+    counted in rules; a domain that never ran, and so had no rule evaluated at
+    all, is counted in domains. Both belong in one sentence, each with its own
+    base.
+    """
+
+    label: str
+    unit: str
+    unit_plural: str | None = None
+    found_predicate: str = ""
+    all_recorded_predicate: str = ""
+    never_recorded_predicate: str = ""
+    never_recorded_unit: str | None = None
+
+
+# Every summary line in this report that states a count over a population is
+# registered here and rendered by _count_over_population below.
+#
+# One defect has now been found four times in this file: a summary that reads
+# as a clean result when the underlying question was never asked. #100 (172
+# not-applicable verdicts rendering as "0 findings"), #122 item 5 (a
+# could-not-run domain rendering as a bare zero), #184 (an evidence boundary
+# reading "0 of 16" on a run where no domain recorded one) and #195 ("None of
+# the N domains reported a limit" on a run where no domain was asked for a
+# self-assessment). Each was fixed where it was found, which is why the fourth
+# shipped inside the block written to prevent the third.
+#
+# The point of the registry is that the fix is now one state machine with a
+# test that walks it (test_report.py), instead of four sentences that each
+# happened to get it right. Adding a summary line means adding an entry here.
+_COUNT_SUMMARIES: dict[str, _CountedPopulation] = {
+    "evidence-boundary": _CountedPopulation(
+        label="Evidence boundary",
+        unit="completed domain",
+        found_predicate=(
+            "reached verdicts without reading something the repository points at"
+        ),
+        all_recorded_predicate="recorded what they did not read",
+        never_recorded_predicate=(
+            "never recorded what they did not read, which is not the same as "
+            "having read everything"
+        ),
+    ),
+    "self-assessment-limits": _CountedPopulation(
+        label="Self-assessment limits",
+        unit="selected domain",
+        found_predicate="reported a limit on their own assessment",
+        all_recorded_predicate="recorded a self-assessment",
+        never_recorded_predicate=(
+            "never recorded a self-assessment at all, which is not the same as "
+            "reporting no limits"
+        ),
+    ),
+    "could-not-evaluate": _CountedPopulation(
+        label="Could not evaluate",
+        unit="rule verdicted",
+        unit_plural="rules verdicted",
+        never_recorded_unit="selected domain",
+        never_recorded_predicate=(
+            "did not run at all, so no rule in them was evaluated"
+        ),
+    ),
+}
+
+
+def _count_over_population(
+    key: str,
+    *,
+    found: int,
+    never_recorded: int,
+    population: int,
+    never_recorded_population: int | None = None,
+) -> str:
+    """One summary line stating a count over a population, in whichever of the
+    four states that population is in.
+
+    The three states this exists to keep apart:
+
+    * **none recorded.** Nobody answered, so the count is not a result. The
+      line says how many never answered and never shows the zero, because the
+      zero is the reassuring reading of a question that was never put.
+    * **none found.** Everybody answered and none of them had the thing. The
+      line says so, and says that everybody answered.
+    * **N found.** The count, with the base it came out of.
+
+    The fourth is the mix, where some answered and some did not: both counts
+    go in the sentence, because dropping either one recreates one of the first
+    two states in a run that is not in it.
+
+    No figure appears without its base (D16-R03), which is what stops
+    "155 rules were set aside" inviting a reader to supply a denominator.
+    """
+    wording = _COUNT_SUMMARIES[key]
+    if never_recorded_population is None:
+        never_recorded_population = population
+
+    units = _plural(population, wording.unit, wording.unit_plural)
+    found_clause = f"{found} of {population} {units}"
+    if wording.found_predicate:
+        found_clause = f"{found_clause} {wording.found_predicate}"
+
+    # The never-asked count keeps its own unit and its own base, so the two
+    # halves of a mixed sentence cannot be read as one fraction.
+    never_units = (
+        _plural(never_recorded_population, wording.never_recorded_unit)
+        if wording.never_recorded_unit is not None
+        else _plural(never_recorded_population, wording.unit, wording.unit_plural)
+    )
+    never_clause = f"{never_recorded} of {never_recorded_population} {never_units}"
+    if wording.never_recorded_predicate:
+        never_clause = f"{never_clause} {wording.never_recorded_predicate}"
+
+    if found == 0 and never_recorded and never_recorded == never_recorded_population:
+        return f"{wording.label}: {never_clause}"
+    if never_recorded:
+        return f"{wording.label}: {found_clause}, and {never_clause}"
+    if population == 0:
+        return f"{wording.label}: no {units} to report on"
+    if found == 0 and wording.all_recorded_predicate:
+        return (
+            f"{wording.label}: {found_clause}, and all {population} {units} "
+            f"{wording.all_recorded_predicate}"
+        )
+    return f"{wording.label}: {found_clause}"
 
 
 def _short_commit(value: str | None) -> str:
@@ -725,6 +868,15 @@ def _self_assessment_limits(
 
     Rendered even when nothing was reported: a vanished block and a run
     where every domain claimed no limits look identical otherwise.
+
+    Which was only half the question (issue #195). A run where every domain
+    recorded a self-assessment and stated no limits, and a run where no domain
+    recorded one at all, produced the same reassuring sentence, and the second
+    is the common case rather than the edge: AUDIT.md never asks the auditor
+    for a self-assessment, so an auditor that does not improvise leaves it
+    None everywhere. The summary goes through _count_over_population, which
+    keeps the two apart the way the confidence column above already does by
+    rendering "not reported".
     """
     rows = [
         f"<li>{_esc(domain_id)}: {_esc(domain_titles[domain_id])}: "
@@ -732,21 +884,26 @@ def _self_assessment_limits(
         for domain_id, result in selected.items()
         if result.self_assessment is not None and result.self_assessment.limits
     ]
-    if not rows:
-        return (
-            f"<p>None of the {len(selected)} selected "
-            f"{_plural(len(selected), 'domain')} reported a limit on their own "
-            "assessment. Each domain's confidence is in the table above.</p>"
-        )
+    never_recorded = sum(
+        1 for result in selected.values() if result.self_assessment is None
+    )
     # Collapsed behind its own count (issue #124). The limits are free text
     # of arbitrary length and are the longest thing in this block; the count
     # is the signal, and each domain named inside is also a row in the table
     # above, which never collapses.
-    summary = (
-        f"{len(rows)} of {len(selected)} "
-        f"{_plural(len(selected), 'domain')} reported a limit on "
-        f"{_plural(len(rows), 'its', 'their')} own assessment"
+    summary = _count_over_population(
+        "self-assessment-limits",
+        found=len(rows),
+        never_recorded=never_recorded,
+        population=len(selected),
     )
+    if not rows:
+        # Nothing to collapse, so the summary is the whole block. It is the
+        # same sentence either way: the reader must not have to open a
+        # <details> to learn that nobody answered.
+        return (
+            f"<p>{_esc(summary)}. Each domain's confidence is in the table above.</p>"
+        )
     return (
         "<p>Each domain's confidence is in the table above.</p>"
         f"<details><summary>{_esc(summary)}</summary>"
@@ -952,10 +1109,16 @@ def _evidence_boundary_list(
             "at nothing they did not read.</p>"
         )
 
-    summary = (
-        f"Evidence boundary: {len(with_gaps)} of {len(completed)} completed "
-        f"{_plural(len(completed), 'domain')} reached verdicts without reading "
-        "something the repository points at"
+    # The body below has said "N completed domains never recorded an evidence
+    # boundary at all" since #179, and the summary above it still read
+    # "0 of 16", which is the sentence a reader skims and quotes (issue #184).
+    # Both counts are in the summary now, from the same helper every other
+    # count-over-a-population line in this report uses.
+    summary = _count_over_population(
+        "evidence-boundary",
+        found=len(with_gaps),
+        never_recorded=len(never_recorded),
+        population=len(completed),
     )
     parts = [
         "<p>A finding says this repository does not do something. That claim is only as "
@@ -1026,7 +1189,19 @@ def _could_not_evaluate_list(
         )
 
     verdicted = sum(_run_totals(selected).values())
-    summary = f"Could not evaluate: {total} of {verdicted} {_plural(verdicted, 'rule')} verdicted"
+    # The not-run domains were named in the body and missing from the summary,
+    # so a run with a whole domain that never started could still be headlined
+    # "Could not evaluate: 0 of 244 rules verdicted" behind a closed <details>.
+    # That is #184's defect at a third site, in rules rather than domains,
+    # which is why the helper carries a separate base for the never-asked
+    # count instead of forcing both counts into one denominator.
+    summary = _count_over_population(
+        "could-not-evaluate",
+        found=total,
+        never_recorded=len(not_run_domain_ids),
+        population=verdicted,
+        never_recorded_population=len(selected),
+    )
     parts = []
     if reason_to_rule_ids:
         parts.append(
