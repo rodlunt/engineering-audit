@@ -747,17 +747,11 @@ def test_build_feedback_body_matches_build_feedback_sections_for_every_consent_c
     domain_results = _domain_results()
     sections = build_feedback_sections(meta, domain_results)
 
-    flag_names = (
-        "coverage",
-        "rollup",
-        "self_assessment",
-        "environment",
-        "consulted_sources",
-        "verdict_distribution",
-        "duration",
-        "rules_fetched",
-        "reader_conclusions",
-    )
+    # Derived from the model's own fields, not a hand-copied tuple (issue
+    # #188): a flag added to TelemetryConsent with no matching section must
+    # fail this test the same way it fails build_feedback_body, rather than
+    # silently passing because the copy here was never updated.
+    flag_names = tuple(TelemetryConsent.model_fields)
     combinations = [
         {name: (name == chosen) for name in flag_names} for chosen in flag_names
     ]
@@ -772,6 +766,30 @@ def test_build_feedback_body_matches_build_feedback_sections_for_every_consent_c
             if consent_kwargs[name]:
                 expected_parts.append(sections[name])
         assert body == "\n\n".join(expected_parts)
+
+
+def test_build_feedback_body_raises_on_consent_flag_with_no_matching_section(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A consent flag with no matching section must be a loud failure, not a
+    # consent that silently does nothing (issue #188). This can't be
+    # provoked through TelemetryConsent itself without changing the model,
+    # so it is provoked here by making build_feedback_sections' returned
+    # mapping miss one of the flags it iterates: the same shape a real drift
+    # between the model and build_feedback_sections would take.
+    import engineering_audit.feedback as feedback_module
+
+    def _incomplete_sections(*args: object, **kwargs: object) -> dict[str, str]:
+        sections = build_feedback_sections(_meta(), _domain_results())
+        del sections["environment"]
+        return sections
+
+    monkeypatch.setattr(
+        feedback_module, "build_feedback_sections", _incomplete_sections
+    )
+
+    with pytest.raises(ValueError, match="environment"):
+        build_feedback_body("hi", _meta(), TelemetryConsent(), _domain_results())
 
 
 def test_verdict_distribution_duration_and_rules_fetched_are_omitted_unless_consented() -> (
