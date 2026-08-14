@@ -23,6 +23,7 @@ from urllib.parse import urlparse
 
 from engineering_audit.feedback import (
     FEEDBACK_EMAIL,
+    unevaluated_base,
     build_feedback_sections,
     build_issue_trailing_line,
     domain_confidence_note,
@@ -459,6 +460,35 @@ def _verdict_counts(result: DomainResult) -> Counter[str]:
     return counts
 
 
+def _unevaluated_map(
+    selected: dict[str, DomainResult],
+) -> dict[str, tuple[int, int] | None]:
+    """Domain id -> ``(could_not_evaluate_count, rules_verdicted)``, the base
+    every self-reported confidence claim is rendered against (issue #211).
+
+    Computed once and shared by the per-domain table, the finding cards and
+    the Issues section, for the same reason ``confidence_map`` and
+    ``fetch_status`` already are: three places that describe the same
+    domain must not be able to disagree about it.
+
+    A could-not-run domain maps to ``None`` rather than ``(0, 0)``. It has
+    no verdicts by construction, so there is no denominator, and "all 0
+    rules evaluated" would read as a clean sweep of a domain that never
+    ran, which is the exact defect #55 and #100 were about.
+    """
+    return {
+        domain_id: (
+            None
+            if result.status == "could-not-run"
+            else (
+                _verdict_counts(result)[Verdict.COULD_NOT_EVALUATE.value],
+                len(result.rule_verdicts),
+            )
+        )
+        for domain_id, result in selected.items()
+    }
+
+
 def _run_totals(selected: dict[str, DomainResult]) -> Counter[str]:
     """The whole run's rule verdicts, counted by verdict value."""
     totals: Counter[str] = Counter()
@@ -764,6 +794,7 @@ def _domain_table(
     }
     scale_max = max(verdicted_totals.values(), default=0)
     fetch_status = _rules_fetched_status(run_state, selected)
+    unevaluated = _unevaluated_map(selected)
 
     rows = []
     for domain_id, result in selected.items():
@@ -771,11 +802,16 @@ def _domain_table(
             f'<th scope="row"><span class="domain-id">{_esc(domain_id)}</span> '
             f"{_esc(domain_titles[domain_id])}</th>"
         )
+        # Issue #211: the self-report never renders on its own. A domain that
+        # could not evaluate 10 of its 18 rules and claimed "high" used to be
+        # indistinguishable here from one that could not evaluate 2 of 15,
+        # which is the reverse of what README.md promises a reader. The claim
+        # stays the auditor's; the base beside it is the tool's own count.
         confidence = (
             _esc(result.self_assessment.confidence)
             if result.self_assessment is not None
             else "not reported"
-        )
+        ) + _esc(unevaluated_base(unevaluated[domain_id]))
         if result.status == "could-not-run":
             # No verdicts by construction, so there is no mix to draw and no
             # denominator any numeral here could be a count out of. Saying
@@ -1744,7 +1780,9 @@ def _reference_line(rule: Rule, pack_is_v2: bool) -> str:
 
 
 def _finding_domain_note_html(
-    confidence: str | None, rules_fetched: bool | None
+    confidence: str | None,
+    rules_fetched: bool | None,
+    unevaluated: tuple[int, int] | None = None,
 ) -> str:
     """The muted line under a finding card's location: this finding's
     domain confidence and rules-fetched status (issue #130).
@@ -1757,7 +1795,7 @@ def _finding_domain_note_html(
     same convention _severity_cell uses for a nonzero critical/high count,
     so it survives greyscale and a photocopy (D16-R16).
     """
-    note = _esc(domain_confidence_note(confidence, rules_fetched))
+    note = _esc(domain_confidence_note(confidence, rules_fetched, unevaluated))
     if rules_fetched is False:
         return f'<div class="finding-domain-note"><strong>{note}</strong></div>'
     return f'<div class="finding-domain-note muted">{note}</div>'
@@ -1830,6 +1868,7 @@ def _finding_card(
     confidence: str | None,
     rules_fetched: bool | None,
     uninspected_evidence: list[str] | None = None,
+    unevaluated: tuple[int, int] | None = None,
 ) -> str:
     severity = finding.severity.value
     badge = f'<span class="severity-badge severity-{_esc(severity)}">{_esc(severity)}</span>'
@@ -1848,7 +1887,7 @@ def _finding_card(
         f'<div class="finding-location">{_esc(finding.location)}</div>'
         f"{_finding_precondition_html(finding.precondition)}"
         f"{_finding_evidence_boundary_html(uninspected_evidence)}"
-        f"{_finding_domain_note_html(confidence, rules_fetched)}"
+        f"{_finding_domain_note_html(confidence, rules_fetched, unevaluated)}"
         f'<div class="finding-body">{_markdownish(finding.body_md)}</div>'
         f'<div class="finding-reference">{_esc(_reference_line(rule, pack_is_v2))}</div>'
         "</div>"
@@ -1932,6 +1971,7 @@ def _findings_section(
     pack_is_v2: bool,
     fetch_status: dict[str, str],
     confidence_map: dict[str, str | None],
+    unevaluated_map: dict[str, tuple[int, int] | None],
 ) -> str:
     """Every finding in the run, ordered by severity rather than by the order
     the rules pack happens to list domains in (issue #122, point 3).
@@ -1978,6 +2018,7 @@ def _findings_section(
                 confidence_map[domain_id],
                 _fetch_status_to_bool(fetch_status[domain_id]),
                 selected[domain_id].uninspected_evidence,
+                unevaluated_map[domain_id],
             )
             for domain_id, finding in group
         )
@@ -2033,12 +2074,15 @@ def _issues_section(
     repo_prefill: str,
     fetch_status: dict[str, str],
     confidence_map: dict[str, str | None],
+    unevaluated_map: dict[str, tuple[int, int] | None],
 ) -> str:
-    """``fetch_status`` and ``confidence_map`` are the same per-domain maps
-    _findings_section takes (issue #130): they carry each finding's domain
-    confidence and fetch status into its filed-or-copied issue text via
-    build_issue_trailing_line, and they decide which critical/high findings
-    are excluded from the default pre-tick below.
+    """``fetch_status``, ``confidence_map`` and ``unevaluated_map`` are the
+    same per-domain maps _findings_section takes (issues #130 and #211):
+    they carry each finding's domain confidence, fetch status and the
+    could-not-evaluate base that confidence rests on into its
+    filed-or-copied issue text via build_issue_trailing_line, and the first
+    two decide which critical/high findings are excluded from the default
+    pre-tick below.
     """
     all_findings = [
         (domain_id, finding)
@@ -2075,6 +2119,7 @@ def _issues_section(
             rule,
             confidence=confidence_map[domain_id],
             rules_fetched=rules_fetched,
+            unevaluated=unevaluated_map[domain_id],
         )
         # issue_title and issue_body are assistant-authored and untrusted,
         # same as body_md; stripped here for the same reason (issue #128) so
@@ -2438,6 +2483,11 @@ def render_report(run_state: RunState, pack: RulesPack) -> str:
         )
         for domain_id, result in selected.items()
     }
+    # Issue #211: the base each confidence claim is rendered against, from
+    # the one helper the per-domain table also reads, so the table, the
+    # finding cards and the filed-issue text cannot disagree about how much
+    # of a domain went unevaluated.
+    unevaluated_map = _unevaluated_map(selected)
 
     performance_summary = (
         f"{_provenance_blind_notice(run_state.meta)}"
@@ -2480,6 +2530,7 @@ def render_report(run_state: RunState, pack: RulesPack) -> str:
             pack.is_v2,
             fetch_status,
             confidence_map,
+            unevaluated_map,
         ),
         issues_section=_issues_section(
             selected,
@@ -2488,6 +2539,7 @@ def render_report(run_state: RunState, pack: RulesPack) -> str:
             repo_prefill,
             fetch_status,
             confidence_map,
+            unevaluated_map,
         ),
         feedback_section=_feedback_section(run_state, run_state.feedback_issue_url),
         footer_block=_render_footer(run_state),

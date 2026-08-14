@@ -321,7 +321,10 @@ send or file it. It is a written report meant to be read top to bottom, in this 
   citation appended automatically from the rules pack. The tool refuses to publish a
   finding whose rule carries no citation. Each finding also carries its domain's
   self-assessed confidence and whether that domain's rule text was fetched this run, so a
-  finding from a shaky domain does not look identical to one from a solid one. The four
+  finding from a shaky domain does not look identical to one from a solid one. The
+  confidence never appears on its own: it ships with how many of that domain's rules could
+  not be evaluated, out of how many, so a domain claiming high confidence over half a
+  domain it could not check says so in the same breath. The four
   severity levels are defined on the page, and stated as assigned by the assistant named
   in the header rather than measured.
 - **Issues**: tick boxes to select findings, then file them to GitHub directly from the

@@ -380,7 +380,11 @@ For each domain id in `selected_domain_ids`, in order:
 
    This field renders as the domain's Confidence column and rides along on every finding filed
    from that domain, and README.md promises a reader that a finding from a shaky domain does not
-   look identical to one from a solid one. Until now nothing here asked for it either, so every
+   look identical to one from a solid one. It is never rendered alone: the tool appends how many
+   of the domain's rules you verdicted `could-not-evaluate`, out of how many, so your claim is
+   always read against the ground it was made on (issue #211). That count comes from your own
+   verdicts, so the way to make it smaller is to evaluate more rules, not to report a different
+   confidence. Until now nothing here asked for it either, so every
    run rendered "not reported" regardless of how sure the auditor actually was (issue #192).
 7. Call `record_domain_result` with the full `DomainResult` payload. A `could-not-run` domain
    from step 2 carries no rule verdicts and no findings, only the `status` and `reason`; every
