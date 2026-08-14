@@ -159,6 +159,90 @@ def test_render_report_contains_finding_titles_and_could_not_evaluate_entries() 
     )
 
 
+def _meta_rows(rendered: str) -> dict[str, str]:
+    """Header label -> the raw label cell HTML, so a test can ask whether one
+    specific row carries the self-reported marker without matching on the
+    marker appearing anywhere on the page."""
+    return {
+        re.sub(r"<[^>]+>", "", label).strip(): label
+        for label in re.findall(r'<div class="meta-label">(.*?)</div>', rendered, re.S)
+    }
+
+
+def test_the_assistant_and_model_rows_are_marked_self_reported() -> None:
+    # Issue #176. Both rows are supplied by the calling assistant and cannot be
+    # checked here, yet they sat at the same visual authority as the measured
+    # rows beside them. Two real runs by the same tester both ran gpt-5.6-sol
+    # while their headers read "gpt-5.6-luna" and "GPT-5".
+    pack = _pack()
+    rendered = render_report(_base_run_state(pack), pack)
+    rows = _meta_rows(rendered)
+
+    assert "self-reported" in rows["Assistant self-reported"]
+    assert "self-reported" in rows["Model self-reported"]
+
+
+def test_the_measured_header_rows_are_not_marked_self_reported() -> None:
+    # The other direction, which #176 asks for explicitly: if the marker
+    # crept onto every row it would stop distinguishing anything, and a
+    # reader would have no way to tell an asserted row from a measured one.
+    pack = _pack()
+    rendered = render_report(_base_run_state(pack), pack)
+    rows = _meta_rows(rendered)
+
+    for label in ("Repository", "Commit", "Tool version", "Tool commit", "Duration"):
+        assert label in rows, f"expected a {label} row in the header"
+        assert "self-reported" not in rows[label], (
+            f"{label} is measured or derived here and must not carry the qualifier"
+        )
+
+
+def test_earlier_contributors_inherits_the_self_reported_qualifier() -> None:
+    # It is built from the same asserted assistant/model pair, so leaving it
+    # unmarked would imply the handover record was verified when the rows it
+    # was derived from were not.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.meta.earlier_contributors = ["codex/gpt-5.6-luna"]
+    rendered = render_report(run_state, pack)
+    rows = _meta_rows(rendered)
+
+    assert "self-reported" in rows["Earlier contributors self-reported"]
+
+
+def test_the_header_explains_what_self_reported_means_once() -> None:
+    pack = _pack()
+    rendered = render_report(_base_run_state(pack), pack)
+
+    assert "carry what the calling assistant said it was" in rendered
+    # #129 tied severity interpretation to the model row, so the footnote has
+    # to carry the reader from one to the other.
+    assert "severity" in rendered
+
+
+def test_the_files_column_is_marked_self_reported() -> None:
+    # Issue #181. The count cannot be checked from here, so it is presented as
+    # a claim. This is why the field stays optional: requiring it would
+    # guarantee a number gets produced whether or not anything was counted.
+    pack = _pack()
+    rendered = render_report(_base_run_state(pack), pack)
+
+    files_header = re.search(r'<th scope="col">Files.*?</th>', rendered, re.S)
+    assert files_header is not None
+    assert "self-reported" in files_header.group(0)
+
+
+def test_the_environment_block_says_its_values_are_self_reported() -> None:
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.meta.environment = {"host_cli": "codex", "host_cli_version": "0.31.0"}
+    rendered = render_report(run_state, pack)
+
+    assert (
+        "the calling assistant supplied it and nothing here can verify it" in rendered
+    )
+
+
 def test_a_finding_card_states_the_precondition_that_makes_its_rule_apply() -> None:
     # Issue #178. The reference line already vouches for the rule; nothing on
     # the card used to say why the rule applies to this repository, which is
@@ -2665,11 +2749,14 @@ def test_one_table_replaces_the_five_per_domain_lists() -> None:
         "Domain",
         "Rule verdicts",
         "Findings",
-        "Files",
         "Confidence",
         "Rules fetched",
     ):
         assert f'<th scope="col">{header}</th>' in table
+    # Files carries the self-reported marker inside the header cell (issue
+    # #181), so it is matched on the opening rather than the exact cell.
+    # test_the_files_column_is_marked_self_reported covers the marker itself.
+    assert '<th scope="col">Files ' in table
 
 
 def test_every_domain_gets_exactly_one_row_including_the_clean_one() -> None:

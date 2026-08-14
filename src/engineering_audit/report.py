@@ -209,40 +209,76 @@ def _markdownish(text: str) -> str:
     return "".join(f"<p>{p.replace(chr(10), '<br>')}</p>" for p in paragraphs)
 
 
+# The marker put on a header row whose value the calling assistant supplied
+# and this server cannot check (issue #176). Short by design: the header is
+# already dense, and the sentence explaining it lives once under the grid
+# rather than on every row it applies to.
+SELF_REPORTED_MARKER = "self-reported"
+
+SELF_REPORTED_FOOTNOTE = (
+    "Rows marked self-reported carry what the calling assistant said it was. "
+    "Nothing on this page can verify them, and the same qualifier applies to "
+    "every severity in this report, which that assistant assigned rather than "
+    "measured. The unmarked rows above were measured or derived here."
+)
+
+
 def _render_meta_block(run_state: RunState) -> str:
     meta = run_state.meta
-    rows = [
-        ("Repository", meta.repo_name),
-        ("Commit", meta.repo_commit),
-        ("Rules pack", rules_pack_label(meta)),
-        ("Rules commit", meta.rules_pack_commit or "unknown"),
-        ("Assistant", meta.assistant),
-        ("Model", meta.model),
+    # (label, value, asserted). asserted=True means the calling assistant
+    # supplied it and the server has no way to check it (issue #176). Two real
+    # runs by the same tester both ran gpt-5.6-sol while their headers read
+    # "gpt-5.6-luna" and "GPT-5", and the maintainer initially read the two
+    # headers as evidence of a model change. The values are kept, because
+    # unknown-but-stated is an honest state and refusing them would lose the
+    # information; what changes is that they no longer sit at the same visual
+    # authority as the rows beside them that were actually measured.
+    #
+    # Started and Finished are deliberately NOT marked, though they are also
+    # assistant-supplied. The Duration row directly below reconciles them
+    # against the server's own clock (issue #102) and says so, which is a
+    # stronger statement than this qualifier, and marking them would imply the
+    # qualifier is all they get.
+    rows: list[tuple[str, str, bool]] = [
+        ("Repository", meta.repo_name, False),
+        ("Commit", meta.repo_commit, False),
+        ("Rules pack", rules_pack_label(meta), False),
+        ("Rules commit", meta.rules_pack_commit or "unknown", False),
+        ("Assistant", meta.assistant, True),
+        ("Model", meta.model, True),
         # Only rendered for a resumed run picked up by a different assistant or
         # model. Naming just the current pair would credit it with findings an
         # earlier one recorded, which is the defect this row exists to close
         # (#93): a provenance header that is confidently wrong is worse than one
-        # that is absent, because nothing prompts the reader to doubt it.
+        # that is absent, because nothing prompts the reader to doubt it. It is
+        # built from the same asserted assistant/model pair, so it inherits the
+        # same qualifier.
         *(
-            [("Earlier contributors", ", ".join(meta.earlier_contributors))]
+            [("Earlier contributors", ", ".join(meta.earlier_contributors), True)]
             if meta.earlier_contributors
             else []
         ),
-        ("Tool version", meta.tool_version),
-        ("Tool commit", meta.tool_commit or "unknown"),
-        ("Tool update", meta.update_check or "not checked"),
-        ("Rules pack update", meta.pack_update_check or "not checked"),
-        ("Started", meta.started),
-        ("Finished", meta.finished or "in progress"),
+        ("Tool version", meta.tool_version, False),
+        ("Tool commit", meta.tool_commit or "unknown", False),
+        ("Tool update", meta.update_check or "not checked", False),
+        ("Rules pack update", meta.pack_update_check or "not checked", False),
+        ("Started", meta.started, False),
+        ("Finished", meta.finished or "in progress", False),
         # The assistant-supplied Started/Finished rows above are asserted,
         # never measured (issue #102): the server has no clock of its own
         # until this row, which checks them against server_started/
         # server_finished rather than silently trusting either.
-        ("Duration", duration_text(meta)),
+        ("Duration", duration_text(meta), False),
     ]
     rows_html = "".join(
-        f'<div class="meta-label">{_esc(label)}</div><div class="meta-value">{_esc(value)}</div>'
-        for label, value in rows
+        f'<div class="meta-label">{_esc(label)}'
+        + (
+            f' <span class="asserted">{_esc(SELF_REPORTED_MARKER)}</span>'
+            if asserted
+            else ""
+        )
+        + f'</div><div class="meta-value">{_esc(value)}</div>'
+        for label, value, asserted in rows
     )
     # Collapsed behind a summary that is sufficient on its own (issue #124):
     # which repository, at which commit, audited by what against which rules
@@ -260,6 +296,7 @@ def _render_meta_block(run_state: RunState) -> str:
     return (
         f'<details class="meta-details"><summary>{summary}</summary>'
         f'<div class="meta-grid">{rows_html}</div>'
+        f'<p class="meta-footnote">{_esc(SELF_REPORTED_FOOTNOTE)}</p>'
         "</details>"
     )
 
@@ -664,7 +701,8 @@ def _domain_table(
         '<th scope="col">Domain</th>'
         '<th scope="col">Rule verdicts</th>'
         '<th scope="col">Findings</th>'
-        '<th scope="col">Files</th>'
+        '<th scope="col">Files '
+        f'<span class="asserted">{_esc(SELF_REPORTED_MARKER)}</span></th>'
         '<th scope="col">Confidence</th>'
         '<th scope="col">Rules fetched</th>'
         "</tr></thead>"
@@ -1459,6 +1497,14 @@ def _consulted_sources_section(
 
 
 def _environment_info(run_state: RunState) -> str:
+    """The host CLI and version the calling assistant said it was running in.
+
+    Marked self-reported for the same reason the assistant and model rows are
+    (issue #176): every value here is supplied by the caller and none of it is
+    checkable from this server. It is the same class of claim, so it carries
+    the same qualifier rather than a different one that would imply a
+    different standard of evidence.
+    """
     environment = run_state.meta.environment
     if not environment:
         return "<p>No environment information reported for this run.</p>"
@@ -1466,7 +1512,11 @@ def _environment_info(run_state: RunState) -> str:
         f"<li><strong>{_esc(key)}:</strong> {_esc(value)}</li>"
         for key, value in environment.items()
     )
-    return f"<ul>{rows}</ul>"
+    return (
+        f'<p class="muted">Every value below is {_esc(SELF_REPORTED_MARKER)}: '
+        "the calling assistant supplied it and nothing here can verify it.</p>"
+        f"<ul>{rows}</ul>"
+    )
 
 
 # Independent of citation()'s own capping, and deliberately larger than

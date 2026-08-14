@@ -358,6 +358,18 @@ For each domain id in `selected_domain_ids`, in order:
    could be, and you have just written down somewhere you did not look. Either inspect the store
    or move those verdicts to could-not-evaluate. The report prints this list beside every finding
    in the domain, so a reader will see both.
+   **Record the domain's `coverage` as well**: `files_inspected`, `files_skipped`, and a `note`
+   naming what you skipped and why. This is how a reader tells a domain that swept a repository
+   and found nothing from a domain that opened three files. It is optional, and it is meant to
+   stay optional: **this server cannot check the number against anything**, so it is reported as
+   your claim, not as a measurement, and the report marks it as such. **Omit it rather than
+   estimate.** An honest blank reads as "not claimed", which is a true statement; a guessed
+   number is a fabricated measurement wearing the same clothes as a real one, and the report has
+   no way to tell a reader which it got.
+
+   Until now nothing here asked for this at all. A 16-domain run came back with every domain
+   reporting "no coverage reported" and it read as an auditor that could not be bothered, when
+   the protocol had simply never mentioned the field (issue #181).
 7. Call `record_domain_result` with the full `DomainResult` payload. A `could-not-run` domain
    from step 2 carries no rule verdicts and no findings, only the `status` and `reason`; every
    other domain carries a verdict for each of its rules. If it errors:
