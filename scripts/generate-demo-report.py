@@ -111,8 +111,16 @@ def build_demo_run_state(pack: RulesPack) -> RunState:
                     "bed-14 has two occupants (gnome-07, gnome-19) and neither carries "
                     "the shared-bed flag. See ledger/beds.py:42."
                 ),
+                precondition=(
+                    "the rule presumes a bed ledger with per-occupant records, present "
+                    "at ledger/beds.py:1-60"
+                ),
             )
         ],
+        # A domain that read everything the repository pointed it at. The
+        # demo carries both states deliberately: this one, and d02 below,
+        # which reached its verdicts without opening something.
+        uninspected_evidence=[],
         self_assessment=SelfAssessment(
             confidence="high",
             limits="did not check gnome beds outside the main garden plot",
@@ -136,6 +144,16 @@ def build_demo_run_state(pack: RulesPack) -> RunState:
             confidence="medium", limits="did not check archived shipment routes"
         ),
         coverage=Coverage(files_inspected=6, files_skipped=0),
+        # The other state, so the demo report shows the Evidence boundary
+        # block doing its job rather than only its all-clear message. This is
+        # the shape that produced issue #179: the repository points somewhere
+        # for its shipment records and the audit did not go there, which any
+        # "the repository does not record X" verdict in this domain would have
+        # to be read against.
+        uninspected_evidence=[
+            "the shipment ledger service: routes/README.md:12 points at it for "
+            "delivery records; not inspected, it is not in this checkout"
+        ],
     )
 
     meta = RunMeta(

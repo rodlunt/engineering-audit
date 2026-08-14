@@ -106,11 +106,13 @@ def _base_run_state(pack, extra_domain_results: dict | None = None) -> RunState:
         "d01": DomainResult(
             domain_id="d01",
             status="completed",
+            uninspected_evidence=[],
             rule_verdicts=d01_verdicts,
             findings=[
                 Finding(
                     rule_id="D01-R02",
                     severity=Severity.HIGH,
+                    precondition="the rule presumes a gnome ledger, present at ledger/beds.py:1",
                     title="Two gnomes share bed-14 without the shared-bed flag",
                     location="ledger/beds.py:42",
                     body_md="bed-14 holds two gnomes.\n\nNeither has the shared-bed flag set.",
@@ -126,6 +128,7 @@ def _base_run_state(pack, extra_domain_results: dict | None = None) -> RunState:
         "d02": DomainResult(
             domain_id="d02",
             status="completed",
+            uninspected_evidence=[],
             rule_verdicts=_all_pass_verdicts(d02),
             findings=[],
             self_assessment=SelfAssessment(
@@ -153,6 +156,86 @@ def test_render_report_contains_finding_titles_and_could_not_evaluate_entries() 
     assert "D01-R03" in rendered
     assert (
         "the garden bed ledger file could not be located in this repository" in rendered
+    )
+
+
+def test_a_finding_card_states_the_precondition_that_makes_its_rule_apply() -> None:
+    # Issue #178. The reference line already vouches for the rule; nothing on
+    # the card used to say why the rule applies to this repository, which is
+    # the claim that actually failed in the run that produced the issue.
+    pack = _pack()
+    rendered = render_report(_base_run_state(pack), pack)
+
+    assert "Applies here because:" in rendered
+    assert "the rule presumes a gnome ledger, present at ledger/beds.py:1" in rendered
+
+
+def test_a_finding_card_says_so_when_no_precondition_was_recorded() -> None:
+    # A pre-0.9.0 run re-rendered by this build. The line must still appear
+    # and say the claim is absent: a card that silently omits it reads as a
+    # card that had nothing to say, which is the shape #100 closed for
+    # not-applicable and #130 closed for confidence.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.domain_results["d01"].findings[0].precondition = None
+    rendered = render_report(run_state, pack)
+
+    assert "No precondition recorded" in rendered
+
+
+def test_a_domains_uninspected_evidence_rides_on_every_finding_in_it() -> None:
+    # Issue #179. The boundary and the finding have to be readable together,
+    # because the boundary is what decides whether an absence claim means
+    # anything, and in the run that produced the issue it was recorded in one
+    # rule's free-text note where no reader of the findings would meet it.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.domain_results["d01"].uninspected_evidence = [
+        "GitHub Issues: README.md:9 sends requirements here; not inspected"
+    ]
+    rendered = render_report(run_state, pack)
+
+    assert "Reached without reading:" in rendered
+    assert "README.md:9 sends requirements here" in rendered
+
+
+def test_a_domain_that_read_everything_adds_no_caveat_to_its_findings() -> None:
+    # The empty list is the common case. If it rendered a caveat too, the
+    # caveat would appear on every finding in every run and stop meaning
+    # anything, which is the failure mode #122 recorded for prominent panels.
+    pack = _pack()
+    rendered = render_report(_base_run_state(pack), pack)
+
+    assert "Reached without reading:" not in rendered
+
+
+def test_the_evidence_boundary_block_separates_read_everything_from_never_asked() -> (
+    None
+):
+    # Three outcomes reported as three, the same split _domains_without_findings
+    # makes for its zeros. A domain that never recorded a boundary must not be
+    # counted with the domains that recorded an empty one.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.domain_results["d01"].uninspected_evidence = [
+        "the shipment ledger service: not in this checkout"
+    ]
+    run_state.domain_results["d02"].uninspected_evidence = None
+    rendered = render_report(run_state, pack)
+
+    assert "Evidence boundary" in rendered
+    assert "the shipment ledger service: not in this checkout" in rendered
+    assert "never recorded an evidence boundary at all" in rendered
+
+
+def test_the_evidence_boundary_block_says_so_when_every_domain_read_everything() -> (
+    None
+):
+    pack = _pack()
+    rendered = render_report(_base_run_state(pack), pack)
+
+    assert (
+        "recorded that the repository points at nothing they did not read" in rendered
     )
 
 
@@ -248,7 +331,10 @@ def test_report_error_when_completeness_fails() -> None:
     d01 = pack.get_domain("d01")
     incomplete_verdicts = _all_pass_verdicts(d01)[:-1]  # drop the last rule's verdict
     run_state.domain_results["d01"] = DomainResult(
-        domain_id="d01", status="completed", rule_verdicts=incomplete_verdicts
+        domain_id="d01",
+        status="completed",
+        uninspected_evidence=[],
+        rule_verdicts=incomplete_verdicts,
     )
     with pytest.raises(ReportError):
         render_report(run_state, pack)
@@ -263,11 +349,13 @@ def test_report_error_when_finding_references_unknown_rule_id() -> None:
     run_state.domain_results["d01"] = DomainResult(
         domain_id="d01",
         status="completed",
+        uninspected_evidence=[],
         rule_verdicts=verdicts,
         findings=[
             Finding(
                 rule_id="D01-R99",
                 severity=Severity.LOW,
+                precondition="the rule presumes a gnome ledger, present at ledger/beds.py:1",
                 title="references a rule that does not exist",
                 location="x.py",
                 body_md="x",
@@ -297,7 +385,10 @@ def test_could_not_evaluate_verdict_for_unknown_rule_id_raises() -> None:
         config=AuditConfig(selected_domain_ids=["d01"], issue_mode="report"),
         domain_results={
             "d01": DomainResult(
-                domain_id="d01", status="completed", rule_verdicts=verdicts
+                domain_id="d01",
+                status="completed",
+                uninspected_evidence=[],
+                rule_verdicts=verdicts,
             )
         },
     )
@@ -339,10 +430,16 @@ def test_could_not_evaluate_groups_rows_by_reason_sorted_by_descending_count() -
         config=AuditConfig(selected_domain_ids=["d01", "d02"], issue_mode="report"),
         domain_results={
             "d01": DomainResult(
-                domain_id="d01", status="completed", rule_verdicts=d01_verdicts
+                domain_id="d01",
+                status="completed",
+                uninspected_evidence=[],
+                rule_verdicts=d01_verdicts,
             ),
             "d02": DomainResult(
-                domain_id="d02", status="completed", rule_verdicts=d02_verdicts
+                domain_id="d02",
+                status="completed",
+                uninspected_evidence=[],
+                rule_verdicts=d02_verdicts,
             ),
         },
     )
@@ -383,11 +480,15 @@ def test_not_applicable_verdicts_are_counted_and_their_reasons_listed() -> None:
         config=AuditConfig(selected_domain_ids=["d01", "d02"], issue_mode="report"),
         domain_results={
             "d01": DomainResult(
-                domain_id="d01", status="completed", rule_verdicts=d01_verdicts
+                domain_id="d01",
+                status="completed",
+                uninspected_evidence=[],
+                rule_verdicts=d01_verdicts,
             ),
             "d02": DomainResult(
                 domain_id="d02",
                 status="completed",
+                uninspected_evidence=[],
                 rule_verdicts=_all_pass_verdicts(d02),
             ),
         },
@@ -424,11 +525,13 @@ def test_a_wholly_not_applicable_domain_is_distinguishable_from_one_swept_clean(
             "d01": DomainResult(
                 domain_id="d01",
                 status="completed",
+                uninspected_evidence=[],
                 rule_verdicts=_all_not_applicable_verdicts(d01, reason),
             ),
             "d02": DomainResult(
                 domain_id="d02",
                 status="completed",
+                uninspected_evidence=[],
                 rule_verdicts=_all_pass_verdicts(d02),
             ),
         },
@@ -494,7 +597,10 @@ def test_not_applicable_groups_rows_by_reason_sorted_by_descending_count() -> No
         config=AuditConfig(selected_domain_ids=["d01"], issue_mode="report"),
         domain_results={
             "d01": DomainResult(
-                domain_id="d01", status="completed", rule_verdicts=d01_verdicts
+                domain_id="d01",
+                status="completed",
+                uninspected_evidence=[],
+                rule_verdicts=d01_verdicts,
             )
         },
     )
@@ -864,7 +970,10 @@ def test_not_applicable_verdict_for_unknown_rule_id_raises() -> None:
         config=AuditConfig(selected_domain_ids=["d01"], issue_mode="report"),
         domain_results={
             "d01": DomainResult(
-                domain_id="d01", status="completed", rule_verdicts=verdicts
+                domain_id="d01",
+                status="completed",
+                uninspected_evidence=[],
+                rule_verdicts=verdicts,
             )
         },
     )
@@ -887,6 +996,7 @@ def test_a_legacy_run_state_renders_its_unjustified_not_applicable_as_unrecorded
             "d01": DomainResult(
                 domain_id="d01",
                 status="completed",
+                uninspected_evidence=[],
                 rule_verdicts=_all_not_applicable_verdicts(
                     d01, "placeholder, stripped below"
                 ),
@@ -916,11 +1026,13 @@ def test_could_not_evaluate_all_clear_message_survives_the_grouping_change() -> 
             "d01": DomainResult(
                 domain_id="d01",
                 status="completed",
+                uninspected_evidence=[],
                 rule_verdicts=_all_pass_verdicts(d01),
             ),
             "d02": DomainResult(
                 domain_id="d02",
                 status="completed",
+                uninspected_evidence=[],
                 rule_verdicts=_all_pass_verdicts(d02),
             ),
         },
@@ -958,11 +1070,13 @@ def _single_finding_run_state(rule_id: str) -> RunState:
             "d01": DomainResult(
                 domain_id="d01",
                 status="completed",
+                uninspected_evidence=[],
                 rule_verdicts=[RuleVerdict(rule_id=rule_id, verdict=Verdict.FINDING)],
                 findings=[
                     Finding(
                         rule_id=rule_id,
                         severity=Severity.LOW,
+                        precondition="the rule presumes a gnome ledger, present at ledger/beds.py:1",
                         title="a finding",
                         location="x.py",
                         body_md="x",
@@ -1065,6 +1179,7 @@ def test_consulted_sources_section_shows_title_link_why_and_accessed() -> None:
             "d01": DomainResult(
                 domain_id="d01",
                 status="completed",
+                uninspected_evidence=[],
                 rule_verdicts=_all_pass_verdicts(d01),
                 consulted_sources=[_consulted_source(rule_id="D01-R01")],
             )
@@ -1092,6 +1207,7 @@ def test_consulted_sources_section_groups_multiple_sources_under_one_rule_id() -
             "d01": DomainResult(
                 domain_id="d01",
                 status="completed",
+                uninspected_evidence=[],
                 rule_verdicts=_all_pass_verdicts(d01),
                 consulted_sources=[
                     _consulted_source(
@@ -1131,6 +1247,7 @@ def test_consulted_source_with_a_non_http_url_degrades_to_text_instead_of_raisin
             "d01": DomainResult(
                 domain_id="d01",
                 status="completed",
+                uninspected_evidence=[],
                 rule_verdicts=_all_pass_verdicts(d01),
                 consulted_sources=[
                     _consulted_source(
@@ -1156,6 +1273,7 @@ def test_report_error_when_consulted_source_references_a_rule_id_outside_its_dom
             "d01": DomainResult(
                 domain_id="d01",
                 status="completed",
+                uninspected_evidence=[],
                 rule_verdicts=_all_pass_verdicts(d01),
                 # D02-R01 belongs to d02's own rules, not d01's.
                 consulted_sources=[_consulted_source(rule_id="D02-R01")],
@@ -1189,6 +1307,7 @@ def test_domain_table_rows_keyed_by_domain_id_not_title(tmp_path: Path) -> None:
         return Finding(
             rule_id=rule_id,
             severity=Severity.LOW,
+            precondition="the rule presumes a gnome ledger, present at ledger/beds.py:1",
             title="a finding",
             location="x.py",
             body_md="x",
@@ -1203,12 +1322,14 @@ def test_domain_table_rows_keyed_by_domain_id_not_title(tmp_path: Path) -> None:
             "d01": DomainResult(
                 domain_id="d01",
                 status="completed",
+                uninspected_evidence=[],
                 rule_verdicts=[RuleVerdict(rule_id="D01-R01", verdict=Verdict.FINDING)],
                 findings=[_finding("D01-R01")],
             ),
             "d02": DomainResult(
                 domain_id="d02",
                 status="completed",
+                uninspected_evidence=[],
                 rule_verdicts=[RuleVerdict(rule_id="D02-R01", verdict=Verdict.FINDING)],
                 findings=[_finding("D02-R01")],
             ),
@@ -1280,11 +1401,13 @@ def test_html_escape_on_a_finding_title_containing_a_script_tag() -> None:
             "d01": DomainResult(
                 domain_id="d01",
                 status="completed",
+                uninspected_evidence=[],
                 rule_verdicts=verdicts,
                 findings=[
                     Finding(
                         rule_id="D01-R01",
                         severity=Severity.LOW,
+                        precondition="the rule presumes a gnome ledger, present at ledger/beds.py:1",
                         title="<script>alert(1)</script>",
                         location="x.py",
                         body_md="x",
@@ -1450,11 +1573,13 @@ def test_finding_on_a_sourceless_rule_refuses_to_render() -> None:
             "d01": DomainResult(
                 domain_id="d01",
                 status="completed",
+                uninspected_evidence=[],
                 rule_verdicts=verdicts,
                 findings=[
                     Finding(
                         rule_id="D01-R04",
                         severity=Severity.LOW,
+                        precondition="the rule presumes a gnome ledger, present at ledger/beds.py:1",
                         title="beard-length average not recalculated on retirement",
                         location="ledger/beards.py:10",
                         body_md="x",
@@ -1864,11 +1989,13 @@ def test_two_findings_on_one_rule_each_get_their_own_already_filed_link() -> Non
             "d01": DomainResult(
                 domain_id="d01",
                 status="completed",
+                uninspected_evidence=[],
                 rule_verdicts=verdicts,
                 findings=[
                     Finding(
                         rule_id="D01-R02",
                         severity=Severity.HIGH,
+                        precondition="the rule presumes a gnome ledger, present at ledger/beds.py:1",
                         title="bed-14 has no shared-bed flag",
                         location="ledger/beds.py:42",
                         body_md="bed-14 holds two gnomes.",
@@ -1878,6 +2005,7 @@ def test_two_findings_on_one_rule_each_get_their_own_already_filed_link() -> Non
                     Finding(
                         rule_id="D01-R02",
                         severity=Severity.MEDIUM,
+                        precondition="the rule presumes a gnome ledger, present at ledger/beds.py:1",
                         title="bed-19 has no shared-bed flag",
                         location="ledger/beds.py:57",
                         body_md="bed-19 holds two gnomes.",
@@ -2223,11 +2351,13 @@ def _mixed_severity_run_state(pack) -> RunState:
             "d01": DomainResult(
                 domain_id="d01",
                 status="completed",
+                uninspected_evidence=[],
                 rule_verdicts=d01_verdicts,
                 findings=[
                     Finding(
                         rule_id="D01-R02",
                         severity=Severity.LOW,
+                        precondition="the rule presumes a gnome ledger, present at ledger/beds.py:1",
                         title="A low-severity gnome problem",
                         location="ledger/beds.py:42",
                         body_md="Minor.",
@@ -2241,11 +2371,13 @@ def _mixed_severity_run_state(pack) -> RunState:
             "d02": DomainResult(
                 domain_id="d02",
                 status="completed",
+                uninspected_evidence=[],
                 rule_verdicts=d02_verdicts,
                 findings=[
                     Finding(
                         rule_id="D02-R01",
                         severity=Severity.CRITICAL,
+                        precondition="the rule presumes a gnome ledger, present at ledger/beds.py:1",
                         title="A critical teacup problem",
                         location="routes/teacups.py:9",
                         body_md="Serious.",
@@ -2308,11 +2440,13 @@ def test_headline_says_so_when_nothing_was_found_at_all() -> None:
             "d01": DomainResult(
                 domain_id="d01",
                 status="completed",
+                uninspected_evidence=[],
                 rule_verdicts=_all_pass_verdicts(d01),
             ),
             "d02": DomainResult(
                 domain_id="d02",
                 status="completed",
+                uninspected_evidence=[],
                 rule_verdicts=_all_pass_verdicts(d02),
             ),
         },
@@ -2342,6 +2476,7 @@ def test_headline_caveat_names_the_coverage_gaps_with_their_bases() -> None:
             "d01": DomainResult(
                 domain_id="d01",
                 status="completed",
+                uninspected_evidence=[],
                 rule_verdicts=_all_not_applicable_verdicts(d01, reason),
             ),
             "d02": DomainResult(
@@ -2474,6 +2609,7 @@ def test_domains_with_no_findings_separates_set_aside_from_never_ran() -> None:
             "d01": DomainResult(
                 domain_id="d01",
                 status="completed",
+                uninspected_evidence=[],
                 rule_verdicts=_all_not_applicable_verdicts(d01, reason),
             ),
             "d02": DomainResult(
@@ -2752,6 +2888,7 @@ def test_domains_with_no_findings_summary_splits_the_three_kinds_of_zero() -> No
             "d01": DomainResult(
                 domain_id="d01",
                 status="completed",
+                uninspected_evidence=[],
                 rule_verdicts=_all_not_applicable_verdicts(d01, "no gnomes here"),
             ),
             "d02": DomainResult(
@@ -2807,7 +2944,10 @@ def test_rule_id_lists_stay_out_of_every_closed_details_except_the_two_164_allow
         config=AuditConfig(selected_domain_ids=["d01"], issue_mode="report"),
         domain_results={
             "d01": DomainResult(
-                domain_id="d01", status="completed", rule_verdicts=verdicts
+                domain_id="d01",
+                status="completed",
+                uninspected_evidence=[],
+                rule_verdicts=verdicts,
             )
         },
     )
@@ -2978,11 +3118,13 @@ def test_no_literal_asterisk_survives_into_findings_or_issues_sections(
             "d01": DomainResult(
                 domain_id="d01",
                 status="completed",
+                uninspected_evidence=[],
                 rule_verdicts=[RuleVerdict(rule_id="D01-R01", verdict=Verdict.FINDING)],
                 findings=[
                     Finding(
                         rule_id="D01-R01",
                         severity=Severity.LOW,
+                        precondition="the rule presumes a gnome ledger, present at ledger/beds.py:1",
                         title="A **bold** title",
                         location="x.py",
                         body_md=(
@@ -3160,11 +3302,13 @@ def test_unfetched_critical_finding_is_unticked_despite_severity() -> None:
             "d01": DomainResult(
                 domain_id="d01",
                 status="completed",
+                uninspected_evidence=[],
                 rule_verdicts=d01_verdicts,
                 findings=[
                     Finding(
                         rule_id="D01-R02",
                         severity=Severity.CRITICAL,
+                        precondition="the rule presumes a gnome ledger, present at ledger/beds.py:1",
                         title="fetched-domain finding",
                         location="ledger/beds.py:1",
                         body_md="x",
@@ -3176,11 +3320,13 @@ def test_unfetched_critical_finding_is_unticked_despite_severity() -> None:
             "d02": DomainResult(
                 domain_id="d02",
                 status="completed",
+                uninspected_evidence=[],
                 rule_verdicts=d02_verdicts,
                 findings=[
                     Finding(
                         rule_id="D02-R01",
                         severity=Severity.CRITICAL,
+                        precondition="the rule presumes a gnome ledger, present at ledger/beds.py:1",
                         title="unfetched-domain finding",
                         location="crates/manifest.py:1",
                         body_md="x",
@@ -3242,11 +3388,13 @@ def test_preticked_note_matches_boxes_actually_ticked_when_a_finding_is_filed() 
             "d01": DomainResult(
                 domain_id="d01",
                 status="completed",
+                uninspected_evidence=[],
                 rule_verdicts=d01_verdicts,
                 findings=[
                     Finding(
                         rule_id="D01-R01",
                         severity=Severity.CRITICAL,
+                        precondition="the rule presumes a gnome ledger, present at ledger/beds.py:1",
                         title="not filed, stays ticked",
                         location="ledger/gnomes.py:1",
                         body_md="x",
@@ -3256,6 +3404,7 @@ def test_preticked_note_matches_boxes_actually_ticked_when_a_finding_is_filed() 
                     Finding(
                         rule_id="D01-R02",
                         severity=Severity.HIGH,
+                        precondition="the rule presumes a gnome ledger, present at ledger/beds.py:1",
                         title="already filed this run",
                         location="ledger/beds.py:42",
                         body_md="x",
@@ -3265,6 +3414,7 @@ def test_preticked_note_matches_boxes_actually_ticked_when_a_finding_is_filed() 
                     Finding(
                         rule_id="D01-R03",
                         severity=Severity.LOW,
+                        precondition="the rule presumes a gnome ledger, present at ledger/beds.py:1",
                         title="low severity, never ticked either way",
                         location="ledger/beards.py:1",
                         body_md="x",
@@ -3276,11 +3426,13 @@ def test_preticked_note_matches_boxes_actually_ticked_when_a_finding_is_filed() 
             "d02": DomainResult(
                 domain_id="d02",
                 status="completed",
+                uninspected_evidence=[],
                 rule_verdicts=d02_verdicts,
                 findings=[
                     Finding(
                         rule_id="D02-R01",
                         severity=Severity.CRITICAL,
+                        precondition="the rule presumes a gnome ledger, present at ledger/beds.py:1",
                         title="not filed, stays ticked",
                         location="crates/manifest.py:1",
                         body_md="x",
@@ -3345,6 +3497,7 @@ def _run_state_with_findings(pack, severities: list[Severity]) -> RunState:
         finding = Finding(
             rule_id=rule_id,
             severity=severity,
+            precondition="the rule presumes a gnome ledger, present at ledger/beds.py:1",
             title=f"finding for {rule_id}",
             location="somewhere.py:1",
             body_md="x",
@@ -3369,12 +3522,14 @@ def _run_state_with_findings(pack, severities: list[Severity]) -> RunState:
             "d01": DomainResult(
                 domain_id="d01",
                 status="completed",
+                uninspected_evidence=[],
                 rule_verdicts=d01_verdicts,
                 findings=d01_findings,
             ),
             "d02": DomainResult(
                 domain_id="d02",
                 status="completed",
+                uninspected_evidence=[],
                 rule_verdicts=d02_verdicts,
                 findings=d02_findings,
             ),

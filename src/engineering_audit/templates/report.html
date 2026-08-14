@@ -328,6 +328,31 @@
      photocopy (D16-R16) rather than relying on a colour a reader might not
      be able to tell apart. */
   .finding-domain-note { font-size: 0.85rem; margin: 0.2rem 0 0.5rem; }
+  /* The precondition that makes this rule apply here (issue #178). Full
+     contrast, not muted, when it was recorded: it is a claim the finding
+     stands on, not metadata about the run. Muted only in the .muted variant,
+     which is the "never recorded" case, so a card missing the claim reads as
+     missing it rather than as quietly saying something. */
+  .finding-precondition {
+    font-size: 0.9rem;
+    margin: 0.2rem 0 0.5rem;
+    border-left: 2px solid var(--border);
+    padding-left: 0.6rem;
+  }
+  /* Evidence the repository points at that the audit did not open (issue
+     #179). Weight and a left rule rather than colour, the same convention
+     .finding-domain-note uses for an unfetched domain, so it survives
+     greyscale: this is the one caveat that can invalidate the finding above
+     it outright, and it must not depend on a reader distinguishing two
+     shades of grey. */
+  .finding-boundary {
+    font-size: 0.9rem;
+    margin: 0.2rem 0 0.5rem;
+    border-left: 3px solid var(--fg);
+    padding: 0.3rem 0 0.3rem 0.6rem;
+  }
+  .finding-boundary ul { margin: 0.3rem 0 0; padding-left: 1.1rem; }
+  .finding-boundary li { overflow-wrap: anywhere; }
   .finding-body p { margin: 0.4rem 0; }
   .severity-badge {
     display: inline-block;

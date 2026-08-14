@@ -226,11 +226,27 @@ For each domain id in `selected_domain_ids`, in order:
 3. Sweep the repository, applying every rule in the domain. For each rule, reach one of four
    honest verdicts:
    - `pass`: you checked, and the repository satisfies the rule.
-   - `finding`: you checked, and the repository violates the rule. Attach a `Finding` (see
-     below).
+   - `finding`: you checked, the rule's precondition holds here, and the repository violates
+     the rule. Attach a `Finding` (see below), including the required `precondition` field
+     naming what makes the rule apply and where that holds in this repository.
    - `not-applicable`: the rule's precondition does not hold in this repository, **and you say
      which precondition** in the required `note` field (e.g. a rule about API versioning in a
      repo with no API: "this repository exposes no API, only a CLI").
+
+     **A precondition can be a context, not only an artefact.** The API example above is an
+     artefact test: the thing the rule is about is not in the tree. Many rules instead presume
+     a situation the repository is in. External users. A release pipeline. A distribution
+     channel. An organisation with roles. Paying customers. A compliance regime. A team of
+     more than one. When a rule presumes a context this repository is not in, it is
+     `not-applicable`, and the note names the context: "this project publishes no releases and
+     has no distribution channel, so there is no release for an SBOM to accompany".
+
+     This is the limb that was missing when a 16-domain run filed a finding for a missing
+     release SBOM against a project with no releases, a missing CVSS-scored vulnerability
+     register against a project with one dependency, and a missing assistive-technology
+     evaluation against a personal tool whose only user is its author (issue #178). Every rule
+     was real and quoted correctly. Every one was applied where its precondition did not hold.
+     A standard that does not apply here is not a defect here.
    - `could-not-evaluate`: you could not reach a verdict, **and you say why** in the required
      `note` field. Reasons for could-not-evaluate include: the relevant file does not exist, you
      do not have the access needed to check (e.g. a live deployment), or the rule requires
@@ -248,9 +264,27 @@ For each domain id in `selected_domain_ids`, in order:
    reasons, so a domain you set aside in full reads as set aside, not as swept clean.
 
 4. Every `Finding` must:
+   - State its **`precondition`**: what the rule presumes, and where that was observed to hold
+     in this repository. "The rule presumes a release pipeline, present at
+     `.github/workflows/release.yml`." "The rule presumes external users; `README.md:4`
+     describes a published app store listing." One sentence. The server rejects a finding
+     without one.
+
+     **If you cannot name where the precondition holds, the verdict is `not-applicable`, not
+     `finding`.** That is the whole point of the field: it is the question nobody was asked
+     before issue #178, and being unable to answer it is the signal, not an obstacle to work
+     around. Do not write a precondition that restates the rule ("the rule presumes the project
+     should have an SBOM"). A precondition is a fact about this repository, checkable in it, and
+     if it were absent the rule would not apply.
    - Cite a **real `path:line` location you actually read**. Never fabricate a plausible-looking
      location, and never guess a line number from a search-result snippet without opening the
      file. If a finding spans a whole file rather than a line, `path` alone is acceptable.
+
+     The location is where the evidence is, and a reader will take the code at that line as the
+     claim. Pick the line the claim is actually about. A reviewer of one run reconstructed four
+     findings from their locations alone, got all four wrong, and refuted claims the audit had
+     never made, because the cited lines were doc comments near the subject rather than the
+     subject itself.
    - Have a `severity` chosen with this guidance:
      - **critical**: exploitable now, or causes data loss (a secret committed to history, an
        auth bypass, an unguarded destructive migration).
@@ -303,6 +337,27 @@ For each domain id in `selected_domain_ids`, in order:
    decided in step 2 above whether this domain runs at all or is `could-not-run`; do not revisit
    that call here, and a domain that reached this step by sweeping its rules is `completed` by
    definition.
+
+   **Then record the domain's `uninspected_evidence` before you submit it.** List every evidence
+   store this repository points at that you did not open while verdicting this domain, one entry
+   each, naming the store and where the repository points at it: `"GitHub Issues: README.md:9
+   sends requirements here; not inspected, no access from this checkout"`. An issue tracker, a
+   wiki, a design doc in a drive, a CI dashboard, a sibling repository. **An empty list is a real
+   answer and the common one**: the repository points at nothing you did not read. `null` is not
+   an answer, and the server rejects it on a completed domain.
+
+   This exists because a run can hold this knowledge and lose it. In the run that produced issue
+   #179, this domain's D02-R03 correctly returned could-not-evaluate with the note "the README
+   points to external issue records that were not inspected", and the same domain then filed
+   eleven findings asserting the repository had no problem statement, no acceptance criteria and
+   no user stories, every one of them citing `README.md`. The requirements were in the issue
+   tracker the whole time. One rule knew. Nothing carried it to the other eleven.
+
+   **If you list something here, go back over this domain's findings before submitting.** Any
+   finding that claims the repository does not have something is a claim about everywhere it
+   could be, and you have just written down somewhere you did not look. Either inspect the store
+   or move those verdicts to could-not-evaluate. The report prints this list beside every finding
+   in the domain, so a reader will see both.
 7. Call `record_domain_result` with the full `DomainResult` payload. A `could-not-run` domain
    from step 2 carries no rule verdicts and no findings, only the `status` and `reason`; every
    other domain carries a verdict for each of its rules. If it errors:
