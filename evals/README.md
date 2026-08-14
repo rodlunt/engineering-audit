@@ -174,3 +174,56 @@ the auditor:
   The fixture now binds it to the fixed reward menu with a CHECK. That control has now been
   falsified and repaired three times (points_balance, points_spent, reward_name), which is the
   strongest evidence in this file that the controls are being genuinely exercised.
+
+### Third run
+
+2026-08-15, Claude Code headless on Sonnet, **full pack** (`engineering-framework/domains`
+v0.6.1+18, not the taster pack the first two used), tool_version 0.10.0 at tool_commit
+`2b2d357`, against GrindPoints: **7 of 7 planted findings hit, 4 of 4 controls held, no false
+positives, no wrong-location, 9 unexpected findings.** Exit code 0, the first run to score
+clean on both halves.
+
+Scoring was controlled before it was believed: a copy of the run-state with every finding
+stripped and every finding-verdict flipped to `pass` was scored first and had to fail, which
+it did (exit 1, 0 hit, 7 missed). A scorer that has not been seen to fail cannot be read as
+having passed.
+
+The full pack was used deliberately. The taster pack and the full pack carry identical rule-id
+sets for d01, d05 and d16 (15, 18 and 21 ids, verified by comparing both), so `expected.json`'s
+taster-authored ids score a full-pack run without a mapping.
+
+This was the run the 0.10.0 release baton called for, and it earned its keep: it produced the
+first `self_assessment` data any run has carried, and putting that beside each domain's own
+verdict distribution surfaced **#211** immediately. d05 self-reported `high` confidence while
+10 of its 18 rules were verdicted could-not-evaluate, rendering identically to d01, which could
+not evaluate 2 of 15, in direct contradiction of README.md's promise that a finding from a
+shaky domain does not look identical to one from a solid one. No earlier run could have found
+this: before #192 landed there was no self-assessment data to compare against.
+
+Also confirmed for the first time against a real auditor rather than a test: the per-domain
+`domain_rules_fetched_at` and `domain_recorded_at` stamps (#205, #206) populate and are
+monotonic; `uninspected_evidence` came back `[]` and that claim is truthful (the fixture points
+at no external evidence store, verified with a control grep); and each domain's `limits` text
+cross-checks against its own verdicts, naming exactly the rules actually recorded as
+could-not-evaluate.
+
+### Fourth run
+
+2026-08-15, same setup, on the #211 branch build (tool_commit `f53df48`) to confirm the fix
+end-to-end: **6 of 7 planted findings hit, 4 of 4 controls held, no false positives, 9
+unexpected findings.** Exit code 1. The #211 fix rendered correctly on a live run, with the
+three domains' confidence cells reading distinctly for the first time.
+
+The single miss was D05-R08, verdicted `not-applicable` with reasoning rather than skipped.
+That takes D05-R08 to **2 hits in 4 recorded runs**, which retires this file's earlier reading
+of the first run's miss as ordinary variance. It is filed as **#213**: the fixture gives the
+layering rule no unit-testable seam to be missing, since both functions in
+`loyalty_writer.py` take a live connection and every test opens sqlite, so `not-applicable` and
+`finding` are both defensible readings of the same fixture. A golden expectation must not be a
+judgement call. It is deliberately left unfixed rather than repaired unattended: `expected.json`
+is the answer key for every later run, and a single green result after editing it would be
+indistinguishable from the coin landing heads again.
+
+These two runs together are the clearest demonstration yet of this file's first Known
+limitation. Same fixture, same model, same pack, forty minutes apart, and one scored clean
+while the other did not.
