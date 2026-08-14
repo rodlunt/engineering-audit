@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 from pathlib import Path
@@ -2903,7 +2904,10 @@ def test_self_assessment_limits_survive_the_move_into_the_table() -> None:
     pack = _pack()
     rendered = render_report(_base_run_state(pack), pack)
 
-    assert "1 of 2 domains reported a limit on its own assessment" in rendered
+    assert (
+        "Self-assessment limits: 1 of 2 selected domains reported a limit on "
+        "their own assessment" in rendered
+    )
     assert "d02: Teacup Logistics Handling: did not check archived routes" in rendered
 
 
@@ -2915,9 +2919,13 @@ def test_self_assessment_limits_block_still_renders_when_nobody_reported_one() -
     run_state.domain_results["d02"].self_assessment.limits = ""
     rendered = render_report(run_state, pack)
 
+    # Both domains answered and neither had a limit, which is a result. The
+    # sentence says both halves of it, so it cannot be read as the run below
+    # where nobody answered at all.
     assert (
-        "None of the 2 selected domains reported a limit on their own assessment."
-        in rendered
+        "Self-assessment limits: 0 of 2 selected domains reported a limit on "
+        "their own assessment, and all 2 selected domains recorded a "
+        "self-assessment" in rendered
     )
 
 
@@ -3678,3 +3686,252 @@ def test_ticked_note_grammar_across_the_four_count_combinations() -> None:
         pack,
     )
     assert "3 of 6 issues are ticked: the critical and high findings." in rendered
+
+
+# ---------------------------------------------------------------------------
+# #189: a check on the class, not a fourth check on one instance.
+#
+# The same defect has now been found four times in the renderer: a summary
+# that reads as a clean result when the underlying question was never asked.
+# #100 (172 not-applicable verdicts rendering as "0 findings"), #122 item 5 (a
+# could-not-run domain rendering as a bare zero), #184 (an evidence boundary
+# reading "0 of 16" when no domain recorded one) and #195 ("None of the N
+# domains reported a limit" when no domain was asked for a self-assessment).
+# Each fix landed only where the defect was found, which is how the fourth
+# shipped inside the block written to prevent the third.
+#
+# Every summary line stating a count over a population now goes through
+# report._count_over_population. These tests walk that registry, so a new
+# summary line inherits them instead of needing its own.
+# ---------------------------------------------------------------------------
+
+_POPULATION = 8
+
+
+def _three_states(key: str) -> dict[str, str]:
+    """One registered summary line rendered in the three states it has to keep
+    apart, at one population so nothing but the state differs between them."""
+    render = report_module._count_over_population
+    return {
+        "none found": render(
+            key,
+            found=0,
+            never_recorded=0,
+            population=_POPULATION,
+            never_recorded_population=_POPULATION,
+        ),
+        "none recorded": render(
+            key,
+            found=0,
+            never_recorded=_POPULATION,
+            population=_POPULATION,
+            never_recorded_population=_POPULATION,
+        ),
+        "N found": render(
+            key,
+            found=3,
+            never_recorded=0,
+            population=_POPULATION,
+            never_recorded_population=_POPULATION,
+        ),
+    }
+
+
+def test_every_counted_summary_reads_differently_in_all_three_states() -> None:
+    # The class check. Two of these three states producing the same sentence
+    # is the defect itself, whichever summary line it happens at.
+    assert report_module._COUNT_SUMMARIES, "no summary lines registered to walk"
+
+    for key in report_module._COUNT_SUMMARIES:
+        states = _three_states(key)
+        assert len(set(states.values())) == 3, (
+            f"{key}: two of the three states render the same sentence, which is "
+            f"the defect #100, #122, #184 and #195 all are: {states}"
+        )
+
+
+def test_a_summary_nobody_answered_never_leads_with_the_zero() -> None:
+    # "0 of 16" is the reassuring reading of a question that was never put,
+    # and it is the sentence a reader skims and quotes. The never-recorded
+    # state must carry its own count instead.
+    for key in report_module._COUNT_SUMMARIES:
+        none_recorded = _three_states(key)["none recorded"]
+        assert f"{_POPULATION} of {_POPULATION}" in none_recorded, (
+            f"{key}: the never-recorded state drops the count of how many "
+            f"never answered: {none_recorded!r}"
+        )
+        assert "0 of" not in none_recorded, (
+            f"{key}: the never-recorded state still leads with a zero count, "
+            f"which reads as a clean result: {none_recorded!r}"
+        )
+
+
+def test_a_mixed_population_carries_both_counts() -> None:
+    # Some answered, some did not. Dropping either count puts the sentence
+    # back into one of the two states the run is not in.
+    for key in report_module._COUNT_SUMMARIES:
+        mixed = report_module._count_over_population(
+            key,
+            found=3,
+            never_recorded=2,
+            population=_POPULATION,
+            never_recorded_population=_POPULATION,
+        )
+        assert f"3 of {_POPULATION}" in mixed, mixed
+        assert f"2 of {_POPULATION}" in mixed, mixed
+
+
+# What each collapsed summary block in the renderer is: routed through the
+# helper, or out of the class with the reason written down. The test below
+# holds this against the source, so a new <summary> block fails the suite
+# until somebody classifies it. That is the part that was missing when the
+# fourth instance shipped.
+_ROUTED = "routed through _count_over_population"
+
+_COLLAPSED_SUMMARY_BLOCKS = {
+    "_evidence_boundary_list": _ROUTED,
+    "_self_assessment_limits": _ROUTED,
+    "_could_not_evaluate_list": _ROUTED,
+    "_not_applicable_list": (
+        "out of the class: not-applicable is recorded on the rule verdict "
+        "itself, so a rule nobody asked about carries no verdict and is not in "
+        "this block's denominator. The domain that produced none of them is "
+        "counted by the could-not-evaluate summary, which is routed."
+    ),
+    "_domains_without_findings": (
+        "already three-state, and the block this class was first understood "
+        "in: the summary splits its zeros into audited and clean, every rule "
+        "set aside, and did not run at all, and prints all three counts."
+    ),
+    "_render_meta_block": (
+        "out of the class: the field count counts rows rendered, every row is "
+        "always rendered, and a value nobody recorded reads as 'unknown' or "
+        "'not checked' in its own row rather than dropping out of the count."
+    ),
+}
+
+
+def _functions_containing(marker: str) -> set[str]:
+    source = Path(report_module.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    return {
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+        and marker in (ast.get_source_segment(source, node) or "")
+    }
+
+
+def test_every_collapsed_summary_block_is_classified() -> None:
+    # The enumeration, held against the code rather than written down beside
+    # it. A summary line added without a decision about its never-recorded
+    # state fails here.
+    found = _functions_containing("<summary>")
+
+    assert found == set(_COLLAPSED_SUMMARY_BLOCKS), (
+        "the set of functions rendering a collapsed <summary> has changed. "
+        "Classify each new one in _COLLAPSED_SUMMARY_BLOCKS: route it through "
+        "_count_over_population, or write down why its population has no "
+        "never-recorded state.\n"
+        f"unclassified: {sorted(found - set(_COLLAPSED_SUMMARY_BLOCKS))}\n"
+        f"gone: {sorted(set(_COLLAPSED_SUMMARY_BLOCKS) - found)}"
+    )
+
+    routed_in_source = _functions_containing("_count_over_population(")
+    claimed = {
+        name
+        for name, verdict in _COLLAPSED_SUMMARY_BLOCKS.items()
+        if verdict == _ROUTED
+    }
+    assert claimed <= routed_in_source, (
+        "a block classified as routed does not call the helper: "
+        f"{sorted(claimed - routed_in_source)}"
+    )
+
+
+def test_every_registered_summary_is_actually_used() -> None:
+    # An entry in the registry that no summary line calls is a wording nobody
+    # renders, and would make the walking tests above pass over nothing.
+    source = Path(report_module.__file__).read_text(encoding="utf-8")
+    for key in report_module._COUNT_SUMMARIES:
+        assert source.count(f'"{key}"') >= 2, (
+            f"{key!r} is registered but never used at a summary line"
+        )
+
+
+def test_evidence_boundary_summary_carries_the_never_recorded_count() -> None:
+    # Issue #184, in the summary rather than only in the body: on a run where
+    # no domain recorded an evidence boundary, "0 of 2" was literally true and
+    # materially misleading, and it is the line a reader who does not open the
+    # details takes away.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    for result in run_state.domain_results.values():
+        result.uninspected_evidence = None
+    rendered = render_report(run_state, pack)
+
+    boundary = [s for s in _summaries(rendered) if s.startswith("Evidence boundary")]
+    assert boundary == [
+        "Evidence boundary: 2 of 2 completed domains never recorded what they "
+        "did not read, which is not the same as having read everything"
+    ], boundary
+
+
+def test_evidence_boundary_summary_still_counts_real_gaps() -> None:
+    # Control for the test above: with the boundaries recorded, the found
+    # count is the headline and no never-recorded clause is invented.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.domain_results["d01"].uninspected_evidence = [
+        "the shipment ledger service: not in this checkout"
+    ]
+    rendered = render_report(run_state, pack)
+
+    boundary = [s for s in _summaries(rendered) if s.startswith("Evidence boundary")]
+    assert boundary == [
+        "Evidence boundary: 1 of 2 completed domains reached verdicts without "
+        "reading something the repository points at"
+    ], boundary
+
+
+def test_self_assessment_limits_summary_says_when_nobody_was_asked() -> None:
+    # Issue #195. AUDIT.md never asks the auditor for a self_assessment, so
+    # every domain coming back None is the default rather than the edge case,
+    # and it used to render the same reassuring sentence as a run where every
+    # domain answered and none had a limit.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    for result in run_state.domain_results.values():
+        result.self_assessment = None
+    rendered = render_report(run_state, pack)
+
+    assert (
+        "Self-assessment limits: 2 of 2 selected domains never recorded a "
+        "self-assessment at all, which is not the same as reporting no limits"
+        in rendered
+    )
+    assert "reported a limit on their own assessment" not in rendered
+    # The confidence column is the house pattern this block now follows, and
+    # it must still say the same thing about the same run.
+    assert "not reported" in _domain_row(rendered, "d01")
+
+
+def test_could_not_evaluate_summary_carries_the_domain_that_never_ran() -> None:
+    # The same defect at a third site, in different units: the not-run domains
+    # were named in the body and missing from the summary, so a run with a
+    # whole domain that never started could be headlined as a small count of
+    # rules behind a closed <details>.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.domain_results["d02"] = DomainResult(
+        domain_id="d02", status="could-not-run", reason="no rules apply here"
+    )
+    rendered = render_report(run_state, pack)
+
+    could_not = [s for s in _summaries(rendered) if s.startswith("Could not evaluate")]
+    assert len(could_not) == 1, could_not
+    assert could_not[0].startswith("Could not evaluate: 1 of "), could_not
+    assert (
+        "1 of 2 selected domains did not run at all, so no rule in them was "
+        "evaluated" in could_not[0]
+    ), could_not
