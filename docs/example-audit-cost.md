@@ -19,6 +19,13 @@ other.
   CI. A larger repository will cost more per domain; domain count is the bigger lever.
 - **Wall clock**: 47 minutes end to end (begin_run 10:39 UTC to report 11:26 UTC),
   including issue filing and user confirmation pauses. Sweeps ran four at a time.
+- **Tool version**: 0.4.0. Not stamped into a retained report for this run, so it is
+  established here from this repository's own tag history rather than quoted from the run
+  itself: the run's 10:39 to 11:26 UTC window falls entirely between the commit tagged
+  `v0.4.0` (10:36 UTC, two minutes before begin_run) and the next tag, `v0.5.0` (17:50
+  UTC, well after the report rendered), so `v0.4.0` was the version in force throughout.
+  Rules pack commit: not recorded. The rules pack lives in a separate private repository,
+  and no commit reference for that run survives anywhere in this one.
 
 ### Per-domain consumption
 
@@ -144,3 +151,13 @@ non-fanned-out sweep), in repository (this repository's roughly 4,100 lines of P
 versus an external React SPA of roughly 344 files), and one of the two is missing its token
 figure entirely. Use each run to size its own host. Interpolating a number between them,
 in either direction, is a guess dressed up as a measurement.
+
+Both runs also predate protocol changes that made the tool write more per rule, so a figure
+recorded under the older protocol understates what a current run costs. `v0.9.0` made
+`Finding.precondition` and `DomainResult.uninspected_evidence` required output, adding a
+field per finding and per domain that the Claude Code (`v0.4.0`) and Codex (`0.5.1`) runs
+above never had to produce. `v0.9.1` added the coverage instruction on top of that,
+prompting the agent for an explicit coverage statement it previously was not asked for.
+Neither change touches how many rules get swept, only how much each finding and each
+domain writes, so budgeting from either row above for a run on the current tool means
+adding headroom for output these runs did not include.

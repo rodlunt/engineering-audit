@@ -30,8 +30,13 @@ import engineering_audit.server as server_module
 from engineering_audit.issues import CreatedIssue, IssueFilingError, LabelStatus
 from engineering_audit.rules import RulesPackError
 from engineering_audit.run_state_io import PROGRESS_FILENAME, load_run_progress_file
-from engineering_audit.schema import RunMeta, RunState
+from engineering_audit.schema import (
+    DOMAIN_RECORDED_AT_DESCRIPTION,
+    RunMeta,
+    RunState,
+)
 from engineering_audit.server import (
+    RUN_STATE_FILENAME,
     AppState,
     TelemetryStripError,
     _git_commit,
@@ -4016,3 +4021,153 @@ def test_record_domain_result_still_rejects_a_fresh_unjustified_not_applicable(
 
     with pytest.raises(ToolError, match="not-applicable"):
         _call(mcp, "record_domain_result", {"result": result})
+
+
+# ---------------------------------------------------------------------------
+# Per-domain server stamps (issue #205)
+#
+# The server used to stamp its own clock exactly twice, at begin_run and at
+# render_report, so a run knew how long it took and nothing about where that
+# time went. These record when each domain's rules were first served and when
+# its result was accepted. They are arrival stamps, not durations; see
+# DOMAIN_RECORDED_AT_DESCRIPTION for why the difference matters.
+# ---------------------------------------------------------------------------
+
+
+def test_both_stamp_maps_are_populated_for_every_domain_a_run_records(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out_dir = tmp_path / "audit-output"
+    _interrupted_run(tmp_path, monkeypatch, out_dir)
+
+    saved = _saved(out_dir)
+
+    assert set(saved.domain_rules_fetched_at or {}) == {"d01", "d02"}
+    assert set(saved.domain_recorded_at or {}) == {"d01", "d02"}
+    for domain_id in ("d01", "d02"):
+        fetched = (saved.domain_rules_fetched_at or {})[domain_id]
+        recorded = (saved.domain_recorded_at or {})[domain_id]
+        # The rules cannot be served after the result they were used for is
+        # accepted. Anything else means the stamps are being written in the
+        # wrong places.
+        assert fetched <= recorded
+
+
+def test_the_stamps_survive_into_the_finished_run_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Not just the recovery file: a report re-rendered from run-state.json
+    # months later should still carry where the run's time went.
+    out_dir = tmp_path / "audit-output"
+    mcp = _interrupted_run(tmp_path, monkeypatch, out_dir)
+    _call(mcp, "render_report", {"finished": "2026-08-09T10:00:00Z"})
+
+    restored = RunState.from_json(
+        (out_dir / RUN_STATE_FILENAME).read_text(encoding="utf-8")
+    )
+
+    assert set(restored.domain_rules_fetched_at or {}) == {"d01", "d02"}
+    assert set(restored.domain_recorded_at or {}) == {"d01", "d02"}
+
+
+def test_refetching_a_domain_does_not_move_its_first_fetch_stamp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out_dir = tmp_path / "audit-output"
+    mcp, _state = build_server(FIXTURE_PACK)
+    _begin_run(mcp, out_dir)
+    _preset_config_env(monkeypatch, tmp_path)
+    _call(mcp, "start_config", {})
+    _call(mcp, "get_config", {"timeout_s": 1})
+
+    _fetch_domain(mcp, "d01")
+    first = dict(_saved(out_dir).domain_rules_fetched_at or {})
+    _fetch_domain(mcp, "d01")
+
+    assert (_saved(out_dir).domain_rules_fetched_at or {}) == first
+
+
+def test_replacing_a_result_moves_its_recorded_at_stamp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Unlike the fetch stamp, this one names when the result CURRENTLY held
+    # was accepted, so a deliberate re-record legitimately moves it.
+    out_dir = tmp_path / "audit-output"
+    mcp = _interrupted_run(tmp_path, monkeypatch, out_dir)
+    before = (_saved(out_dir).domain_recorded_at or {})["d01"]
+
+    _record_d01_with_finding(mcp, replace=True)
+
+    after = (_saved(out_dir).domain_recorded_at or {})["d01"]
+    assert after >= before
+    assert (_saved(out_dir).domain_rules_fetched_at or {})["d01"] <= after
+
+
+def test_a_resumed_run_keeps_saved_stamps_and_does_not_stamp_carried_in_domains(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out_dir = tmp_path / "audit-output"
+    _interrupted_run(tmp_path, monkeypatch, out_dir)
+    saved_before = dict(_saved(out_dir).domain_recorded_at or {})
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    _begin_run(mcp, out_dir)
+    resumed = _begin_run(mcp, out_dir, resume=True)
+    assert resumed["resumed"] is True
+
+    # The resume itself stamps nothing: the carried-in domains keep exactly
+    # the stamps the interrupted run wrote, rather than being restamped with
+    # the time somebody happened to pick the run back up.
+    assert dict(_saved(out_dir).domain_recorded_at or {}) == saved_before
+
+
+def test_a_run_state_written_before_the_stamps_existed_loads_as_never_recorded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out_dir = tmp_path / "audit-output"
+    mcp = _interrupted_run(tmp_path, monkeypatch, out_dir)
+    _call(mcp, "render_report", {"finished": "2026-08-09T10:00:00Z"})
+
+    raw = json.loads((out_dir / RUN_STATE_FILENAME).read_text(encoding="utf-8"))
+    del raw["domain_rules_fetched_at"]
+    del raw["domain_recorded_at"]
+
+    restored = RunState.from_json(json.dumps(raw))
+
+    # None, not an empty map: never recorded and recorded-as-empty are
+    # different answers, the same distinction rules_fetched_domain_ids draws.
+    assert restored.domain_rules_fetched_at is None
+    assert restored.domain_recorded_at is None
+
+
+def test_never_recorded_and_recorded_empty_are_distinguishable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out_dir = tmp_path / "audit-output"
+    mcp = _interrupted_run(tmp_path, monkeypatch, out_dir)
+    _call(mcp, "render_report", {"finished": "2026-08-09T10:00:00Z"})
+    raw = json.loads((out_dir / RUN_STATE_FILENAME).read_text(encoding="utf-8"))
+
+    absent = dict(raw)
+    del absent["domain_rules_fetched_at"]
+    del absent["domain_recorded_at"]
+    emptied = dict(raw, domain_rules_fetched_at={}, domain_recorded_at={})
+
+    never = RunState.from_json(json.dumps(absent))
+    empty = RunState.from_json(json.dumps(emptied))
+
+    # Never asked and asked-with-nothing-to-say are different answers, the
+    # same distinction rules_fetched_domain_ids draws.
+    assert never.domain_rules_fetched_at is None
+    assert never.domain_recorded_at is None
+    assert empty.domain_rules_fetched_at == {}
+    assert empty.domain_recorded_at == {}
+
+
+def test_the_recorded_at_contract_still_says_these_are_not_durations() -> None:
+    # The stamps are trivially subtractable, and in a run that fans out to a
+    # subagent per domain the domains overlap, so the gap between two of them
+    # is not any domain's elapsed time. If that warning is ever dropped from
+    # the contract, the next reader has nothing telling them so.
+    assert "not per-domain durations" in DOMAIN_RECORDED_AT_DESCRIPTION.lower()
+    assert "issue #196" in DOMAIN_RECORDED_AT_DESCRIPTION

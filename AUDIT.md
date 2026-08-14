@@ -370,6 +370,18 @@ For each domain id in `selected_domain_ids`, in order:
    Until now nothing here asked for this at all. A 16-domain run came back with every domain
    reporting "no coverage reported" and it read as an auditor that could not be bothered, when
    the protocol had simply never mentioned the field (issue #181).
+
+   **Record the domain's `self_assessment` as well**: `confidence` and `limits`. `confidence` is
+   your own claim about how sure you are of this domain's verdicts, not a measurement of
+   anything the server can check, the same distinction `coverage` draws above; the schema
+   accepts only `high`, `medium` or `low`, nothing else. `limits` is free text naming what would
+   move that confidence: a domain you swept quickly, a rule you leaned on a stale reading of, or
+   ground a second pass would want to cover. Leave it blank if there is nothing to add.
+
+   This field renders as the domain's Confidence column and rides along on every finding filed
+   from that domain, and README.md promises a reader that a finding from a shaky domain does not
+   look identical to one from a solid one. Until now nothing here asked for it either, so every
+   run rendered "not reported" regardless of how sure the auditor actually was (issue #192).
 7. Call `record_domain_result` with the full `DomainResult` payload. A `could-not-run` domain
    from step 2 carries no rule verdicts and no findings, only the `status` and `reason`; every
    other domain carries a verdict for each of its rules. If it errors:
