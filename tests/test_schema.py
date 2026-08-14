@@ -88,6 +88,20 @@ def test_finding_without_matching_verdict_rejected() -> None:
         )
 
 
+def test_finding_verdict_without_matching_finding_rejected() -> None:
+    with pytest.raises(ValidationError):
+        DomainResult(
+            domain_id="d01",
+            status="completed",
+            uninspected_evidence=[],
+            rule_verdicts=[
+                RuleVerdict(rule_id="D01-R01", verdict=Verdict.pass_),
+                RuleVerdict(rule_id="D01-R02", verdict=Verdict.FINDING),
+            ],
+            findings=[],
+        )
+
+
 def test_domain_result_accepts_unique_rule_verdicts() -> None:
     result = DomainResult(
         domain_id="d01",
