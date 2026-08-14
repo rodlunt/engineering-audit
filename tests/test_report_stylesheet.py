@@ -74,11 +74,13 @@ def _rendered_report() -> str:
     result = DomainResult(
         domain_id="d01",
         status="completed",
+        uninspected_evidence=[],
         rule_verdicts=verdicts,
         findings=[
             Finding(
                 rule_id="D01-R02",
                 severity=Severity.HIGH,
+                precondition="the rule presumes a gnome ledger, present at ledger/beds.py:1",
                 title="Set shared-bed flag for bed-14",
                 location="src/very/deeply/nested/module/implementation_detail.py:1234-5678",
                 body_md="Two gnomes share bed-14 without the shared-bed flag set.",
@@ -530,6 +532,7 @@ def _rendered_report_with_na_and_cne() -> str:
     result = DomainResult(
         domain_id="d01",
         status="completed",
+        uninspected_evidence=[],
         rule_verdicts=verdicts,
         self_assessment=SelfAssessment(confidence="high", limits=""),
         coverage=Coverage(files_inspected=12, files_skipped=0),

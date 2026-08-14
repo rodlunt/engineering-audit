@@ -10,6 +10,10 @@ from pydantic import ValidationError
 from engineering_audit.rules import load_pack
 from engineering_audit.schema import (
     ENVIRONMENT_KEYS,
+    FINDING_PRECONDITION_SCHEMA_VERSION,
+    LEGACY_FINDING_PRECONDITION_CONTEXT_KEY,
+    LEGACY_NOT_APPLICABLE_CONTEXT_KEY,
+    LEGACY_UNINSPECTED_EVIDENCE_CONTEXT_KEY,
     MAX_ENVIRONMENT_VALUE_CHARS,
     RUN_STATE_SCHEMA_VERSION,
     AuditConfig,
@@ -67,11 +71,13 @@ def test_finding_without_matching_verdict_rejected() -> None:
         DomainResult(
             domain_id="d01",
             status="completed",
+            uninspected_evidence=[],
             rule_verdicts=[RuleVerdict(rule_id="D01-R01", verdict=Verdict.pass_)],
             findings=[
                 Finding(
                     rule_id="D01-R02",
                     severity=Severity.HIGH,
+                    precondition="the rule presumes a gnome ledger, present at ledger/beds.py:1",
                     title="Gnomes double-booked",
                     location="beds.py:12",
                     body_md="Two gnomes, one bed, no flag.",
@@ -86,6 +92,7 @@ def test_domain_result_accepts_unique_rule_verdicts() -> None:
     result = DomainResult(
         domain_id="d01",
         status="completed",
+        uninspected_evidence=[],
         rule_verdicts=[
             RuleVerdict(rule_id="D01-R01", verdict=Verdict.pass_),
             RuleVerdict(
@@ -107,6 +114,7 @@ def test_domain_result_rejects_duplicate_rule_id_in_rule_verdicts() -> None:
         DomainResult(
             domain_id="d01",
             status="completed",
+            uninspected_evidence=[],
             rule_verdicts=[
                 RuleVerdict(rule_id="D01-R01", verdict=Verdict.pass_),
                 # Carries its note, so the failure below is the duplicate this
@@ -132,6 +140,7 @@ def test_could_not_run_with_findings_rejected() -> None:
                 Finding(
                     rule_id="D01-R01",
                     severity=Severity.LOW,
+                    precondition="the rule presumes a gnome ledger, present at ledger/beds.py:1",
                     title="x",
                     location="a.py",
                     body_md="x",
@@ -151,12 +160,116 @@ def _finding(location: str, rule_id: str = "D01-R01") -> Finding:
     return Finding(
         rule_id=rule_id,
         severity=Severity.LOW,
+        precondition="the rule presumes a gnome ledger, present at ledger/beds.py:1",
         title="x",
         location=location,
         body_md="x",
         issue_title="x",
         issue_body="x",
     )
+
+
+def _finding_payload(**overrides: object) -> dict[str, object]:
+    """A finding as the wire sends it, so the precondition tests exercise the
+    same path record_domain_result does rather than a kwargs constructor."""
+    payload: dict[str, object] = {
+        "rule_id": "D01-R01",
+        "severity": "low",
+        "title": "x",
+        "location": "beds.py:1",
+        "body_md": "x",
+        "issue_title": "x",
+        "issue_body": "x",
+        "precondition": "the rule presumes a gnome ledger, present at ledger/beds.py:1",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_finding_without_a_precondition_is_rejected() -> None:
+    # Issue #178: a finding is the one verdict that used to require no claim
+    # about whether the rule applies here at all, which is how a missing
+    # release SBOM became a defect in a repository that publishes no releases.
+    payload = _finding_payload()
+    del payload["precondition"]
+    with pytest.raises(ValidationError) as excinfo:
+        Finding.model_validate(payload)
+    message = str(excinfo.value)
+    # The error has to name the way out, not just the refusal: an auditor that
+    # cannot state the precondition has a correct verdict available, and a
+    # message that only says "rejected" invites it to invent one instead.
+    assert "not-applicable" in message
+
+
+def test_finding_with_a_blank_precondition_is_rejected() -> None:
+    # Whitespace is the obvious way to satisfy a required-field check without
+    # making the claim, so it is refused the same way the not-applicable note
+    # refuses it.
+    with pytest.raises(ValidationError):
+        Finding.model_validate(_finding_payload(precondition="   "))
+
+
+def test_finding_without_a_precondition_loads_from_a_pre_v5_file() -> None:
+    # The #100 bargain, applied to #178: a constraint that did not exist when
+    # a run-state was written must not make that file unreadable, or every
+    # saved run before this release stops re-rendering. Only a loader may
+    # relax it, and only for a file that predates it.
+    payload = _finding_payload()
+    del payload["precondition"]
+    finding = Finding.model_validate(
+        payload, context={LEGACY_FINDING_PRECONDITION_CONTEXT_KEY: True}
+    )
+    assert finding.precondition is None
+
+
+def test_completed_domain_without_an_evidence_boundary_is_rejected() -> None:
+    # Issue #179. The two states this separates are a domain that read
+    # everything the repository pointed at and a domain that never considered
+    # the question, which used to serialise identically.
+    with pytest.raises(ValidationError) as excinfo:
+        DomainResult(domain_id="d01", status="completed")
+    assert "uninspected_evidence" in str(excinfo.value)
+
+
+def test_completed_domain_may_record_an_empty_evidence_boundary() -> None:
+    # An explicit empty list is the common answer and a claim in its own
+    # right: the repository points at nothing this domain did not read. It
+    # must be distinguishable from never having been asked.
+    result = DomainResult(domain_id="d01", status="completed", uninspected_evidence=[])
+    assert result.uninspected_evidence == []
+
+
+def test_could_not_run_domain_needs_no_evidence_boundary() -> None:
+    # A could-not-run domain records no verdicts at all, so there is nothing
+    # for a boundary to qualify. Demanding one here would be ceremony.
+    result = DomainResult(
+        domain_id="d01", status="could-not-run", reason="no ledger in this repository"
+    )
+    assert result.uninspected_evidence is None
+
+
+def test_evidence_boundary_rejects_a_blank_entry() -> None:
+    with pytest.raises(ValidationError):
+        DomainResult(domain_id="d01", status="completed", uninspected_evidence=["  "])
+
+
+def test_a_pre_v5_file_is_relaxed_for_both_v5_constraints_and_the_v4_one() -> None:
+    # The three constraints are gated on the version that introduced each, and
+    # the flags accumulate. A version-3 file predates all three; reading the
+    # gate as a chain that returns on the first match would hold it to two
+    # rules written after it was saved.
+    from engineering_audit.schema import _legacy_validation_context
+
+    assert _legacy_validation_context(3) == {
+        LEGACY_NOT_APPLICABLE_CONTEXT_KEY: True,
+        LEGACY_FINDING_PRECONDITION_CONTEXT_KEY: True,
+        LEGACY_UNINSPECTED_EVIDENCE_CONTEXT_KEY: True,
+    }
+    assert _legacy_validation_context(4) == {
+        LEGACY_FINDING_PRECONDITION_CONTEXT_KEY: True,
+        LEGACY_UNINSPECTED_EVIDENCE_CONTEXT_KEY: True,
+    }
+    assert _legacy_validation_context(FINDING_PRECONDITION_SCHEMA_VERSION) is None
 
 
 def test_finding_accepts_a_bare_path_location() -> None:
@@ -254,6 +367,7 @@ def _run_state_json_with_unjustified_not_applicable(schema_version: int) -> str:
             "d01": DomainResult(
                 domain_id="d01",
                 status="completed",
+                uninspected_evidence=[],
                 rule_verdicts=[
                     RuleVerdict(
                         rule_id="D01-R01",
@@ -303,6 +417,7 @@ def test_the_legacy_exemption_does_not_extend_to_could_not_evaluate() -> None:
             "d01": DomainResult(
                 domain_id="d01",
                 status="completed",
+                uninspected_evidence=[],
                 rule_verdicts=[
                     RuleVerdict(
                         rule_id="D01-R01",
@@ -332,6 +447,7 @@ def test_run_progress_from_json_tolerates_an_unjustified_not_applicable_below_ve
             "d01": DomainResult(
                 domain_id="d01",
                 status="completed",
+                uninspected_evidence=[],
                 rule_verdicts=[
                     RuleVerdict(
                         rule_id="D01-R01",
@@ -361,6 +477,7 @@ def test_validate_completeness_raises_listing_missing_rule_ids_when_a_verdict_is
     result = DomainResult(
         domain_id="d01",
         status="completed",
+        uninspected_evidence=[],
         rule_verdicts=[
             RuleVerdict(rule_id="D01-R01", verdict=Verdict.pass_),
             RuleVerdict(rule_id="D01-R02", verdict=Verdict.pass_),
@@ -380,6 +497,7 @@ def test_validate_completeness_passes_when_every_rule_has_a_verdict() -> None:
     result = DomainResult(
         domain_id="d01",
         status="completed",
+        uninspected_evidence=[],
         rule_verdicts=[
             RuleVerdict(rule_id=r.id, verdict=Verdict.pass_) for r in d01.rules
         ],
@@ -458,6 +576,7 @@ def test_run_state_rejects_domain_results_key_mismatched_with_domain_id() -> Non
                 "d01": DomainResult(
                     domain_id="d02",
                     status="completed",
+                    uninspected_evidence=[],
                     rule_verdicts=[
                         RuleVerdict(rule_id="D02-R01", verdict=Verdict.pass_)
                     ],
@@ -541,6 +660,7 @@ def test_run_state_round_trip_json() -> None:
             "d01": DomainResult(
                 domain_id="d01",
                 status="completed",
+                uninspected_evidence=[],
                 rule_verdicts=[RuleVerdict(rule_id="D01-R01", verdict=Verdict.pass_)],
                 coverage=Coverage(files_inspected=3, files_skipped=0),
                 self_assessment=SelfAssessment(confidence="high", limits=""),
@@ -563,7 +683,12 @@ def test_validate_completeness_rejects_verdicts_for_unknown_rule_ids() -> None:
     verdicts = [RuleVerdict(rule_id=rule.id, verdict="pass") for rule in d01.rules] + [
         RuleVerdict(rule_id="D01-T99", verdict="pass")
     ]
-    result = DomainResult(domain_id="d01", status="completed", rule_verdicts=verdicts)
+    result = DomainResult(
+        domain_id="d01",
+        status="completed",
+        uninspected_evidence=[],
+        rule_verdicts=verdicts,
+    )
     with pytest.raises(IncompleteResultError) as excinfo:
         validate_completeness(d01, result)
     assert "D01-T99" in str(excinfo.value)
@@ -609,13 +734,15 @@ def test_domain_result_defaults_to_no_consulted_sources() -> None:
     # Backward compatible with data written before this field existed: a
     # DomainResult built or parsed with no consulted_sources key at all gets
     # an empty list, not a missing-field error.
-    result = DomainResult(domain_id="d01", status="completed")
+    result = DomainResult(domain_id="d01", status="completed", uninspected_evidence=[])
     assert result.consulted_sources == []
 
 
 def test_domain_result_parses_json_missing_the_consulted_sources_key() -> None:
     raw = json.loads(
-        DomainResult(domain_id="d01", status="completed").model_dump_json()
+        DomainResult(
+            domain_id="d01", status="completed", uninspected_evidence=[]
+        ).model_dump_json()
     )
     assert "consulted_sources" not in raw or raw["consulted_sources"] == []
     del raw["consulted_sources"]
@@ -632,6 +759,7 @@ def test_validate_consulted_sources_accepts_a_source_for_one_of_the_domains_own_
     result = DomainResult(
         domain_id="d01",
         status="completed",
+        uninspected_evidence=[],
         rule_verdicts=[
             RuleVerdict(rule_id=r.id, verdict=Verdict.pass_) for r in d01.rules
         ],
@@ -685,7 +813,7 @@ def test_validate_consulted_sources_runs_independently_of_domain_result_status()
 
 def test_run_state_defaults_to_current_schema_version_when_freshly_built() -> None:
     state = RunState(meta=_meta(), config=_config())
-    assert state.schema_version == RUN_STATE_SCHEMA_VERSION == 4
+    assert state.schema_version == RUN_STATE_SCHEMA_VERSION == 5
     assert state.filed_issue_urls == {}
     assert state.feedback_issue_url is None
 
@@ -725,10 +853,10 @@ def test_run_state_written_before_the_fetch_record_loads_as_unknown() -> None:
     assert restored.rules_fetch_unknown_domain_ids == []
 
 
-def test_run_state_serialised_json_carries_schema_version_4() -> None:
+def test_run_state_serialised_json_carries_schema_version_5() -> None:
     state = RunState(meta=_meta(), config=_config())
     dumped = json.loads(state.to_json())
-    assert dumped["schema_version"] == 4
+    assert dumped["schema_version"] == 5
 
 
 def test_run_state_from_json_missing_schema_version_is_treated_as_version_1() -> None:
@@ -768,7 +896,7 @@ def test_run_state_from_json_accepts_current_version() -> None:
         feedback_issue_url="https://example.invalid/issues/2",
     )
     restored = RunState.from_json(state.to_json())
-    assert restored.schema_version == 4
+    assert restored.schema_version == 5
     assert restored == state
 
 
@@ -822,7 +950,11 @@ def test_run_state_from_json_tolerates_a_domain_result_missing_consulted_sources
     state = RunState(
         meta=_meta(),
         config=_config(),
-        domain_results={"d01": DomainResult(domain_id="d01", status="completed")},
+        domain_results={
+            "d01": DomainResult(
+                domain_id="d01", status="completed", uninspected_evidence=[]
+            )
+        },
     )
     raw = json.loads(state.to_json())
     del raw["domain_results"]["d01"]["consulted_sources"]
@@ -841,6 +973,7 @@ def test_run_state_round_trips_consulted_sources_through_json() -> None:
             "d01": DomainResult(
                 domain_id="d01",
                 status="completed",
+                uninspected_evidence=[],
                 rule_verdicts=[
                     RuleVerdict(rule_id=r.id, verdict=Verdict.pass_) for r in d01.rules
                 ],
@@ -870,25 +1003,26 @@ def test_run_state_from_json_rejects_a_higher_schema_version_naming_both_numbers
     assert "upgrade" in message.lower()
 
 
-def test_run_state_version_gate_accepts_4_and_rejects_5_naming_both_numbers() -> None:
-    # 4 is the current version (not-applicable verdicts must carry a note);
-    # 5 does not exist yet. Named with literal numbers, not just
-    # RUN_STATE_SCHEMA_VERSION +/- 1, so a future bump that forgets to update
-    # this test is caught rather than silently sliding the goalposts with it.
-    assert RUN_STATE_SCHEMA_VERSION == 4
+def test_run_state_version_gate_accepts_5_and_rejects_6_naming_both_numbers() -> None:
+    # 5 is the current version (findings must carry a precondition, and a
+    # completed domain must record its evidence boundary); 6 does not exist
+    # yet. Named with literal numbers, not just RUN_STATE_SCHEMA_VERSION +/- 1,
+    # so a future bump that forgets to update this test is caught rather than
+    # silently sliding the goalposts with it.
+    assert RUN_STATE_SCHEMA_VERSION == 5
     state = RunState(meta=_meta(), config=_config())
     raw = json.loads(state.to_json())
 
-    raw["schema_version"] = 4
-    accepted = RunState.from_json(json.dumps(raw))
-    assert accepted.schema_version == 4
-
     raw["schema_version"] = 5
+    accepted = RunState.from_json(json.dumps(raw))
+    assert accepted.schema_version == 5
+
+    raw["schema_version"] = 6
     with pytest.raises(RunStateVersionError) as excinfo:
         RunState.from_json(json.dumps(raw))
     message = str(excinfo.value)
+    assert "6" in message
     assert "5" in message
-    assert "4" in message
 
 
 def test_run_state_still_requires_a_config_after_run_progress_was_added() -> None:
@@ -943,34 +1077,38 @@ def test_run_progress_from_json_rejects_a_higher_schema_version() -> None:
     assert str(RUN_STATE_SCHEMA_VERSION) in str(excinfo.value)
 
 
-def test_run_progress_version_gate_accepts_4_and_rejects_5_naming_both_numbers() -> (
+def test_run_progress_version_gate_accepts_5_and_rejects_6_naming_both_numbers() -> (
     None
 ):
     # RunProgress shares RUN_STATE_SCHEMA_VERSION with RunState deliberately
-    # (see its own docstring), so the version bump to 4 applies here too even
+    # (see its own docstring), so the version bump to 5 applies here too even
     # though filed_issues itself needed no change. Named with literal numbers
     # for the same reason as RunState's equivalent test: catching a future
     # bump that forgets to update the pinned values.
-    assert RUN_STATE_SCHEMA_VERSION == 4
+    assert RUN_STATE_SCHEMA_VERSION == 5
     raw = json.loads(RunProgress(meta=_meta(), config=_config()).to_json())
 
-    raw["schema_version"] = 4
-    accepted = RunProgress.from_json(json.dumps(raw))
-    assert accepted.schema_version == 4
-
     raw["schema_version"] = 5
+    accepted = RunProgress.from_json(json.dumps(raw))
+    assert accepted.schema_version == 5
+
+    raw["schema_version"] = 6
     with pytest.raises(RunStateVersionError) as excinfo:
         RunProgress.from_json(json.dumps(raw))
     message = str(excinfo.value)
+    assert "6" in message
     assert "5" in message
-    assert "4" in message
 
 
 def test_run_progress_rejects_a_domain_results_key_that_is_not_its_domain_id() -> None:
     with pytest.raises(ValidationError):
         RunProgress(
             meta=_meta(),
-            domain_results={"d02": DomainResult(domain_id="d01", status="completed")},
+            domain_results={
+                "d02": DomainResult(
+                    domain_id="d01", status="completed", uninspected_evidence=[]
+                )
+            },
         )
 
 
@@ -986,6 +1124,7 @@ def test_run_progress_carries_consulted_sources_the_same_way_run_state_does() ->
             "d01": DomainResult(
                 domain_id="d01",
                 status="completed",
+                uninspected_evidence=[],
                 consulted_sources=[_consulted_source(rule_id="D01-R01")],
             )
         },

@@ -1854,8 +1854,9 @@ def _register_result_tools(mcp: MCPServer, state: AppState) -> None:
         The payload itself is pydantic-validated by DomainResult (finding and
         verdict consistency, could-not-run reason, could-not-evaluate and
         not-applicable notes, both of which are the verdict's stated reason,
-        and that every consulted_sources entry has a non-blank url, title
-        and why). On top of that: the domain must be one of the domains
+        every finding's precondition, the completed domain's
+        uninspected_evidence, and that every consulted_sources entry has a
+        non-blank url, title and why). On top of that: the domain must be one of the domains
         selected for this run, a completed result must carry a verdict for
         every rule the domain defines, and every consulted_sources rule_id
         must be one of this domain's own rules; a completed result missing a
@@ -1873,6 +1874,16 @@ def _register_result_tools(mcp: MCPServer, state: AppState) -> None:
         would be trivially satisfied by fetching the text and ignoring it,
         which destroys the signal, while the verdicts and the fact that they
         were unsupported both survive this way. Tell the user when you see it.
+
+        Two fields are refused outright rather than recorded with a warning,
+        because unlike an unfetched domain there is no signal to preserve by
+        letting them through: a finding without a `precondition` (issue #178)
+        and a completed domain without `uninspected_evidence` (issue #179).
+        Both are one sentence the auditor already knows the answer to, and in
+        both cases being unable to write it is the finding. A finding whose
+        precondition cannot be named belongs at not-applicable, and a domain
+        that cannot say what it did not read has not established what its
+        absence claims are worth. See AUDIT.md step 3 and step 4.
         """
         run = _require_run(state)
         config = _require_config(run)

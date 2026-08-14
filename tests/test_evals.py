@@ -74,6 +74,7 @@ def _finding(rule_id: str, location: str) -> Finding:
     return Finding(
         rule_id=rule_id,
         severity=Severity.MEDIUM,
+        precondition="the rule presumes a gnome ledger, present at ledger/beds.py:1",
         title=f"Planted violation of {rule_id}",
         location=location,
         body_md="Planted for the eval harness test suite.",
@@ -127,6 +128,7 @@ def _build_run_state(
         domain_results[domain_id] = DomainResult(
             domain_id=domain_id,
             status="completed",
+            uninspected_evidence=[],
             rule_verdicts=verdicts,
             findings=result_findings,
         )
@@ -361,6 +363,7 @@ def test_finding_in_a_domain_outside_spec_domains_does_not_count_towards_scoring
     extra_domain_result = DomainResult(
         domain_id="d02",
         status="completed",
+        uninspected_evidence=[],
         rule_verdicts=[RuleVerdict(rule_id="D01-R05", verdict=Verdict.FINDING)],
         findings=[_finding("D01-R05", "schema.sql")],
     )
@@ -386,6 +389,7 @@ def test_unexpected_findings_include_findings_from_domains_outside_spec_domains(
     extra_domain_result = DomainResult(
         domain_id="d02",
         status="completed",
+        uninspected_evidence=[],
         rule_verdicts=[RuleVerdict(rule_id="D02-R99", verdict=Verdict.FINDING)],
         findings=[_finding("D02-R99", "somewhere.py")],
     )

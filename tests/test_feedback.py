@@ -53,6 +53,7 @@ def _domain_results() -> dict[str, DomainResult]:
     finding = Finding(
         rule_id="D01-R02",
         severity=Severity.HIGH,
+        precondition="the rule presumes a gnome ledger, present at ledger/beds.py:1",
         title="a finding title that must never appear in feedback",
         location="ledger/beds.py:42",
         body_md="the finding body, which must also never appear in feedback",
@@ -63,6 +64,7 @@ def _domain_results() -> dict[str, DomainResult]:
         "d01": DomainResult(
             domain_id="d01",
             status="completed",
+            uninspected_evidence=[],
             rule_verdicts=[
                 RuleVerdict(rule_id="D01-R01", verdict=Verdict.pass_),
                 RuleVerdict(rule_id="D01-R02", verdict=Verdict.FINDING),
@@ -85,6 +87,7 @@ def _domain_results() -> dict[str, DomainResult]:
         "d02": DomainResult(
             domain_id="d02",
             status="completed",
+            uninspected_evidence=[],
             rule_verdicts=[RuleVerdict(rule_id="D02-R01", verdict=Verdict.pass_)],
             findings=[],
             self_assessment=SelfAssessment(confidence="medium"),
@@ -449,6 +452,7 @@ def test_coverage_section_reports_no_coverage_reported_when_domain_has_none() ->
         "d03": DomainResult(
             domain_id="d03",
             status="completed",
+            uninspected_evidence=[],
             rule_verdicts=[RuleVerdict(rule_id="D03-R01", verdict=Verdict.pass_)],
         ),
     }
@@ -461,6 +465,7 @@ def test_coverage_section_includes_the_note_when_one_is_recorded() -> None:
         "d01": DomainResult(
             domain_id="d01",
             status="completed",
+            uninspected_evidence=[],
             coverage=Coverage(
                 files_inspected=12, files_skipped=1, note="one binary asset skipped"
             ),
@@ -556,7 +561,10 @@ def test_write_report_completes_for_a_mixed_naive_and_aware_timestamp_pair(
         config=AuditConfig(selected_domain_ids=["d01"], issue_mode="report"),
         domain_results={
             "d01": DomainResult(
-                domain_id="d01", status="completed", rule_verdicts=verdicts
+                domain_id="d01",
+                status="completed",
+                uninspected_evidence=[],
+                rule_verdicts=verdicts,
             )
         },
     )
@@ -810,6 +818,7 @@ def test_build_issue_trailing_line_matches_the_wording_file_issues_sends() -> No
     finding = Finding(
         rule_id="D01-R02",
         severity=Severity.HIGH,
+        precondition="the rule presumes a gnome ledger, present at ledger/beds.py:1",
         title="Set shared-bed flag for bed-14",
         location="ledger/beds.py:42",
         body_md="x",
@@ -835,6 +844,7 @@ def test_build_issue_trailing_line_raises_for_a_sourceless_rule() -> None:
     finding = Finding(
         rule_id="D01-R04",
         severity=Severity.LOW,
+        precondition="the rule presumes a gnome ledger, present at ledger/beds.py:1",
         title="x",
         location="x.py",
         body_md="x",
@@ -990,6 +1000,7 @@ def test_build_issue_trailing_line_strips_markdown_from_the_citation() -> None:
     finding = Finding(
         rule_id="D01-R01",
         severity=Severity.LOW,
+        precondition="the rule presumes a gnome ledger, present at ledger/beds.py:1",
         title="x",
         location="x.py",
         body_md="x",
@@ -1050,6 +1061,7 @@ def test_build_issue_trailing_line_with_no_domain_context_matches_pre_130_output
     finding = Finding(
         rule_id="D01-R02",
         severity=Severity.HIGH,
+        precondition="the rule presumes a gnome ledger, present at ledger/beds.py:1",
         title="x",
         location="ledger/beds.py:42",
         body_md="x",
@@ -1075,6 +1087,7 @@ def test_build_issue_trailing_line_inserts_the_domain_note_when_given_context() 
     finding = Finding(
         rule_id="D01-R02",
         severity=Severity.HIGH,
+        precondition="the rule presumes a gnome ledger, present at ledger/beds.py:1",
         title="x",
         location="ledger/beds.py:42",
         body_md="x",

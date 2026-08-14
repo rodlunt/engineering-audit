@@ -16,10 +16,10 @@ on the parts that were not run end to end.
 ```
 codex mcp add engineering-audit \
   --env ENGINEERING_AUDIT_RULES_DIR=<path-to-rules-clone> \
-  -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.8.1 engineering-audit-mcp
+  -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.9.0 engineering-audit-mcp
 ```
 
-`@v0.8.1` pins the install to the current tagged release rather than the moving `main` branch;
+`@v0.9.0` pins the install to the current tagged release rather than the moving `main` branch;
 see the root README's [How to use](../../README.md#how-to-use) section for how to find the latest tag
 and update to it deliberately.
 

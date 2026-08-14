@@ -863,6 +863,100 @@ def _reason_groups_html(reason_to_rule_ids: dict[str, list[str]]) -> str:
 _NO_REASON_RECORDED = "No reason recorded for this verdict"
 
 
+def _evidence_boundary_list(
+    selected: dict[str, DomainResult],
+    domain_titles: dict[str, str],
+) -> str:
+    """What the run did not read, per domain, and which domains never said
+    (issue #179).
+
+    Three outcomes, reported as three, for the same reason
+    :func:`_domains_without_findings` splits its zeros three ways. A domain
+    that read everything the repository points at, a domain that read less and
+    said so, and a domain that never answered the question all used to be
+    indistinguishable here, and the third is the one that produced #179: a run
+    whose d02 knew the requirements were in an issue tracker it had not opened,
+    recorded that against one rule's free-text note, and filed eleven findings
+    in the same domain asserting those requirements did not exist.
+
+    A domain that recorded nothing is not reported as a domain that read
+    everything. It is named, and counted, and its findings are not annotated
+    on their cards, because there is nothing recorded to annotate them with.
+    """
+    completed = {
+        domain_id: result
+        for domain_id, result in selected.items()
+        if result.status == "completed"
+    }
+    if not completed:
+        return (
+            "<h3>Evidence boundary</h3>"
+            "<p>No domain completed, so no domain recorded what it did not read.</p>"
+        )
+
+    never_recorded = [
+        domain_id
+        for domain_id, result in completed.items()
+        if result.uninspected_evidence is None
+    ]
+    with_gaps = {
+        domain_id: result.uninspected_evidence
+        for domain_id, result in completed.items()
+        if result.uninspected_evidence
+    }
+    read_everything = len(completed) - len(never_recorded) - len(with_gaps)
+
+    if not never_recorded and not with_gaps:
+        return (
+            "<h3>Evidence boundary</h3>"
+            f'<p class="ok">All {len(completed)} completed '
+            f"{_plural(len(completed), 'domain')} recorded that the repository points "
+            "at nothing they did not read.</p>"
+        )
+
+    summary = (
+        f"Evidence boundary: {len(with_gaps)} of {len(completed)} completed "
+        f"{_plural(len(completed), 'domain')} reached verdicts without reading "
+        "something the repository points at"
+    )
+    parts = [
+        "<p>A finding says this repository does not do something. That claim is only as "
+        "good as the places the audit looked. This is what each domain recorded that it "
+        "did not open.</p>"
+    ]
+    if with_gaps:
+        rows = []
+        for domain_id, entries in with_gaps.items():
+            items = "".join(f"<li>{_esc(entry.strip())}</li>" for entry in entries)
+            rows.append(
+                f"<li><strong>{_esc(domain_id)}: {_esc(domain_titles[domain_id])}</strong>"
+                f"<ul>{items}</ul></li>"
+            )
+        parts.append(f'<ul class="boundary-domains">{"".join(rows)}</ul>')
+    if never_recorded:
+        names = ", ".join(
+            f"{_esc(domain_titles[domain_id])} ({_esc(domain_id)})"
+            for domain_id in never_recorded
+        )
+        parts.append(
+            f"<p><strong>{len(never_recorded)} completed "
+            f"{_plural(len(never_recorded), 'domain')} never recorded an evidence "
+            f"boundary at all</strong>, which is not the same as having none: "
+            f"{names}. Their findings carry no scope caveat because none was "
+            "recorded to carry.</p>"
+        )
+    if read_everything:
+        parts.append(
+            f"<p>The remaining {read_everything} completed "
+            f"{_plural(read_everything, 'domain')} recorded that the repository "
+            "points at nothing they did not read.</p>"
+        )
+    return (
+        "<h3>Evidence boundary</h3>"
+        f"<details open><summary>{_esc(summary)}</summary>{''.join(parts)}</details>"
+    )
+
+
 def _could_not_evaluate_list(
     selected: dict[str, DomainResult],
     rule_index: dict[str, Rule],
@@ -1444,6 +1538,65 @@ def _finding_domain_note_html(
     return f'<div class="finding-domain-note muted">{note}</div>'
 
 
+def _finding_precondition_html(precondition: str | None) -> str:
+    """The line stating the precondition that makes this rule apply here
+    (issue #178).
+
+    A finding is two claims welded together: the rule says do X, which the
+    reference line below vouches for, and this repository does not do X, which
+    nothing vouches for. Neither of those is the claim that failed in the run
+    that produced #178. What failed was a third claim, left silent: that the
+    rule applies here at all. Eleven findings cited real standards, quoted them
+    correctly, and applied them to a one-person pre-release tool with no
+    release pipeline and no external users.
+
+    So the precondition is printed on the card, above the body, in the same
+    reading position as the location: both answer "why should I believe this
+    finding is about my repository". When it was never recorded, that is
+    printed too, in the same words the domain note uses for a missing
+    confidence, rather than the line simply being absent: a card with nothing
+    where the precondition goes reads as a card that had nothing to say.
+    """
+    if precondition and precondition.strip():
+        return (
+            '<div class="finding-precondition">Applies here because: '
+            f"{_esc(precondition.strip())}</div>"
+        )
+    return (
+        '<div class="finding-precondition muted">'
+        "No precondition recorded: this finding does not say what makes its rule "
+        "apply to this repository.</div>"
+    )
+
+
+def _finding_evidence_boundary_html(uninspected_evidence: list[str] | None) -> str:
+    """The scope caveat carried onto every finding from a domain that read
+    less than the repository points at (issue #179).
+
+    Deliberately rendered on all of the domain's findings rather than on the
+    ones this code guesses are absence claims. Whether "no acceptance criteria
+    exist" is refuted by an issue tracker nobody opened is a judgement about
+    the finding's content, and a classifier here would be the tool pre-writing
+    that verdict on evidence it does not have (hardening rule 12). The reader
+    has the finding and the boundary side by side and can make the call; the
+    tool's job is to stop the boundary being invisible, which is what it was.
+
+    Silent when the domain recorded an empty list, which is the common case and
+    means the repository points at nothing the audit did not read. Silent too
+    when the field is None: that is a pre-0.9.0 run, and the Tool performance
+    summary already reports the field as never recorded for the run as a whole,
+    so repeating it on every card would be noise.
+    """
+    if not uninspected_evidence:
+        return ""
+    items = "".join(f"<li>{_esc(entry.strip())}</li>" for entry in uninspected_evidence)
+    return (
+        '<div class="finding-boundary"><strong>Reached without reading:</strong> '
+        "this domain recorded evidence the repository points at that the audit did "
+        f"not open.<ul>{items}</ul></div>"
+    )
+
+
 def _finding_card(
     domain_title: str,
     finding: Finding,
@@ -1451,6 +1604,7 @@ def _finding_card(
     pack_is_v2: bool,
     confidence: str | None,
     rules_fetched: bool | None,
+    uninspected_evidence: list[str] | None = None,
 ) -> str:
     severity = finding.severity.value
     badge = f'<span class="severity-badge severity-{_esc(severity)}">{_esc(severity)}</span>'
@@ -1467,6 +1621,8 @@ def _finding_card(
         f'<span class="finding-rule">({_esc(finding.rule_id)})</span> '
         f'<span class="finding-domain">{_esc(domain_title)}</span></div>'
         f'<div class="finding-location">{_esc(finding.location)}</div>'
+        f"{_finding_precondition_html(finding.precondition)}"
+        f"{_finding_evidence_boundary_html(uninspected_evidence)}"
         f"{_finding_domain_note_html(confidence, rules_fetched)}"
         f'<div class="finding-body">{_markdownish(finding.body_md)}</div>'
         f'<div class="finding-reference">{_esc(_reference_line(rule, pack_is_v2))}</div>'
@@ -1596,6 +1752,7 @@ def _findings_section(
                 pack_is_v2,
                 confidence_map[domain_id],
                 _fetch_status_to_bool(fetch_status[domain_id]),
+                selected[domain_id].uninspected_evidence,
             )
             for domain_id, finding in group
         )
@@ -2066,6 +2223,8 @@ def render_report(run_state: RunState, pack: RulesPack) -> str:
         f"{_domain_table(run_state, selected, domain_titles, all_findings)}</div>"
         f'<div class="perf-block"><h3>Run totals</h3>'
         f"{_findings_rollup(all_findings, selected, run_state.meta.assistant, run_state.meta.model)}</div>"
+        f'<div class="perf-block prominent">'
+        f"{_evidence_boundary_list(selected, domain_titles)}</div>"
         f'<div class="perf-block prominent">'
         f"{_could_not_evaluate_list(selected, rule_index, domain_titles)}</div>"
         f'<div class="perf-block prominent">'

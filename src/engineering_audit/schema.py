@@ -39,6 +39,9 @@ __all__ = [
     "RUN_STATE_SCHEMA_VERSION",
     "NOT_APPLICABLE_NOTE_SCHEMA_VERSION",
     "LEGACY_NOT_APPLICABLE_CONTEXT_KEY",
+    "FINDING_PRECONDITION_SCHEMA_VERSION",
+    "LEGACY_FINDING_PRECONDITION_CONTEXT_KEY",
+    "LEGACY_UNINSPECTED_EVIDENCE_CONTEXT_KEY",
     "RunStateVersionError",
     "IncompleteResultError",
     "UnknownRuleIdError",
@@ -81,12 +84,30 @@ __all__ = [
 # RULES_FETCHED_FIELD_DESCRIPTION for the full reasoning. Bumping would have
 # cost real compatibility (a file this build writes would be refused outright
 # by every earlier one) to say something the file already says.
-RUN_STATE_SCHEMA_VERSION = 4
+#
+# Bumped to 5 when a finding began requiring a precondition (issue #178), the
+# same way not-applicable began requiring a note at 4. Same reasoning as that
+# bump: no field changed shape, and the version number is the only thing in the
+# document that can tell a reader whether the file was written before or after
+# the constraint existed. A file at 4 or below predates it and is loaded with it
+# relaxed; a file at 5 or above was written by a build that enforced it.
+#
+# DomainResult.uninspected_evidence (issue #179) rides along on this same bump
+# rather than earning its own. It carries its own "never recorded" signal in the
+# document (None, as distinct from an explicit empty list), so on the #110
+# reasoning it would not have needed a bump at all; it is only mentioned here so
+# a reader of a version-5 file knows which two changes landed together.
+RUN_STATE_SCHEMA_VERSION = 5
 
 # The first schema version whose not-applicable verdicts must carry a note.
 # Named rather than written as a bare 4 in the two from_json methods, so the
 # next bump cannot silently move this line with it.
 NOT_APPLICABLE_NOTE_SCHEMA_VERSION = 4
+
+# The first schema version whose findings must carry a precondition. Named for
+# the same reason NOT_APPLICABLE_NOTE_SCHEMA_VERSION is: the next bump must not
+# drag this line along with it.
+FINDING_PRECONDITION_SCHEMA_VERSION = 5
 
 # Validation-context key that relaxes the not-applicable note requirement.
 # Set only by RunState.from_json and RunProgress.from_json, only for a file
@@ -107,6 +128,31 @@ def _not_applicable_note_relaxed(context: object) -> bool:
     return bool(
         isinstance(context, dict) and context.get(LEGACY_NOT_APPLICABLE_CONTEXT_KEY)
     )
+
+
+# Validation-context keys that relax the two constraints added at schema
+# version 5. Exact counterparts of LEGACY_NOT_APPLICABLE_CONTEXT_KEY above, for
+# the same reason and with the same rules: set only by the two from_json
+# methods, only for a file that predates the version that introduced the
+# constraint, and never by a tool recording a fresh result.
+#
+# One key per constraint rather than a single "pre-v5" key. They happen to have
+# landed in the same release, but a key names the constraint it excuses, not
+# the release it arrived in, so a later build that needs to relax one without
+# the other does not have to unpick a shared flag to do it.
+LEGACY_FINDING_PRECONDITION_CONTEXT_KEY = "allow_finding_without_precondition"
+LEGACY_UNINSPECTED_EVIDENCE_CONTEXT_KEY = "allow_domain_without_evidence_boundary"
+
+
+def _context_flag_set(context: object, key: str) -> bool:
+    """True when the current validation was handed ``key`` set truthy.
+
+    Anything other than a mapping carrying that key is treated as "enforce the
+    requirement", for the same reason _not_applicable_note_relaxed fails
+    closed: an unrecognised context must not open a hole in a constraint by
+    accident.
+    """
+    return bool(isinstance(context, dict) and context.get(key))
 
 
 class Verdict(str, Enum):
@@ -193,6 +239,51 @@ class Finding(BaseModel):
     body_md: str
     issue_title: str
     issue_body: str
+    precondition: str | None = Field(
+        default=None,
+        description=(
+            "Required. The precondition this rule presumes, and where it was "
+            "observed to hold in this repository (e.g. 'the rule presumes a "
+            "release pipeline, present at .github/workflows/release.yml'). If "
+            "you cannot name where the precondition holds, the honest verdict "
+            "is not-applicable, not finding."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _precondition_required(self, info: ValidationInfo) -> "Finding":
+        # A finding used to be the one verdict that could be emitted without
+        # any claim about scope. not-applicable has to name the precondition
+        # that does NOT hold (since #100), could-not-evaluate has to say why it
+        # could not be reached, and pass is a specific claim that you looked.
+        # finding demanded nothing, so nothing in the protocol ever asked the
+        # auditor whether the rule's precondition holds here at all.
+        #
+        # A 16-domain run came back with 11 findings in d02 and 7 in d08 and
+        # not one not-applicable in either domain, while marking 147 rules
+        # not-applicable everywhere else (issue #178). Among them: no release
+        # SBOM, against a project with no release pipeline; no CVSS-scored
+        # vulnerability register, against a project with one dependency; no
+        # assistive-technology evaluation, against a personal tool whose only
+        # user is its author. Every one of those is a real rule, correctly
+        # quoted, applied where its precondition does not hold.
+        #
+        # Naming the precondition is a cheap, specific claim, and being unable
+        # to name it is exactly the signal that the verdict should have been
+        # not-applicable. So it is demanded here, the same way #100 demanded
+        # the not-applicable note. The exemption is the same too: a run-state
+        # written before this constraint existed must stay re-renderable, and
+        # only the loader may opt into that, never a caller recording a fresh
+        # finding.
+        if not (self.precondition and self.precondition.strip()):
+            if _context_flag_set(info.context, LEGACY_FINDING_PRECONDITION_CONTEXT_KEY):
+                return self
+            raise ValueError(
+                f"rule {self.rule_id}: a finding must state the precondition the rule "
+                "presumes and where it holds in this repository; if you cannot name "
+                "where it holds, the verdict is not-applicable, not finding"
+            )
+        return self
 
     @model_validator(mode="after")
     def _location_matches_documented_format(self) -> "Finding":
@@ -336,6 +427,19 @@ class DomainResult(BaseModel):
         default=None,
         description="Required when status is could-not-run: why the domain could not be audited.",
     )
+    uninspected_evidence: list[str] | None = Field(
+        default=None,
+        description=(
+            "Required on a completed domain. The evidence stores this repository "
+            "points at that you did not read while verdicting this domain, one "
+            "entry each, naming the store and where the repository points at it "
+            "(e.g. 'GitHub Issues: README.md:9 sends requirements here; not "
+            "inspected'). An empty list is a claim in its own right: the "
+            "repository points at nothing you did not read. Findings are not "
+            "rejected because of what is listed here; the report shows it beside "
+            "them so a reader can judge the scope the verdicts were reached in."
+        ),
+    )
 
     @field_validator("status")
     @classmethod
@@ -360,6 +464,44 @@ class DomainResult(BaseModel):
             raise ValueError(
                 f"domain {self.domain_id}: duplicate rule_verdict(s) for rule id(s) "
                 f"{duplicates}; each rule may carry at most one verdict per domain result"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _uninspected_evidence_recorded(self, info: ValidationInfo) -> "DomainResult":
+        # A domain that swept the checkout and a domain that swept the checkout
+        # while the repository pointed its requirements somewhere else entirely
+        # used to produce identical output. Nothing in a DomainResult could
+        # tell them apart, so nothing in the report could either.
+        #
+        # In the run that produced issue #179, d02 recorded on one rule that
+        # "the README points to external issue records that were not
+        # inspected", correctly returning could-not-evaluate for it, and then
+        # filed 11 findings in the same domain asserting those very
+        # requirements did not exist, each citing README.md. The knowledge was
+        # in the run. It reached one verdict's free-text note and stopped
+        # there, because there was nowhere for it to be recorded once for the
+        # domain and nothing that would have carried it into the report.
+        #
+        # So it is asked once per completed domain. An empty list is a real
+        # answer and the common one; None means the question was never
+        # reached. Only a could-not-run domain is exempt, since it records no
+        # verdicts at all for the boundary to qualify.
+        if self.status != "completed":
+            return self
+        if self.uninspected_evidence is None:
+            if _context_flag_set(info.context, LEGACY_UNINSPECTED_EVIDENCE_CONTEXT_KEY):
+                return self
+            raise ValueError(
+                f"domain {self.domain_id}: status is completed but uninspected_evidence "
+                "was not recorded; list the evidence stores this repository points at "
+                "that you did not read, or record an empty list to claim there are none"
+            )
+        blank = [entry for entry in self.uninspected_evidence if not entry.strip()]
+        if blank:
+            raise ValueError(
+                f"domain {self.domain_id}: uninspected_evidence contains a blank entry; "
+                "each entry names one store and where the repository points at it"
             )
         return self
 
@@ -692,10 +834,20 @@ def _legacy_validation_context(version: int) -> dict[str, bool] | None:
 
     One place, used by both from_json methods, so a file that is legacy for
     one model cannot be legacy for the other.
+
+    Each constraint is gated on the version that introduced it, independently,
+    and the flags accumulate: a version-3 file predates both the
+    not-applicable note and the two version-5 constraints, and must be relaxed
+    for all three. Reading this as a chain of elifs, or returning on the first
+    match, would hold an old file to a rule that postdates it.
     """
+    context: dict[str, bool] = {}
     if version < NOT_APPLICABLE_NOTE_SCHEMA_VERSION:
-        return {LEGACY_NOT_APPLICABLE_CONTEXT_KEY: True}
-    return None
+        context[LEGACY_NOT_APPLICABLE_CONTEXT_KEY] = True
+    if version < FINDING_PRECONDITION_SCHEMA_VERSION:
+        context[LEGACY_FINDING_PRECONDITION_CONTEXT_KEY] = True
+        context[LEGACY_UNINSPECTED_EVIDENCE_CONTEXT_KEY] = True
+    return context or None
 
 
 # Shared by RunState and RunProgress, which carry these two fields with

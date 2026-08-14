@@ -87,11 +87,13 @@ def _record_d01_with_finding(mcp, replace: bool = False) -> dict:
     result = {
         "domain_id": "d01",
         "status": "completed",
+        "uninspected_evidence": [],
         "rule_verdicts": verdicts,
         "findings": [
             {
                 "rule_id": "D01-R02",
                 "severity": "high",
+                "precondition": "the rule presumes a gnome ledger, present at ledger/beds.py:1",
                 "title": "Two gnomes share bed-14 without the shared-bed flag",
                 "location": "ledger/beds.py:42",
                 "body_md": "bed-14 holds two gnomes.",
@@ -108,6 +110,7 @@ def _record_d02_all_pass(mcp, replace: bool = False) -> dict:
     result = {
         "domain_id": "d02",
         "status": "completed",
+        "uninspected_evidence": [],
         "rule_verdicts": _all_pass_verdicts(_domain(mcp, "d02")),
     }
     return _call(mcp, "record_domain_result", {"result": result, "replace": replace})
@@ -127,6 +130,7 @@ def _completed_d01(mcp) -> dict:
     return {
         "domain_id": "d01",
         "status": "completed",
+        "uninspected_evidence": [],
         "rule_verdicts": _all_pass_verdicts(_domain(mcp, "d01")),
         "findings": [],
     }
@@ -210,6 +214,75 @@ def test_get_domain_tool_raises_a_clear_error_for_an_unknown_id() -> None:
     assert "d99" in message
     assert "d01" in message
     assert "d02" in message
+
+
+def _d01_result_payload(tmp_path, monkeypatch) -> tuple:
+    """A server with a configured run and a valid completed d01 payload, for
+    the two tests below to break in one specific way each."""
+    mcp, _state = build_server(FIXTURE_PACK)
+    _configured_run(mcp, tmp_path, monkeypatch)
+    _fetch_domain(mcp, "d01")
+    verdicts = _all_pass_verdicts(_domain(mcp, "d01"))
+    verdicts[1] = {"rule_id": "D01-R02", "verdict": "finding"}
+    return mcp, {
+        "domain_id": "d01",
+        "status": "completed",
+        "uninspected_evidence": [],
+        "rule_verdicts": verdicts,
+        "findings": [
+            {
+                "rule_id": "D01-R02",
+                "severity": "high",
+                "precondition": "the rule presumes a bed ledger, present at ledger/beds.py:1",
+                "title": "x",
+                "location": "ledger/beds.py:42",
+                "body_md": "x",
+                "issue_title": "x",
+                "issue_body": "x",
+            }
+        ],
+    }
+
+
+def test_record_domain_result_refuses_a_finding_with_no_precondition(
+    tmp_path, monkeypatch
+) -> None:
+    # Issue #178, at the wire boundary the auditor actually meets. The schema
+    # tests prove the model rejects it; this proves nothing between the tool
+    # call and the model quietly fills it in or lets it through.
+    mcp, result = _d01_result_payload(tmp_path, monkeypatch)
+    del result["findings"][0]["precondition"]
+    with pytest.raises(ToolError) as excinfo:
+        _call(mcp, "record_domain_result", {"result": result})
+    assert "not-applicable" in str(excinfo.value)
+
+
+def test_record_domain_result_refuses_a_completed_domain_with_no_evidence_boundary(
+    tmp_path, monkeypatch
+) -> None:
+    # Issue #179. An omitted field is the exact shape the run that produced
+    # the issue would have submitted, so it is the one that has to be refused.
+    mcp, result = _d01_result_payload(tmp_path, monkeypatch)
+    del result["uninspected_evidence"]
+    with pytest.raises(ToolError) as excinfo:
+        _call(mcp, "record_domain_result", {"result": result})
+    assert "uninspected_evidence" in str(excinfo.value)
+
+
+def test_record_domain_result_accepts_a_declared_evidence_boundary(
+    tmp_path, monkeypatch
+) -> None:
+    # Declaring a gap must not block the domain: the tool's job is to make the
+    # boundary visible next to the findings, not to refuse a run that is
+    # honest about it (hardening rule 12, do not pre-write the verdict).
+    mcp, result = _d01_result_payload(tmp_path, monkeypatch)
+    result["uninspected_evidence"] = [
+        "GitHub Issues: README.md:9 sends requirements here; not inspected"
+    ]
+    response = _call(mcp, "record_domain_result", {"result": result})
+    assert response["domain_id"] == "d01"
+    assert response["status"] == "completed"
+    assert response["finding_count"] == 1
 
 
 def test_build_server_strips_opentelemetry_middleware_but_tools_still_work() -> None:
@@ -1611,6 +1684,7 @@ def test_record_domain_result_rejects_a_domain_not_selected(
     result = {
         "domain_id": "d02",
         "status": "completed",
+        "uninspected_evidence": [],
         "rule_verdicts": _all_pass_verdicts(_domain(mcp, "d02")),
     }
     with pytest.raises(ToolError) as excinfo:
@@ -1629,6 +1703,7 @@ def test_record_domain_result_rejects_an_incomplete_completed_result(
     result = {
         "domain_id": "d01",
         "status": "completed",
+        "uninspected_evidence": [],
         "rule_verdicts": incomplete_verdicts,
     }
     with pytest.raises(ToolError) as excinfo:
@@ -1694,6 +1769,7 @@ def test_record_domain_result_accepts_consulted_sources_for_the_domains_own_rule
     result = {
         "domain_id": "d01",
         "status": "completed",
+        "uninspected_evidence": [],
         "rule_verdicts": _all_pass_verdicts(_domain(mcp, "d01")),
         "consulted_sources": [_consulted_source(rule_id="D01-R01")],
     }
@@ -1710,6 +1786,7 @@ def test_record_domain_result_rejects_a_consulted_source_rule_id_outside_the_dom
     result = {
         "domain_id": "d01",
         "status": "completed",
+        "uninspected_evidence": [],
         "rule_verdicts": _all_pass_verdicts(_domain(mcp, "d01")),
         # D02-R01 belongs to d02, not the d01 result it is attached to here.
         "consulted_sources": [_consulted_source(rule_id="D02-R01")],
@@ -2173,11 +2250,13 @@ def test_file_issues_and_report_issues_section_produce_the_same_body(
             "result": {
                 "domain_id": "d01",
                 "status": "completed",
+                "uninspected_evidence": [],
                 "rule_verdicts": verdicts,
                 "findings": [
                     {
                         "rule_id": "D01-R02",
                         "severity": "high",
+                        "precondition": "the rule presumes a gnome ledger, present at ledger/beds.py:1",
                         "title": "Two gnomes share bed-14 without the shared-bed flag",
                         "location": "ledger/beds.py:42",
                         "body_md": "bed-14 holds two gnomes.",
@@ -2245,11 +2324,13 @@ def test_file_issues_refuses_a_finding_on_a_sourceless_rule(
     result = {
         "domain_id": "d01",
         "status": "completed",
+        "uninspected_evidence": [],
         "rule_verdicts": verdicts,
         "findings": [
             {
                 "rule_id": "D01-R04",
                 "severity": "low",
+                "precondition": "the rule presumes a gnome ledger, present at ledger/beds.py:1",
                 "title": "beard-length average not recalculated on retirement",
                 "location": "ledger/beards.py:10",
                 "body_md": "x",
@@ -2312,11 +2393,13 @@ def test_file_issues_partial_failure_reports_filed_and_unfiled(
             "result": {
                 "domain_id": "d02",
                 "status": "completed",
+                "uninspected_evidence": [],
                 "rule_verdicts": verdicts,
                 "findings": [
                     {
                         "rule_id": "D02-R01",
                         "severity": "low",
+                        "precondition": "the rule presumes a gnome ledger, present at ledger/beds.py:1",
                         "title": "A d02 finding",
                         "location": "x.py",
                         "body_md": "x",
@@ -2358,11 +2441,13 @@ def _record_d01_with_two_findings_on_one_rule(mcp) -> dict:
     result = {
         "domain_id": "d01",
         "status": "completed",
+        "uninspected_evidence": [],
         "rule_verdicts": verdicts,
         "findings": [
             {
                 "rule_id": "D01-R02",
                 "severity": "high",
+                "precondition": "the rule presumes a gnome ledger, present at ledger/beds.py:1",
                 "title": "bed-14 has no shared-bed flag",
                 "location": "ledger/beds.py:42",
                 "body_md": "bed-14 holds two gnomes.",
@@ -2372,6 +2457,7 @@ def _record_d01_with_two_findings_on_one_rule(mcp) -> dict:
             {
                 "rule_id": "D01-R02",
                 "severity": "medium",
+                "precondition": "the rule presumes a gnome ledger, present at ledger/beds.py:1",
                 "title": "bed-19 has no shared-bed flag",
                 "location": "ledger/beds.py:57",
                 "body_md": "bed-19 holds two gnomes.",
@@ -3605,6 +3691,7 @@ def _record_d01_all_pass_without_fetching(mcp, replace: bool = False) -> dict:
     result = {
         "domain_id": "d01",
         "status": "completed",
+        "uninspected_evidence": [],
         "rule_verdicts": _all_pass_verdicts(_domain(mcp, "d01")),
     }
     return _call(mcp, "record_domain_result", {"result": result, "replace": replace})
@@ -3718,7 +3805,7 @@ def test_the_finished_run_state_carries_the_fetched_domains(
     assert saved_state["rules_fetch_unknown_domain_ids"] == []
     # No schema bump came with the field: an older reader can ignore it and
     # still render every report it renders today.
-    assert saved_state["schema_version"] == 4
+    assert saved_state["schema_version"] == 5
 
 
 def test_render_report_hands_back_the_domains_whose_rules_were_never_fetched(
@@ -3772,6 +3859,7 @@ def test_a_resumed_run_keeps_the_fetches_made_before_the_interruption(
     d02 = {
         "domain_id": "d02",
         "status": "completed",
+        "uninspected_evidence": [],
         "rule_verdicts": _all_pass_verdicts(_domain(resumed, "d02")),
     }
     unfetched = _call(resumed, "record_domain_result", {"result": d02})

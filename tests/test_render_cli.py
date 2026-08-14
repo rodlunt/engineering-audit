@@ -52,11 +52,13 @@ def _run_state() -> RunState:
             "d01": DomainResult(
                 domain_id="d01",
                 status="completed",
+                uninspected_evidence=[],
                 rule_verdicts=_all_pass_verdicts(d01),
             ),
             "d02": DomainResult(
                 domain_id="d02",
                 status="completed",
+                uninspected_evidence=[],
                 rule_verdicts=_all_pass_verdicts(d02),
             ),
         },
@@ -208,6 +210,7 @@ def test_main_incomplete_run_state_raises_report_error_as_clean_exit(
             "d01": DomainResult(
                 domain_id="d01",
                 status="completed",
+                uninspected_evidence=[],
                 rule_verdicts=_all_pass_verdicts(d01),
             ),
         },
