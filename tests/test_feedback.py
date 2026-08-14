@@ -21,6 +21,7 @@ from engineering_audit.feedback import (
 )
 from engineering_audit.rules import Rule
 from engineering_audit.schema import (
+    ENVIRONMENT_KEYS,
     ConsultedSource,
     Coverage,
     DomainResult,
@@ -747,17 +748,11 @@ def test_build_feedback_body_matches_build_feedback_sections_for_every_consent_c
     domain_results = _domain_results()
     sections = build_feedback_sections(meta, domain_results)
 
-    flag_names = (
-        "coverage",
-        "rollup",
-        "self_assessment",
-        "environment",
-        "consulted_sources",
-        "verdict_distribution",
-        "duration",
-        "rules_fetched",
-        "reader_conclusions",
-    )
+    # Derived from the model's own fields, not a hand-copied tuple (issue
+    # #188): a flag added to TelemetryConsent with no matching section must
+    # fail this test the same way it fails build_feedback_body, rather than
+    # silently passing because the copy here was never updated.
+    flag_names = tuple(TelemetryConsent.model_fields)
     combinations = [
         {name: (name == chosen) for name in flag_names} for chosen in flag_names
     ]
@@ -772,6 +767,30 @@ def test_build_feedback_body_matches_build_feedback_sections_for_every_consent_c
             if consent_kwargs[name]:
                 expected_parts.append(sections[name])
         assert body == "\n\n".join(expected_parts)
+
+
+def test_build_feedback_body_raises_on_consent_flag_with_no_matching_section(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A consent flag with no matching section must be a loud failure, not a
+    # consent that silently does nothing (issue #188). This can't be
+    # provoked through TelemetryConsent itself without changing the model,
+    # so it is provoked here by making build_feedback_sections' returned
+    # mapping miss one of the flags it iterates: the same shape a real drift
+    # between the model and build_feedback_sections would take.
+    import engineering_audit.feedback as feedback_module
+
+    def _incomplete_sections(*args: object, **kwargs: object) -> dict[str, str]:
+        sections = build_feedback_sections(_meta(), _domain_results())
+        del sections["environment"]
+        return sections
+
+    monkeypatch.setattr(
+        feedback_module, "build_feedback_sections", _incomplete_sections
+    )
+
+    with pytest.raises(ValueError, match="environment"):
+        build_feedback_body("hi", _meta(), TelemetryConsent(), _domain_results())
 
 
 def test_verdict_distribution_duration_and_rules_fetched_are_omitted_unless_consented() -> (
@@ -1104,3 +1123,45 @@ def test_build_issue_trailing_line_inserts_the_domain_note_when_given_context() 
         "this finding as unsupported until the domain is redone. Reference: "
         "invented for test fixtures only, no external source"
     )
+
+
+def test_docs_feedback_names_every_consented_section() -> None:
+    # docs/feedback.md must name every section build_feedback_body gates on
+    # a TelemetryConsent flag, so the document and the code cannot drift
+    # apart again the way issue #186 found them (four of nine sections
+    # listed, and the environment bullet describing an open field that is
+    # actually the closed three-key ENVIRONMENT_KEYS set). The mapping below
+    # is checked against TelemetryConsent's own fields first, so a flag
+    # added to the model without updating this test fails loudly rather
+    # than the doc silently going stale again.
+    doc_text = (Path(__file__).parent.parent / "docs" / "feedback.md").read_text()
+
+    section_phrase_by_flag = {
+        "coverage": "Coverage statistics",
+        "rollup": "Findings rollup",
+        "self_assessment": "Self-assessment",
+        "environment": "Environment information",
+        "consulted_sources": "Consulted sources",
+        "verdict_distribution": "Rule verdict distribution",
+        "duration": "Duration",
+        "rules_fetched": "Rules fetched",
+        "reader_conclusions": "Reader's own conclusions",
+    }
+
+    assert set(section_phrase_by_flag) == set(TelemetryConsent.model_fields), (
+        "section_phrase_by_flag has drifted from TelemetryConsent's own "
+        "fields; update the mapping to match"
+    )
+
+    for flag_name, phrase in section_phrase_by_flag.items():
+        assert phrase in doc_text, (
+            f"docs/feedback.md does not name the {flag_name!r} section "
+            f"(expected the phrase {phrase!r})"
+        )
+
+    # The environment bullet's own claim: exactly the three ENVIRONMENT_KEYS,
+    # never the assistant/model/tool-version fields the code comment at
+    # schema.py's ENVIRONMENT_KEYS says are deliberately excluded.
+    for key in ENVIRONMENT_KEYS:
+        assert f"`{key}`" in doc_text
+    assert "anything else the calling agent chose to record" not in doc_text

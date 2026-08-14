@@ -712,24 +712,22 @@ def build_feedback_body(
         sections.append(free_text.strip())
 
     sections.append(sections_by_name["run_metadata"])
-    if consent.coverage:
-        sections.append(sections_by_name["coverage"])
-    if consent.rollup:
-        sections.append(sections_by_name["rollup"])
-    if consent.self_assessment:
-        sections.append(sections_by_name["self_assessment"])
-    if consent.environment:
-        sections.append(sections_by_name["environment"])
-    if consent.consulted_sources:
-        sections.append(sections_by_name["consulted_sources"])
-    if consent.verdict_distribution:
-        sections.append(sections_by_name["verdict_distribution"])
-    if consent.duration:
-        sections.append(sections_by_name["duration"])
-    if consent.rules_fetched:
-        sections.append(sections_by_name["rules_fetched"])
-    if consent.reader_conclusions:
-        sections.append(sections_by_name["reader_conclusions"])
+    # Driven from TelemetryConsent.model_fields rather than nine hand-written
+    # if-statements (issue #188): a flag added to the model with no matching
+    # section used to collect consent that did nothing, silently, because
+    # nothing here checked the two stayed in step. This checks every flag
+    # against sections_by_name on every call, not only the ones this
+    # particular consent has set, so the gap surfaces the moment a flag is
+    # added rather than only when a caller happens to tick that one box.
+    for flag_name in TelemetryConsent.model_fields:
+        if flag_name not in sections_by_name:
+            raise ValueError(
+                f"consent flag {flag_name!r} has no matching feedback section; "
+                "add one to build_feedback_sections or remove the flag from "
+                "TelemetryConsent"
+            )
+        if getattr(consent, flag_name):
+            sections.append(sections_by_name[flag_name])
 
     return "\n\n".join(sections)
 
