@@ -37,6 +37,8 @@ __all__ = [
     "RunState",
     "RunProgress",
     "RUN_STATE_SCHEMA_VERSION",
+    "DOMAIN_RULES_FETCHED_AT_DESCRIPTION",
+    "DOMAIN_RECORDED_AT_DESCRIPTION",
     "NOT_APPLICABLE_NOTE_SCHEMA_VERSION",
     "LEGACY_NOT_APPLICABLE_CONTEXT_KEY",
     "FINDING_PRECONDITION_SCHEMA_VERSION",
@@ -895,6 +897,47 @@ RULES_FETCH_UNKNOWN_FIELD_DESCRIPTION = (
 )
 
 
+# The two per-domain stamp maps (issue #205). Shared by RunState and
+# RunProgress for the same reason the fetch descriptions above are: the
+# resumed run and the finished run are the same run, and a description that
+# drifted between the two would be a second definition of what a stamp means.
+#
+# No schema_version bump, on the #110 reasoning. An older reader can ignore
+# both maps and nothing it renders becomes wrong, and the distinction a
+# version number would have carried is already in the document: absent means
+# never recorded, an empty dict means recorded and empty.
+_STAMP_CONTRACT = (
+    "\n\nTaken from the server's own clock, so this needs no consent toggle and "
+    "carries none of the self-reported qualifier the assistant-supplied header "
+    "rows do (issue #176).\n\n"
+    "None and an empty map are different answers. None means stamps were never "
+    "recorded at all, which is every run-state written before this field "
+    "existed. An empty map means this build recorded and there was nothing to "
+    "record. A domain carried in by a resume is simply absent from the map, "
+    "because this run did not stamp it; absent is the honest answer and "
+    "inventing a stamp would not be."
+)
+
+DOMAIN_RULES_FETCHED_AT_DESCRIPTION = (
+    "Domain id -> UTC timestamp of the FIRST get_domain call that served that "
+    "domain's rule text this run. First rather than last, because it is the "
+    "'started looking at this domain' marker; a later re-fetch of the same "
+    "domain does not move it." + _STAMP_CONTRACT
+)
+
+DOMAIN_RECORDED_AT_DESCRIPTION = (
+    "Domain id -> UTC timestamp of the record_domain_result call that accepted "
+    "that domain's result. A replace=True re-record overwrites it, because the "
+    "stamp names when the result now held was accepted.\n\n"
+    "These are arrival stamps, NOT per-domain durations, and nothing may "
+    "present them as such. In a run that sweeps domains one at a time the gap "
+    "between consecutive stamps approximates a domain's elapsed time; in a run "
+    "that fans out to a subagent per domain the domains overlap and those gaps "
+    "mean nothing. Deriving a duration needs the orchestration shape first, "
+    "which is a separate question (issue #196)." + _STAMP_CONTRACT
+)
+
+
 class RunState(BaseModel):
     """The full state of one audit run: metadata, config and per-domain results."""
 
@@ -918,6 +961,14 @@ class RunState(BaseModel):
     rules_fetch_unknown_domain_ids: list[str] = Field(
         default_factory=list,
         description=RULES_FETCH_UNKNOWN_FIELD_DESCRIPTION,
+    )
+    domain_rules_fetched_at: dict[str, str] | None = Field(
+        default=None,
+        description=DOMAIN_RULES_FETCHED_AT_DESCRIPTION,
+    )
+    domain_recorded_at: dict[str, str] | None = Field(
+        default=None,
+        description=DOMAIN_RECORDED_AT_DESCRIPTION,
     )
     feedback_issue_url: str | None = None
 
@@ -1039,6 +1090,14 @@ class RunProgress(BaseModel):
     rules_fetch_unknown_domain_ids: list[str] = Field(
         default_factory=list,
         description=RULES_FETCH_UNKNOWN_FIELD_DESCRIPTION,
+    )
+    domain_rules_fetched_at: dict[str, str] | None = Field(
+        default=None,
+        description=DOMAIN_RULES_FETCHED_AT_DESCRIPTION,
+    )
+    domain_recorded_at: dict[str, str] | None = Field(
+        default=None,
+        description=DOMAIN_RECORDED_AT_DESCRIPTION,
     )
     feedback_issue_url: str | None = None
     completed: bool = Field(
