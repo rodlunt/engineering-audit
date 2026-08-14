@@ -137,6 +137,28 @@
      min-content size (not overflow-wrap) from winning the argument in the
      first place, the same pairing #126 used for .finding-location. */
   .meta-value { font-weight: 500; overflow-wrap: anywhere; min-width: 0; }
+  /* The self-reported marker on a row the calling assistant supplied and
+     this tool cannot check (issue #176). Small and outlined rather than
+     coloured: it has to read as a qualifier on the label rather than as a
+     status badge, and it has to survive greyscale and a photocopy, since
+     the whole point is the distinction between an asserted row and a
+     measured one staying visible (D16-R16). Not italic, which at this size
+     is the first thing lost to a low-quality print. */
+  .asserted {
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: lowercase;
+    letter-spacing: 0.02em;
+    padding: 0 0.35rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+  .meta-footnote {
+    margin: 0.75rem 0 0;
+    font-size: 0.85rem;
+    color: var(--muted);
+  }
   .perf-block {
     background: var(--card-bg);
     border: 1px solid var(--border);
