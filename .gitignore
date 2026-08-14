@@ -22,6 +22,15 @@ next-session.md
 # Local scratch: extracted emails, tester reports (never commit)
 raw/
 
+# Secrets. No .env exists in this repo today and none is planned, which is
+# exactly why this is here: the guard has to predate the file, not follow it.
+# This repo is public, so the first .env someone drops in during a debugging
+# session must already be ignored rather than one `git add -A` away from being
+# published. Carried as an open follow-up across three sessions before landing.
+.env
+.env.*
+!.env.example
+
 # Agent worktrees: full repo copies, so leaving them untracked makes local
 # lint and test runs walk them and count every finding once per worktree.
 .claude/worktrees/
