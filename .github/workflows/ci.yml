@@ -54,4 +54,11 @@ jobs:
         # blocks the merge instead of going quietly red in a side job.
         run: uv run --with mypy==2.3.0 mypy src
       - name: Run tests
+        # tests/conftest.py's autouse fixture already sets this for a local
+        # run; it is set again here so CI does not depend on that fixture
+        # being present, and so the intent (no live git ls-remote calls to
+        # github.com from a shared runner, see issue #190) is visible in the
+        # workflow itself.
+        env:
+          ENGINEERING_AUDIT_NO_UPDATE_CHECK: "1"
         run: uv run pytest -q
