@@ -15,12 +15,14 @@ from urllib.parse import quote, urlencode
 
 import pytest
 
+from engineering_audit import config_page
 from engineering_audit.config_page import (
     _DRAFT_COOKIE_NAME,
     ConfigServer,
     ConfigTimeoutError,
     _parse_draft_cookie,
 )
+from engineering_audit.report import _CONSENT_LABELS as REPORT_CONSENT_LABELS
 from engineering_audit.rules import load_pack
 
 FIXTURE_PACK = Path(__file__).parent / "fixture_pack"
@@ -1506,3 +1508,47 @@ def test_parse_draft_cookie_rejects_a_bad_issue_mode_without_dropping_the_domain
     # An unrecognised mode falls back to the safe one (findings stay local)
     # rather than being taken at face value from a cookie.
     assert draft.issue_mode == "report"
+
+
+def _consent_label_text(input_name: str) -> str:
+    """The rendered text of one consent row on the configuration page.
+
+    Read from the template rather than a live request: the row is static
+    markup with only its checked attribute substituted, so a fetch would add
+    a server for nothing.
+    """
+    template = (
+        Path(config_page.__file__).parent / "templates" / "config-page.html"
+    ).read_text(encoding="utf-8")
+    match = re.search(
+        r'<input type="checkbox" name="' + input_name + r'"[^>]*>(.*?)</label>',
+        template,
+        re.DOTALL,
+    )
+    assert match is not None, f"no consent row named {input_name}"
+    return " ".join(match.group(1).split())
+
+
+def test_the_two_reader_conclusion_labels_point_at_their_own_surface() -> None:
+    """The same consent section is labelled on two pages, and the labels are
+    not interchangeable (issue #207).
+
+    On the finished report the two questions sit directly beneath the label,
+    so it says "this report" and "below". On the configuration page they do
+    not exist yet and never will, so that label has to send the reader to the
+    report instead. Copying either over the other reintroduces the confusion
+    this test exists to stop: a consent row on the configuration page that
+    reads like a prompt for something to type, with nothing to type it into.
+    """
+    config_label = _consent_label_text("consent_reader_conclusions")
+    report_label = REPORT_CONSENT_LABELS["reader_conclusions"]
+
+    assert config_label != report_label
+    # The configuration page sends the reader to the report, and must not use
+    # the report's own deictic wording, which would point at nothing here.
+    assert "finished report" in config_label
+    assert "below" not in config_label.lower()
+    assert "not here" in config_label.lower()
+    # The report page keeps pointing at the fields directly beneath it.
+    assert "below" in report_label.lower()
+    assert "this report" in report_label.lower()
