@@ -531,6 +531,13 @@ class DomainResult(BaseModel):
                 f"domain {self.domain_id}: finding(s) for rule id(s) "
                 f"{sorted(missing_verdicts)} have no matching rule_verdict with verdict=finding"
             )
+        missing_findings = verdicted_finding_ids - finding_rule_ids
+        if missing_findings:
+            raise ValueError(
+                f"domain {self.domain_id}: rule_verdict(s) for rule id(s) "
+                f"{sorted(missing_findings)} are verdicted finding but have no matching "
+                "entry in findings"
+            )
         return self
 
 
