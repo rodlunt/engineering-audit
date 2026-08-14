@@ -319,10 +319,12 @@ send or file it. It is a written report meant to be read top to bottom, in this 
 - A **tool performance summary** about the audit run itself, below the findings rather
   than above them: one table with a row per domain carrying rule verdicts, findings by
   severity, files inspected and skipped, confidence and fetch status, with the
-  could-not-evaluate and not-applicable reasons in full. Every number ships with its base,
-  a domain set aside in full cannot read as a domain swept clean, and an unchecked rule is
-  never presented as a pass. Longer sections sit behind summaries that each carry their own
-  numbers, so the detail is one click away rather than occupying the top of the page.
+  could-not-evaluate and not-applicable reasons in full, and an **evidence boundary** block
+  naming what each domain did not read. Every number ships with its base, a domain set
+  aside in full cannot read as a domain swept clean, an unchecked rule is never presented
+  as a pass, and a value the tool was told rather than measured says so. Longer sections
+  sit behind summaries that each carry their own numbers, so the detail is one click away
+  rather than occupying the top of the page.
 - **Feedback to the author**: freeform text, two optional questions asking what you
   concluded from the report and what you would fix first, and tick-box consent over which
   run statistics accompany any of it. Everything here is off by default and never
