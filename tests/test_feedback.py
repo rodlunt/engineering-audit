@@ -21,6 +21,7 @@ from engineering_audit.feedback import (
 )
 from engineering_audit.rules import Rule
 from engineering_audit.schema import (
+    ENVIRONMENT_KEYS,
     ConsultedSource,
     Coverage,
     DomainResult,
@@ -1122,3 +1123,45 @@ def test_build_issue_trailing_line_inserts_the_domain_note_when_given_context() 
         "this finding as unsupported until the domain is redone. Reference: "
         "invented for test fixtures only, no external source"
     )
+
+
+def test_docs_feedback_names_every_consented_section() -> None:
+    # docs/feedback.md must name every section build_feedback_body gates on
+    # a TelemetryConsent flag, so the document and the code cannot drift
+    # apart again the way issue #186 found them (four of nine sections
+    # listed, and the environment bullet describing an open field that is
+    # actually the closed three-key ENVIRONMENT_KEYS set). The mapping below
+    # is checked against TelemetryConsent's own fields first, so a flag
+    # added to the model without updating this test fails loudly rather
+    # than the doc silently going stale again.
+    doc_text = (Path(__file__).parent.parent / "docs" / "feedback.md").read_text()
+
+    section_phrase_by_flag = {
+        "coverage": "Coverage statistics",
+        "rollup": "Findings rollup",
+        "self_assessment": "Self-assessment",
+        "environment": "Environment information",
+        "consulted_sources": "Consulted sources",
+        "verdict_distribution": "Rule verdict distribution",
+        "duration": "Duration",
+        "rules_fetched": "Rules fetched",
+        "reader_conclusions": "Reader's own conclusions",
+    }
+
+    assert set(section_phrase_by_flag) == set(TelemetryConsent.model_fields), (
+        "section_phrase_by_flag has drifted from TelemetryConsent's own "
+        "fields; update the mapping to match"
+    )
+
+    for flag_name, phrase in section_phrase_by_flag.items():
+        assert phrase in doc_text, (
+            f"docs/feedback.md does not name the {flag_name!r} section "
+            f"(expected the phrase {phrase!r})"
+        )
+
+    # The environment bullet's own claim: exactly the three ENVIRONMENT_KEYS,
+    # never the assistant/model/tool-version fields the code comment at
+    # schema.py's ENVIRONMENT_KEYS says are deliberately excluded.
+    for key in ENVIRONMENT_KEYS:
+        assert f"`{key}`" in doc_text
+    assert "anything else the calling agent chose to record" not in doc_text
