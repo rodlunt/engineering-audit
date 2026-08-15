@@ -227,3 +227,38 @@ indistinguishable from the coin landing heads again.
 These two runs together are the clearest demonstration yet of this file's first Known
 limitation. Same fixture, same model, same pack, forty minutes apart, and one scored clean
 while the other did not.
+
+## Spec growth, and reading the run entries above
+
+The entries above quote the score against the spec **as it stood when the run was
+scored**. The spec has since grown, so those figures are not directly comparable with a
+later run's.
+
+On 2026-08-15 three expectations were promoted from emergent findings to plants
+(issue #215): D01-R04, D05-R05 and D16-R10. They were not planted. They were found by
+audit, checked against the fixture by hand afterwards, and each one's `why` says so
+rather than claiming a deliberate plant, because a spec that misdescribes its own
+provenance is worse than a smaller one.
+
+They qualified on two tests, both required:
+
+- **Sourced.** Each rule carries a primary citation that supports the claim, not merely
+  a citation: Halpin's ORM CSDP step 3 for derivation notation (D01-R04), ISTQB v4.0.1
+  Testing Principle 4 on defect clustering (D05-R05), and NN/g's "Contrast: One of the
+  3Cs for Better Charts", which states D16-R10's defect almost verbatim ("Titles should
+  not merely describe the data shown").
+- **Reproduced.** Each was found in both full-pack runs, and the fixture evidence was
+  re-checked by hand with the negative greps controlled first.
+
+Three further candidates were rejected on the same tests and deliberately left as
+unexpected findings, because promoting them would have measured the toss rather than the
+auditor: D01-R15 (least privilege; "no grants in schema.sql" is an absence claim across a
+repo boundary, since grants routinely live outside DDL), D05-R18 (the rule's second limb
+is "automate it where the pipeline can carry it", and this fixture has no pipeline for
+the precondition to hold in), and D16-R12 (the rule is about significance thresholds, and
+nothing in the fixture performs a significance analysis at all; it also lands on the same
+two lines as the already-planted D16-R11).
+
+That leaves 14 expectations against the three domains' 54 rules. The remaining 40 rules
+are still scored neither way, so a finding on one of them is neither credited nor
+penalised: see issue #215 for what that does and does not tell you about a score.

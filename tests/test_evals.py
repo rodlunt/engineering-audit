@@ -667,3 +667,20 @@ def test_eval_result_json_is_byte_identical_across_two_runs(tmp_path: Path) -> N
         assert excinfo.value.code == 0
 
     assert out_a.read_bytes() == out_b.read_bytes()
+
+
+def test_scorer_places_a_finding_recorded_with_a_comma_line_list() -> None:
+    # Issue #216, read side. A live 0.10.0 run recorded D16-R10 at
+    # "reports/charts.py:16,29", the two chart titles. That form predates the
+    # write-side guard, so run-state.json files carrying it exist on disk and
+    # must still score where the finding actually is. The second recorded run
+    # hit the identical bug with ranges (":24-30") and four correctly-placed
+    # plants scored found-wrong-location; that fix addressed the instance
+    # rather than the class, which is why this recurred.
+    assert evals._location_matches("reports/charts.py", "reports/charts.py:16,29")
+    assert evals._location_matches("reports/charts.py", "reports/charts.py:16-29")
+    assert evals._location_matches("reports/charts.py", "reports/charts.py:16")
+    assert evals._location_matches("tests/", "tests/test_signup_flow.py:10,12,14")
+    # The boundary check the strip must not weaken.
+    assert not evals._location_matches("schema.sql", "old_schema.sql.bak")
+    assert not evals._location_matches("tests/", "integration_tests/helpers.py")
