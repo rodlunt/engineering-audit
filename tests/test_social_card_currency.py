@@ -26,6 +26,34 @@ EMBEDDED_CAPTURE = "docs/images/report-light.png"
 DEMO_REPORT = "docs/demo/report.html"
 
 
+def _is_shallow_clone() -> bool:
+    """True if this checkout has truncated history.
+
+    This matters more than it looks. On a shallow clone every path resolves to
+    the same single commit, so `git log -1 --format=%ct -- <path>` returns an
+    identical timestamp for both files being compared, `card >= capture` holds
+    trivially, and the check below reports success while establishing nothing.
+    That is exactly the defect class this file exists to catch, occurring
+    inside the guard meant to catch it: it was caught by CI reporting
+    XPASS(strict), because actions/checkout defaults to fetch-depth 1.
+
+    The workflow now sets fetch-depth: 0 so the guard genuinely runs there.
+    This function is the belt to that braces: anywhere history is truncated,
+    the checks skip loudly rather than passing vacuously.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--is-shallow-repository"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return True  # cannot tell: fail closed, treat as unusable
+    return result.stdout.strip() != "false"
+
+
 def _last_commit_epoch(path: str) -> int | None:
     """Committer timestamp of the last commit touching path, or None if git
     cannot answer (no git, not a repository, path never committed).
@@ -72,6 +100,12 @@ def test_the_report_capture_is_not_older_than_the_report_it_captures() -> None:
     # docs/demo/report.html, so a renderer change that is not re-captured
     # leaves every downstream use of that image advertising an old layout,
     # including the README screenshots and the social card below.
+    if _is_shallow_clone():
+        pytest.skip(
+            "shallow clone: every path resolves to the same commit, so file "
+            "ordering cannot be established and a comparison here would pass "
+            "without checking anything"
+        )
     capture_epoch = _last_commit_epoch(EMBEDDED_CAPTURE)
     report_epoch = _last_commit_epoch(DEMO_REPORT)
 
@@ -90,6 +124,12 @@ def test_the_report_capture_is_not_older_than_the_report_it_captures() -> None:
 
 @_STALE
 def test_social_card_is_not_older_than_the_report_capture_it_embeds() -> None:
+    if _is_shallow_clone():
+        pytest.skip(
+            "shallow clone: every path resolves to the same commit, so file "
+            "ordering cannot be established and a comparison here would pass "
+            "without checking anything"
+        )
     card_epoch = _last_commit_epoch(CARD)
     capture_epoch = _last_commit_epoch(EMBEDDED_CAPTURE)
 
