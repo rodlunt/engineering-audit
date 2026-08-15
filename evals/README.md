@@ -262,3 +262,36 @@ two lines as the already-planted D16-R11).
 That leaves 14 expectations against the three domains' 54 rules. The remaining 40 rules
 are still scored neither way, so a finding on one of them is neither credited nor
 penalised: see issue #215 for what that does and does not tell you about a score.
+
+## The third expectation state
+
+`expect` accepts `"finding-or-not-applicable"` alongside the strict `"finding"` and
+`"no-finding"` pair (issue #213). It says the fixture genuinely admits two defensible
+readings of the same rule, so either raising the finding or ruling the rule out counts,
+and it scores its own outcome, `ruled-out`.
+
+**It still refuses `pass`, `could-not-evaluate` and no verdict at all.** Those are the
+auditor not engaging, which is the failure this harness exists to catch, and they score
+`missed` exactly as before. The line between them is that since schema version 4 a
+`not-applicable` verdict must carry a note naming the precondition that does not hold, so
+it is a position the auditor had to write down. `could-not-evaluate` is the shrug.
+
+**`ruled-out` exits clean but is counted and printed separately from `hit`**, on every run
+rather than only when non-zero. A score resting partly on the permissive state must never
+be able to read identically to one that found everything outright.
+
+Exactly one expectation uses it: **D05-R08**. The rule wants a layered test suite, and
+GrindPoints' two write functions both take a live connection with every test opening
+sqlite, so there is no unit-testable seam for the rule to be missing. It was hit in 2 of 4
+recorded runs, and the runs that did not raise it ruled it out with written reasoning
+rather than skipping it. Scoring that as a miss measured the coin toss, not the auditor.
+Both recorded 0.11.0 runs now score exit 0, one by finding it and one by ruling it out,
+and the counter is what distinguishes them.
+
+Reach for this state rarely and only with evidence across runs. A spec that cannot commit
+to an answer is not testing much, and every expectation moved here is one the harness has
+stopped being able to fail.
+
+This is **not** the strict `not-applicable` state discussed in issue #199, which is for a
+domain that genuinely does not apply to a fixture at all and where a finding would be
+wrong. That state is still unbuilt, and is what a 16-domain golden repo would need.
