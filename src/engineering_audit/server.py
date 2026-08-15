@@ -100,6 +100,7 @@ from engineering_audit.schema import (
     RunMeta,
     RunProgress,
     RunState,
+    Verdict,
     validate_completeness,
     validate_consulted_sources,
     validate_environment,
@@ -1234,8 +1235,28 @@ def _file_pending_issues(
             else None
         )
         rules_fetched = _rules_fetched_state(run, issue.domain_id)
+        # Issue #211: the base the confidence claim rests on, so an issue
+        # filed through this gh CLI path says the same thing about its
+        # domain as the same finding's card and copy text in the report. A
+        # could-not-run domain has no verdicts and so no denominator.
+        unevaluated = (
+            None
+            if domain_result.status == "could-not-run"
+            else (
+                sum(
+                    1
+                    for rv in domain_result.rule_verdicts
+                    if rv.verdict is Verdict.COULD_NOT_EVALUATE
+                ),
+                len(domain_result.rule_verdicts),
+            )
+        )
         trailing_line = build_issue_trailing_line(
-            finding, rule, confidence=confidence, rules_fetched=rules_fetched
+            finding,
+            rule,
+            confidence=confidence,
+            rules_fetched=rules_fetched,
+            unevaluated=unevaluated,
         )
         # issue_title and issue_body are assistant-authored and untrusted,
         # same as body_md; stripped here for the same reason report.py's

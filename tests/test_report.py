@@ -10,7 +10,11 @@ from pathlib import Path
 import pytest
 
 from engineering_audit import report as report_module
-from engineering_audit.feedback import build_feedback_body, build_feedback_sections
+from engineering_audit.feedback import (
+    build_feedback_body,
+    build_feedback_sections,
+    unevaluated_base,
+)
 from engineering_audit.report import (
     _INLINE_SCRIPT,
     ReportError,
@@ -2170,7 +2174,8 @@ def test_issue_embedded_body_ends_with_shared_trailing_line_byte_identical_to_fi
         "bed-14 has two occupants and no shared-bed flag. See ledger/beds.py:42.\n\n"
         "Found by an engineering-practice audit (rule D01-R02, severity high, "
         "at ledger/beds.py:42). This finding's domain: self-assessed confidence "
-        "high; whether its rule text was fetched this run is not recorded. "
+        "high (1 of 4 rules could not be evaluated); whether its rule text was "
+        "fetched this run is not recorded. "
         "Reference: invented for test fixtures only, no external source"
     )
     pack = _pack()
@@ -3935,3 +3940,72 @@ def test_could_not_evaluate_summary_carries_the_domain_that_never_ran() -> None:
         "1 of 2 selected domains did not run at all, so no rule in them was "
         "evaluated" in could_not[0]
     ), could_not
+
+
+def test_same_confidence_word_renders_differently_when_the_unevaluated_base_differs() -> (
+    None
+):
+    # Issue #211. The 0.10.0 smoke run against evals/golden/repo produced the
+    # first real self_assessment data any run had carried, and put beside each
+    # domain's own verdict distribution it read: d05 could not evaluate 10 of
+    # its 18 rules and self-reported "high", rendering identically to d01,
+    # which could not evaluate 2 of 15. README.md:323 promises a reader the
+    # opposite, that "a finding from a shaky domain does not look identical to
+    # one from a solid one".
+    #
+    # This is the fifth instance of the family #100, #122, #184, #189 and #195
+    # were each a fix for: a rendered summary that reads clean over a gap.
+    # #189's ast guard is <summary>-scoped and does not catch a table cell, so
+    # this test is the guard for this one. It pins the distinction itself
+    # rather than the wording: two domains claiming the same confidence with
+    # different amounts unevaluated must not produce the same string.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+
+    # Both domains claim "high". d01 has one could-not-evaluate (set by
+    # _base_run_state); d02 has none.
+    run_state.domain_results["d01"].self_assessment = SelfAssessment(
+        confidence="high", limits=""
+    )
+    run_state.domain_results["d02"].self_assessment = SelfAssessment(
+        confidence="high", limits=""
+    )
+    rendered = render_report(run_state, pack)
+
+    d01_unevaluated = sum(
+        1
+        for rv in run_state.domain_results["d01"].rule_verdicts
+        if rv.verdict is Verdict.COULD_NOT_EVALUATE
+    )
+    d02_unevaluated = sum(
+        1
+        for rv in run_state.domain_results["d02"].rule_verdicts
+        if rv.verdict is Verdict.COULD_NOT_EVALUATE
+    )
+    # The control for this test: if the fixture ever stops differing, the
+    # assertion below would pass for the wrong reason.
+    assert d01_unevaluated != d02_unevaluated, (
+        "fixture no longer has two domains with different could-not-evaluate "
+        "counts, so this test can no longer detect the defect it guards"
+    )
+
+    d01_total = len(run_state.domain_results["d01"].rule_verdicts)
+    d02_total = len(run_state.domain_results["d02"].rule_verdicts)
+    d01_cell = f"high ({d01_unevaluated} of {d01_total} rules could not be evaluated)"
+    d02_cell = f"high (all {d02_total} rules evaluated)"
+
+    assert d01_cell in rendered
+    assert d02_cell in rendered
+    assert d01_cell != d02_cell
+
+
+def test_could_not_run_domain_does_not_render_as_all_rules_evaluated() -> None:
+    # Issue #211's own trap, and the reason unevaluated_base takes None rather
+    # than (0, 0) for a could-not-run domain: such a domain has no verdicts by
+    # construction, so "all 0 rules evaluated" would present a domain that
+    # never ran as one swept clean. That is the defect #55 and #100 were about,
+    # and shipping it inside the fix for #211 would repeat #189's exact
+    # history.
+    assert unevaluated_base(None) == ""
+    assert unevaluated_base((0, 0)) == " (no rules were verdicted)"
+    assert "evaluated" not in unevaluated_base((0, 0))

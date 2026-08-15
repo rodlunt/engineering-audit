@@ -2207,7 +2207,8 @@ def test_file_issues_confirm_files_one_issue_per_finding(
                 "bed-14 has two occupants and no shared-bed flag.\n\n"
                 "Found by an engineering-practice audit (rule D01-R02, severity high, "
                 "at ledger/beds.py:42). This finding's domain: no self-assessed "
-                "confidence reported; its rule text was fetched from the server this "
+                "confidence reported (all 4 rules evaluated); its rule text was "
+                "fetched from the server this "
                 "run. Reference: invented for test fixtures only, no external source"
             ),
             "labels": ["engineering-audit"],
@@ -2305,7 +2306,8 @@ def test_file_issues_and_report_issues_section_produce_the_same_body(
         "The issue: bed-14 has two occupants and no shared-bed flag.\n\n"
         "Found by an engineering-practice audit (rule D01-R02, severity high, "
         "at ledger/beds.py:42). This finding's domain: self-assessed confidence "
-        "low; its rule text was fetched from the server this run. Reference: "
+        "low (all 4 rules evaluated); its rule text was fetched from the server "
+        "this run. Reference: "
         "invented for test fixtures only, no external source"
     )
     assert "*" not in filed_body
