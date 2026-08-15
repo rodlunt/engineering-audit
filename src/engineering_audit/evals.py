@@ -76,7 +76,14 @@ __all__ = [
 # when the "control-not-evaluated" outcome and its counter were added: a
 # reader built against version 1 would not know that outcome exists and
 # would misread a dead control as neither a pass nor a counted failure.
-EVAL_RESULT_SCHEMA_VERSION = 2
+#
+# Bumped to 3 for the "ruled-out" outcome and expected_ruled_out counter
+# (issue #213), for the same reason: a version-2 reader does not know that
+# outcome exists, and would see an expectation that is neither hit nor missed
+# and have to guess which. Guessing "hit" overstates the run and guessing
+# "missed" understates it, so the version number is what tells a reader it is
+# looking at a document whose vocabulary it does not fully share.
+EVAL_RESULT_SCHEMA_VERSION = 3
 
 
 class EvalStructuralError(Exception):
@@ -91,15 +98,50 @@ class EvalStructuralError(Exception):
 class Expectation(BaseModel):
     """One expectation about a single rule against the golden repo.
 
-    ``location_contains`` is only meaningful when ``expect`` is
-    ``"finding"``: a control has nothing to locate. Setting it on a
-    no-finding expectation is rejected rather than silently ignored, since
-    a silently ignored field on a human-authored spec is exactly the kind
-    of skipped check this project's hardening rules exist to catch.
+    ``location_contains`` is only meaningful when a finding is expected, so
+    it is accepted for ``"finding"`` and ``"finding-or-not-applicable"`` and
+    rejected for ``"no-finding"``: a control has nothing to locate. Rejected
+    rather than silently ignored, since a silently ignored field on a
+    human-authored spec is exactly the kind of skipped check this project's
+    hardening rules exist to catch.
+
+    **The three states.**
+
+    ``"finding"`` and ``"no-finding"`` are the strict pair. The auditor must
+    raise a finding, or must explicitly verdict ``pass``. Most expectations
+    should be one of these two: a spec that cannot commit to an answer is not
+    testing much.
+
+    ``"finding-or-not-applicable"`` exists for issue #213, and should be
+    reached for rarely and only with evidence. It says the fixture genuinely
+    admits two defensible readings of the same rule, so either raising the
+    finding or ruling the rule out counts, but staying silent does not. What it
+    still refuses is ``pass``, ``could-not-evaluate`` and no verdict at all:
+    those are the auditor not engaging, which is the failure the eval exists to
+    catch, and they score ``missed`` exactly as before.
+
+    The reason ``not-applicable`` is acceptable here and ``could-not-evaluate``
+    is not: since schema version 4 a ``not-applicable`` verdict must carry a
+    note stating the precondition that does not hold (see
+    :data:`NOT_APPLICABLE_NOTE_SCHEMA_VERSION`). It is a reasoned position the
+    auditor had to write down, not a shrug. ``could-not-evaluate`` is the
+    shrug.
+
+    D05-R08 is the case this was built for: the rule wants a layered test
+    suite, and the golden repo's two functions both take a live connection
+    with every test opening sqlite, so there is no unit-testable seam for the
+    rule to be missing. It was hit in 2 of 4 recorded runs, and the runs that
+    ruled it out did so with reasoning rather than by skipping it. Scoring that
+    as a miss measured the coin toss, not the auditor.
+
+    This is deliberately **not** the same as the strict ``not-applicable``
+    state discussed in #199, which is for a domain that genuinely does not
+    apply to a fixture at all and where a finding would be wrong. That state
+    is still unbuilt.
     """
 
     rule_id: str
-    expect: Literal["finding", "no-finding"]
+    expect: Literal["finding", "no-finding", "finding-or-not-applicable"]
     location_contains: str | None = None
     why: str = Field(description="Human rationale for the plant or control.")
 
@@ -164,6 +206,12 @@ _Outcome = Literal[
     "held",
     "false-positive",
     "control-not-evaluated",
+    # Issue #213's outcome: the auditor did not raise a finding, but did
+    # consciously rule the rule out with a reasoned not-applicable, which for a
+    # "finding-or-not-applicable" expectation is an acceptable answer rather
+    # than a miss. See Expectation.expect for when that is a legitimate thing
+    # for a spec to say.
+    "ruled-out",
 ]
 
 
@@ -181,7 +229,7 @@ class ExpectationOutcome(BaseModel):
     """
 
     rule_id: str
-    expect: Literal["finding", "no-finding"]
+    expect: Literal["finding", "no-finding", "finding-or-not-applicable"]
     outcome: _Outcome
     why: str
     detail: str | None = Field(
@@ -262,6 +310,16 @@ class EvalResult(BaseModel):
 
     @computed_field  # type: ignore[prop-decorator]
     @property
+    def expected_ruled_out(self) -> int:
+        """Issue #213: expectations that accepted a reasoned not-applicable in
+        place of the finding. Counted and reported separately from ``hit``
+        rather than folded into it, because the two are not the same event and
+        a reader deciding whether to trust a score needs to see how much of it
+        rests on the permissive state."""
+        return sum(1 for o in self.outcomes if o.outcome == "ruled-out")
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
     def unexpected_findings_count(self) -> int:
         return len(self.unexpected_findings)
 
@@ -275,6 +333,13 @@ class EvalResult(BaseModel):
         failures: the last of those is a dead instrument (see the
         ExpectationOutcome docstring), not a clean pass, so it fails the
         run exactly like the other three.
+
+        A ``ruled-out`` outcome is clean, and deliberately so: it only arises
+        on a ``finding-or-not-applicable`` expectation, which is the spec
+        stating in advance that ruling the rule out is an acceptable answer on
+        this fixture (issue #213). It is still counted separately and printed,
+        so a run that scored zero by ruling everything out cannot look
+        identical to one that found everything.
         """
         clean = (
             self.expected_missed == 0
@@ -449,11 +514,30 @@ def score(
     for expectation in spec.expectations:
         matches = findings_by_rule.get(expectation.rule_id, [])
 
-        if expectation.expect == "finding":
+        if expectation.expect in ("finding", "finding-or-not-applicable"):
             outcome: _Outcome
             if not matches:
-                outcome = "missed"
-                detail = "no finding recorded for this rule id"
+                # Issue #213. A "finding-or-not-applicable" expectation
+                # accepts a reasoned not-applicable in place of the finding,
+                # because the fixture admits two defensible readings of the
+                # rule. It still refuses pass, could-not-evaluate and silence:
+                # a not-applicable has had to carry a note stating the
+                # precondition that does not hold since schema version 4, so
+                # it is a position the auditor wrote down, while the other
+                # three are the auditor not engaging.
+                verdicts = verdicts_by_rule.get(expectation.rule_id, [])
+                if (
+                    expectation.expect == "finding-or-not-applicable"
+                    and Verdict.NOT_APPLICABLE in verdicts
+                ):
+                    outcome = "ruled-out"
+                    detail = (
+                        "no finding, but the rule was explicitly ruled out as "
+                        "not-applicable, which this expectation accepts"
+                    )
+                else:
+                    outcome = "missed"
+                    detail = "no finding recorded for this rule id"
             elif expectation.location_contains is None or any(
                 _location_matches(expectation.location_contains, f.location)
                 for f in matches
@@ -534,7 +618,11 @@ def _render_summary(result: EvalResult) -> str:
         f"Expected: {result.expected_path}",
         "",
         f"Expected findings: {result.expected_hit} hit, {result.expected_missed} missed, "
-        f"{result.expected_found_wrong_location} found in the wrong location",
+        f"{result.expected_found_wrong_location} found in the wrong location, "
+        # Printed on every run, not only when non-zero (issue #213). A score
+        # resting partly on the permissive state must never be able to read
+        # identically to one that found everything outright.
+        f"{result.expected_ruled_out} ruled out as not-applicable",
         f"Controls: {result.controls_held} held, {result.controls_false_positive} false-positive, "
         f"{result.controls_not_evaluated} not evaluated",
         f"Unexpected findings: {result.unexpected_findings_count}",
