@@ -288,7 +288,15 @@ class EvalResult(BaseModel):
         return self.model_dump_json(indent=2)
 
 
-_LINE_SUFFIX_RE = re.compile(r":\d+(?:-\d+)?$")
+# Deliberately wider than schema.py's _LOCATION_LINE_SUFFIX_RE, which is what
+# a *new* finding is validated against (issue #216: strict on write). This is
+# the read side, and it must stay tolerant: run-state.json files already on
+# disk carry locations recorded before that guard existed, including the
+# comma-list form ("reports/charts.py:16,29") from a live 0.10.0 run. Scoring
+# a historical run must place a finding where it actually is rather than
+# calling it found-wrong-location on a formatting technicality, which is the
+# bug the second recorded run hit with ranges and this one hit with lists.
+_LINE_SUFFIX_RE = re.compile(r":\d+(?:[-,]\d+)*$")
 
 
 def _location_matches(expected: str, location: str) -> bool:

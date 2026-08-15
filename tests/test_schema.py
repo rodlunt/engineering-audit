@@ -15,6 +15,7 @@ from engineering_audit.schema import (
     LEGACY_NOT_APPLICABLE_CONTEXT_KEY,
     LEGACY_UNINSPECTED_EVIDENCE_CONTEXT_KEY,
     MAX_ENVIRONMENT_VALUE_CHARS,
+    MalformedLocationError,
     RUN_STATE_SCHEMA_VERSION,
     AuditConfig,
     ConsultedSource,
@@ -35,6 +36,7 @@ from engineering_audit.schema import (
     validate_completeness,
     validate_consulted_sources,
     validate_environment,
+    validate_finding_locations,
 )
 
 from pathlib import Path
@@ -1260,3 +1262,82 @@ def test_run_meta_itself_still_loads_an_environment_key_it_would_no_longer_accep
     )
     restored = RunState.from_json(state.to_json())
     assert restored.meta.environment == {"python": "3.12"}
+
+
+def test_validate_finding_locations_refuses_a_malformed_line_suffix() -> None:
+    # Issue #216, write side. "reports/charts.py:16,29" came from a live
+    # 0.10.0 run. Finding's own suffix regex is anchored at the end and does
+    # not match it, so the validator took the whole string as the path, the
+    # line numbers were never validated, and the start/end checks were dead
+    # code for that input.
+    result = DomainResult(
+        domain_id="d16",
+        status="completed",
+        uninspected_evidence=[],
+        rule_verdicts=[RuleVerdict(rule_id="D16-R10", verdict=Verdict.FINDING)],
+        findings=[
+            Finding(
+                rule_id="D16-R10",
+                severity=Severity.MEDIUM,
+                title="Chart titles state the topic",
+                location="reports/charts.py:16,29",
+                body_md="body",
+                issue_title="t",
+                issue_body="b",
+                precondition="the rule presumes charts, present at reports/charts.py:8",
+            )
+        ],
+    )
+    with pytest.raises(MalformedLocationError, match="not one of the documented forms"):
+        validate_finding_locations(result)
+
+
+def test_a_stored_run_state_carrying_a_malformed_location_still_loads() -> None:
+    # The other half of #216, and the reason the check is not on Finding.
+    # Finding is what a stored run-state.json is deserialised through, so
+    # enforcing the format there applies it retroactively: the first cut of
+    # this fix made the 0.10.0 eval run unloadable by both the eval scorer
+    # and engineering-audit-render, turning a cosmetic scoring defect into
+    # data loss. Reading must stay possible forever.
+    finding = Finding(
+        rule_id="D16-R10",
+        severity=Severity.MEDIUM,
+        title="Chart titles state the topic",
+        location="reports/charts.py:16,29",
+        body_md="body",
+        issue_title="t",
+        issue_body="b",
+        precondition="the rule presumes charts, present at reports/charts.py:8",
+    )
+    assert finding.location == "reports/charts.py:16,29"
+
+
+@pytest.mark.parametrize(
+    "location",
+    ["reports/charts.py", "schema.sql:12", "schema.sql:24-30", "C:/tmp/a.py"],
+)
+def test_validate_finding_locations_accepts_every_documented_form(
+    location: str,
+) -> None:
+    # The control for the guard above: it must refuse the malformed tail
+    # without narrowing what was always legal, including a path that simply
+    # contains a colon and no line numbers after it.
+    result = DomainResult(
+        domain_id="d16",
+        status="completed",
+        uninspected_evidence=[],
+        rule_verdicts=[RuleVerdict(rule_id="D16-R10", verdict=Verdict.FINDING)],
+        findings=[
+            Finding(
+                rule_id="D16-R10",
+                severity=Severity.MEDIUM,
+                title="t",
+                location=location,
+                body_md="body",
+                issue_title="t",
+                issue_body="b",
+                precondition="the rule presumes charts, present at reports/charts.py:8",
+            )
+        ],
+    )
+    validate_finding_locations(result)  # must not raise

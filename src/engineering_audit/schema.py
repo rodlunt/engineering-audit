@@ -47,8 +47,10 @@ __all__ = [
     "RunStateVersionError",
     "IncompleteResultError",
     "UnknownRuleIdError",
+    "MalformedLocationError",
     "validate_completeness",
     "validate_consulted_sources",
+    "validate_finding_locations",
     "validate_environment",
     "ENVIRONMENT_KEYS",
     "MAX_ENVIRONMENT_VALUE_CHARS",
@@ -230,6 +232,15 @@ class RuleVerdict(BaseModel):
 # reference itself.
 _LOCATION_LINE_SUFFIX_RE = re.compile(r":(?P<start>\d+)(?:-(?P<end>\d+))?$")
 
+# Issue #216. A tail that opens like a line suffix (colon then a digit) but
+# does not parse as the documented 'path:line' or 'path:start-end'. Used only
+# to tell "this is a path containing a colon" apart from "this is a malformed
+# line suffix", so the second is refused instead of being absorbed into the
+# path and leaving the line numbers unvalidated. Deliberately narrow: it
+# requires the colon to be followed by a digit, so a genuine path with a colon
+# in it and no digits after (a Windows drive, a URL-ish fragment) is untouched.
+_LOCATION_MALFORMED_SUFFIX_RE = re.compile(r":\d[^/]*$")
+
 
 class Finding(BaseModel):
     """A single audit finding: a rule verdicted as 'finding', with detail."""
@@ -294,6 +305,15 @@ class Finding(BaseModel):
         # This only checks the shape (a non-empty path, an optional positive
         # line or line range), not that the path exists in the repository:
         # that check belongs to whoever has repository access, not the model.
+        # Issue #216's malformed-suffix check is deliberately NOT here. This
+        # model is what a stored run-state.json is deserialised through as
+        # well as what a new finding is built with, so a rule enforced here
+        # is enforced retroactively against every run already on disk: the
+        # first cut of that fix made the 0.10.0 eval run unloadable by both
+        # the scorer and engineering-audit-render. Recording is guarded by
+        # validate_finding_locations, called from record_domain_result, the
+        # same split validate_completeness and validate_consulted_sources
+        # already use. Strict on write, readable forever.
         suffix_match = _LOCATION_LINE_SUFFIX_RE.search(self.location)
         path = self.location[: suffix_match.start()] if suffix_match else self.location
         if not path.strip():
@@ -1279,6 +1299,52 @@ class UnknownRuleIdError(Exception):
     not one of the domain's own rules. A citation cannot be attributed to a
     rule that does not exist in this domain, the same way a rule_verdict for
     a nonexistent rule id is rejected by :func:`validate_completeness`."""
+
+
+class MalformedLocationError(ValueError):
+    """A finding being recorded carries a location that is not one of the
+    documented forms (issue #216)."""
+
+
+def validate_finding_locations(result: DomainResult) -> None:
+    """Raise :class:`MalformedLocationError` if any finding being recorded
+    carries a line suffix that is not `path:line` or `path:start-end`.
+
+    Enforced here, at the record boundary, rather than on
+    :class:`Finding` itself. Finding is also what a stored run-state.json is
+    deserialised through, so the same rule placed on the model would apply
+    retroactively to every run already written: the first attempt at this
+    fix made the 0.10.0 eval run unloadable by both the eval scorer and
+    engineering-audit-render, turning a cosmetic defect into data loss.
+
+    What this catches is a tail that opens like a line suffix (a colon then
+    a digit) but does not parse as one, e.g. the comma list
+    "reports/charts.py:16,29" a live 0.10.0 run produced. Such a location
+    used to fall through Finding's own validator as "no suffix, so the whole
+    string is the path", leaving the line numbers unvalidated, the
+    start/end checks dead for that input, and the eval scorer unable to
+    strip the tail, so a correctly located finding scored
+    found-wrong-location. A check that never ran must not be representable
+    as one that passed.
+
+    Deliberately narrow: it requires a digit straight after the colon, so a
+    path that merely contains a colon (a Windows drive letter) is untouched.
+    """
+    bad = [
+        finding
+        for finding in result.findings
+        if _LOCATION_LINE_SUFFIX_RE.search(finding.location) is None
+        and _LOCATION_MALFORMED_SUFFIX_RE.search(finding.location)
+    ]
+    if bad:
+        detail = "; ".join(f"{f.rule_id} at {f.location!r}" for f in bad)
+        raise MalformedLocationError(
+            f"domain {result.domain_id}: {len(bad)} finding(s) carry a line suffix that is "
+            f"not one of the documented forms ({detail}). The format is 'path', "
+            "'path:line' or 'path:start-end'. To cite several separate lines, give the "
+            "file alone ('reports/charts.py') or record one finding per location: a "
+            "finding is a single claim about a single place."
+        )
 
 
 def validate_consulted_sources(domain: "Domain", result: DomainResult) -> None:

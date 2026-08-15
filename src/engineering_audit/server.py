@@ -103,6 +103,7 @@ from engineering_audit.schema import (
     Verdict,
     validate_completeness,
     validate_consulted_sources,
+    validate_finding_locations,
     validate_environment,
 )
 from engineering_audit.update_check import check_for_update, check_pack_for_update
@@ -1963,6 +1964,13 @@ def _register_result_tools(mcp: MCPServer, state: AppState) -> None:
                     f"domain '{domain_id}' is not in the loaded rules pack"
                 )
             validate_consulted_sources(domain, result)
+
+        # Issue #216. Checked regardless of status, and at the record
+        # boundary rather than on Finding itself: the model is also what a
+        # stored run-state.json is read through, so enforcing this there
+        # would refuse every run already on disk that carries such a
+        # location. Strict on write, readable forever.
+        validate_finding_locations(result)
 
         if domain_id in run.domain_results and not replace:
             raise ValueError(
