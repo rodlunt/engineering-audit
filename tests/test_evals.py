@@ -50,10 +50,13 @@ def _load_expected_spec() -> EvalSpec:
 # Rule id -> the location the golden repo's planted violation is expected
 # at, derived directly from the committed spec rather than hand-mirrored,
 # so this dict cannot drift out of step with evals/golden/expected.json.
+# Every expectation a finding can satisfy, which since issue #213 includes the
+# one "finding-or-not-applicable" entry: that state accepts a finding OR a
+# reasoned not-applicable, so the happy path still plants a finding for it.
 PLANTED_FINDINGS = {
     e.rule_id: e.location_contains
     for e in _load_expected_spec().expectations
-    if e.expect == "finding"
+    if e.expect in ("finding", "finding-or-not-applicable")
 }
 
 
@@ -684,3 +687,82 @@ def test_scorer_places_a_finding_recorded_with_a_comma_line_list() -> None:
     # The boundary check the strip must not weaken.
     assert not evals._location_matches("schema.sql", "old_schema.sql.bak")
     assert not evals._location_matches("tests/", "integration_tests/helpers.py")
+
+
+# ---------------------------------------------------------------------------
+# Issue #213: the finding-or-not-applicable state
+# ---------------------------------------------------------------------------
+
+
+def _outcome_for(rule_id: str, result) -> str:
+    return next(o.outcome for o in result.outcomes if o.rule_id == rule_id)
+
+
+@pytest.mark.parametrize(
+    "verdict,expected_outcome",
+    [
+        (Verdict.NOT_APPLICABLE, "ruled-out"),
+        (Verdict.pass_, "missed"),
+        (Verdict.COULD_NOT_EVALUATE, "missed"),
+    ],
+)
+def test_finding_or_not_applicable_accepts_only_a_reasoned_ruling_out(
+    verdict: Verdict, expected_outcome: str
+) -> None:
+    # Issue #213. D05-R08 was hit in 2 of 4 recorded runs, and the runs that
+    # did not raise it ruled it out with written reasoning rather than
+    # skipping it, so scoring that as a miss measured the coin toss.
+    #
+    # not-applicable is acceptable because since schema version 4 it must
+    # carry a note naming the precondition that does not hold: it is a
+    # position the auditor had to write down. pass and could-not-evaluate are
+    # the auditor not engaging, and still fail.
+    pack = _load_taster_pack()
+    spec = _load_expected_spec()
+    planted = {k: v for k, v in PLANTED_FINDINGS.items() if k != "D05-R08"}
+    run_state = _build_run_state(pack, planted, verdict_overrides={"D05-R08": verdict})
+
+    result = score(run_state, spec, pack)
+
+    assert _outcome_for("D05-R08", result) == expected_outcome
+
+
+def test_a_strict_finding_expectation_still_fails_a_not_applicable() -> None:
+    # The control for the test above: the permissive state must not have
+    # leaked into the strict one. D01-R05 is a plain "finding" expectation and
+    # a not-applicable there is still a miss.
+    pack = _load_taster_pack()
+    spec = _load_expected_spec()
+    assert (
+        next(e.expect for e in spec.expectations if e.rule_id == "D01-R05") == "finding"
+    ), "fixture changed: D01-R05 is no longer a strict finding expectation"
+
+    planted = {k: v for k, v in PLANTED_FINDINGS.items() if k != "D01-R05"}
+    run_state = _build_run_state(
+        pack, planted, verdict_overrides={"D01-R05": Verdict.NOT_APPLICABLE}
+    )
+
+    result = score(run_state, spec, pack)
+
+    assert _outcome_for("D01-R05", result) == "missed"
+    assert result.exit_code == 1
+
+
+def test_ruled_out_exits_clean_but_is_counted_separately_from_hit() -> None:
+    # A run that scored clean partly by ruling a rule out must not read
+    # identically to one that found everything outright. The exit code is the
+    # same; the counter is what tells them apart, so it must never be folded
+    # into expected_hit.
+    pack = _load_taster_pack()
+    spec = _load_expected_spec()
+    planted = {k: v for k, v in PLANTED_FINDINGS.items() if k != "D05-R08"}
+    run_state = _build_run_state(
+        pack, planted, verdict_overrides={"D05-R08": Verdict.NOT_APPLICABLE}
+    )
+
+    result = score(run_state, spec, pack)
+
+    assert result.exit_code == 0
+    assert result.expected_ruled_out == 1
+    assert result.expected_missed == 0
+    assert "D05-R08" not in {o.rule_id for o in result.outcomes if o.outcome == "hit"}
