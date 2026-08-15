@@ -78,6 +78,7 @@ def _resolve_update_status(
     ls_remote_output: str,
     installed_commit: str | None,
     installed_version: str,
+    host_cli: str | None = None,
 ) -> str:
     """Pure decision core: turn raw ``git ls-remote`` output plus what is
     installed into one of the three status strings.
@@ -133,10 +134,74 @@ def _resolve_update_status(
         return f"current ({latest_label})"
     if head_sha is not None and installed_commit == head_sha:
         return f"current (ahead of {latest_label}, matches main)"
+    # The remedy rides on "stale" only. "could-not-check" must not carry one:
+    # nothing was established, so telling the user how to fix a problem that
+    # may not exist would be asserting the very thing the status refuses to
+    # assert. "current" obviously needs none.
     return (
         f"stale: latest release is {latest_label} ({latest_sha[:12]}), installed build is "
-        f"{installed_version} @ {installed_commit[:12]}"
+        f"{installed_version} @ {installed_commit[:12]}; "
+        f"{update_remedy(host_cli, latest_label)}"
     )
+
+
+# Issue #219's other half. The check below detects a stale build and, until
+# now, said only that it was stale. The remedy lived in the README, which was
+# itself wrong until #219: it said "change the tag and re-register", and on
+# Claude Code that fails outright because `claude mcp add` refuses to
+# overwrite. So the detection fired correctly and led nowhere, which is close
+# enough to hardening rule 4 (detecting a problem and proceeding anyway is the
+# same as not detecting it) to be worth closing.
+#
+# The command genuinely differs per host, which is why this is keyed on
+# host_cli rather than printing one universal line:
+#   claude-code  refuses to overwrite, so remove must come first (VERIFIED,
+#                claude-code 2.1.232)
+#   codex        overwrites in place, so a remove step would be noise
+#                (VERIFIED, codex-cli 0.114.0)
+#   gemini       has no CLI registration at all; it is a settings.json edit
+#
+# An unknown or absent host_cli gets the documentation pointer rather than a
+# guessed command: a wrong command here is worse than no command, because a
+# user who runs it and sees no error assumes they have updated.
+_UPDATE_REMEDIES = {
+    "claude-code": (
+        "to update: `claude mcp remove engineering-audit`, then re-add it with "
+        "{latest} and --scope user (add refuses to overwrite, so the remove is "
+        "required), then start a NEW session, because this one keeps the build it "
+        "started with"
+    ),
+    "codex": (
+        "to update: re-run `codex mcp add` with {latest}; it replaces the existing "
+        "registration in place, so no removal step is needed"
+    ),
+    "gemini": (
+        "to update: change the tag to {latest} in the engineering-audit entry of "
+        "your ~/.gemini/settings.json mcpServers map, then restart gemini"
+    ),
+}
+
+_UPDATE_REMEDY_FALLBACK = (
+    "to update, see the Updating section for your assistant in "
+    "https://github.com/rodlunt/engineering-audit#how-to-use (the command differs "
+    "per host, so none is guessed here)"
+)
+
+
+def update_remedy(host_cli: str | None, latest_label: str) -> str:
+    """The concrete command that clears a stale install, for the host that
+    asked (issue #219).
+
+    ``host_cli`` is ``environment["host_cli"]`` as passed to ``begin_run``,
+    which is exactly the closed set this maps over. Anything unrecognised, or
+    absent, returns the documentation pointer: guessing a command for an
+    unknown host would produce a line the user can run without error and
+    without effect, which is a worse failure than saying nothing.
+    """
+    template = _UPDATE_REMEDIES.get((host_cli or "").strip().lower())
+    if template is None:
+        return _UPDATE_REMEDY_FALLBACK
+    return template.format(latest=latest_label)
 
 
 def check_for_update(
@@ -144,6 +209,7 @@ def check_for_update(
     installed_version: str,
     repo_url: str = TOOL_REPO_URL,
     enabled: bool = True,
+    host_cli: str | None = None,
 ) -> str:
     """Best-effort: compare the installed build against the tool's latest
     GitHub release tag, and return one of four status strings (see
@@ -205,7 +271,7 @@ def check_for_update(
 
     try:
         return _resolve_update_status(
-            result.stdout, installed_commit, installed_version
+            result.stdout, installed_commit, installed_version, host_cli
         )
     except Exception as exc:  # noqa: BLE001 - telemetry only, never fatal; see module docstring
         return f"could-not-check: unexpected error parsing remote refs ({exc})"

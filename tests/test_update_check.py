@@ -6,6 +6,7 @@ import subprocess
 
 import pytest
 
+from engineering_audit import update_check
 from engineering_audit.report import _render_meta_block
 from engineering_audit.schema import RunMeta
 from engineering_audit.update_check import (
@@ -80,10 +81,15 @@ def test_installed_matches_head_but_not_tag_is_current_ahead() -> None:
 def test_installed_matches_neither_is_stale_with_versions_and_short_shas() -> None:
     output = "headsha11\tHEAD\nlatestsha22\trefs/tags/v1.5.0\n"
     result = _resolve_update_status(output, "oldsha3333", "1.4.0")
-    assert result == (
+    # The facts of the staleness are pinned exactly; the remedy appended after
+    # them (issue #219) is host-dependent and has its own tests below, so it is
+    # asserted as present rather than restated here where it would have to be
+    # kept in step by hand.
+    assert result.startswith(
         "stale: latest release is v1.5.0 (latestsha22), installed build is 1.4.0 "
-        "@ oldsha3333"
+        "@ oldsha3333; "
     )
+    assert "to update" in result
 
 
 def test_no_version_tags_is_could_not_check() -> None:
@@ -416,3 +422,63 @@ class TestCheckPackForUpdate:
         result = check_pack_for_update(str(tmp_path), "a" * 40, "v0.6.0")
 
         assert result.startswith("could-not-check")
+
+
+@pytest.mark.parametrize(
+    "host_cli,must_contain",
+    [
+        ("claude-code", "claude mcp remove"),
+        ("codex", "codex mcp add"),
+        ("gemini", "settings.json"),
+    ],
+)
+def test_stale_status_names_the_command_for_the_host_that_asked(
+    host_cli: str, must_contain: str
+) -> None:
+    # Issue #219's other half. The check detected staleness and said only that
+    # it was stale; the remedy lived in a README that was itself wrong, so the
+    # detection led nowhere. The command genuinely differs per host, which is
+    # why this is keyed on host_cli instead of one universal line.
+    status = update_check._resolve_update_status(
+        "aaaaaaaaaaaabbbbbbbbbbbbcccccccccccc\trefs/tags/v9.9.9\n",
+        "ffffffffffffffffffffffff",
+        "0.11.0",
+        host_cli,
+    )
+    assert status.startswith("stale:")
+    assert must_contain in status
+
+
+def test_unknown_host_gets_a_pointer_rather_than_a_guessed_command() -> None:
+    # A wrong command is worse than no command here: a user who runs it and
+    # sees no error concludes they have updated when they have not, which is
+    # the exact silent-staleness failure this check exists to surface.
+    for host in ("something-else", "", None):
+        remedy = update_check.update_remedy(host, "v9.9.9")
+        assert "github.com/rodlunt/engineering-audit" in remedy
+        assert "mcp remove" not in remedy
+        assert "mcp add" not in remedy
+
+
+def test_non_stale_statuses_carry_no_remedy() -> None:
+    # The remedy rides on "stale" alone. "could-not-check" established
+    # nothing, so telling the user how to fix a problem that may not exist
+    # would assert the very thing that status refuses to assert.
+    ls_remote = "aaaaaaaaaaaabbbbbbbbbbbbcccccccccccc\trefs/tags/v9.9.9\n"
+    current = update_check._resolve_update_status(
+        ls_remote, "aaaaaaaaaaaabbbbbbbbbbbbcccccccccccc", "9.9.9", "claude-code"
+    )
+    assert current.startswith("current")
+    assert "to update" not in current
+
+    disabled = update_check.check_for_update(
+        "ffffffffffffffffffffffff", "0.11.0", enabled=False, host_cli="claude-code"
+    )
+    assert disabled.startswith("not-checked")
+    assert "to update" not in disabled
+
+    dirty = update_check.check_for_update(
+        "ffffffffffffffffffffffff-dirty", "0.11.0", host_cli="claude-code"
+    )
+    assert dirty.startswith("could-not-check")
+    assert "to update" not in dirty
