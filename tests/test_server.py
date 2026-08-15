@@ -619,7 +619,7 @@ def test_begin_run_update_checks_run_by_default(
     monkeypatch.delenv("ENGINEERING_AUDIT_NO_UPDATE_CHECK", raising=False)
     seen: dict[str, bool] = {}
 
-    def _fake_check_for_update(tool_commit, tool_version, enabled=True):
+    def _fake_check_for_update(tool_commit, tool_version, enabled=True, host_cli=None):
         seen["tool"] = enabled
         return "current (v1.0.0)"
 
@@ -4173,3 +4173,39 @@ def test_the_recorded_at_contract_still_says_these_are_not_durations() -> None:
     # the contract, the next reader has nothing telling them so.
     assert "not per-domain durations" in DOMAIN_RECORDED_AT_DESCRIPTION.lower()
     assert "issue #196" in DOMAIN_RECORDED_AT_DESCRIPTION
+
+
+def test_begin_run_passes_the_hosts_own_name_to_the_update_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Issue #219. The stale-update message names the command that clears it,
+    # and that command differs per host, so the check has to be told which
+    # host it is. begin_run is already given environment["host_cli"]; this
+    # pins that it reaches the check rather than the check falling back to the
+    # generic documentation pointer on every run.
+    monkeypatch.delenv("ENGINEERING_AUDIT_NO_UPDATE_CHECK", raising=False)
+    seen: dict[str, object] = {}
+
+    def _fake_check_for_update(tool_commit, tool_version, enabled=True, host_cli=None):
+        seen["host_cli"] = host_cli
+        return "current (v1.0.0)"
+
+    monkeypatch.setattr(server_module, "check_for_update", _fake_check_for_update)
+    monkeypatch.setattr(
+        server_module,
+        "check_pack_for_update",
+        lambda *a, **k: "current (v1.0.0)",
+    )
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    _begin_run(
+        mcp,
+        tmp_path / "audit-output",
+        environment={
+            "os": "Ubuntu 24.04",
+            "host_cli": "claude-code",
+            "host_cli_version": "2.1.232",
+        },
+    )
+
+    assert seen["host_cli"] == "claude-code"

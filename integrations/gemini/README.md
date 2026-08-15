@@ -60,8 +60,15 @@ your `~/.gemini/settings.json` (or the project-level `.gemini/settings.json`)
 ```
 
 `@v0.11.0` pins the install to the current tagged release rather than the moving `main` branch;
-see the root README's [How to use](../../README.md#how-to-use) section for how to find the latest tag
-and update to it deliberately.
+find the latest tag on the [Releases page](https://github.com/rodlunt/engineering-audit/releases).
+
+**To update to a newer tag**, edit the tag in the `args` array above and restart `gemini`.
+There is no CLI registration step here and so nothing to remove first, unlike Claude Code
+(where `claude mcp add` refuses to overwrite and needs a `claude mcp remove` first) or Codex
+(where `codex mcp add` overwrites silently). Editing this file is the whole operation.
+
+The server checks its own currency on every run and reports it as `meta.update_check`, which
+names the latest release when the installed build is behind it.
 
 Setting `ENGINEERING_AUDIT_RULES_DIR` in the `env` map directly, rather than relying
 on the environment, is deliberate. Gemini CLI's own docs state that an extension does
