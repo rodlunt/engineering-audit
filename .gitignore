@@ -17,7 +17,12 @@ build/
 audit-output/
 
 # Session handoff notes
+# Session handoff batons. BOTH spellings, deliberately: this repository's baton
+# is the hyphenated one, and the /nextlite command writes the unhyphenated one.
+# Only the hyphenated name was ignored, so running that command literally
+# created a second baton that WAS tracked, and would have been committed.
 next-session.md
+nextsession.md
 
 # Local scratch: extracted emails, tester reports (never commit)
 raw/
