@@ -73,17 +73,42 @@ that clone's `domains/` directory. See [Rules access](#rules-access) for how to 
 Every command below is pinned to the current release tag (`@v0.11.0`) rather than the
 moving `main` branch: an unpinned git dependency resolves to whatever `main` holds at
 install time and silently moves on later cache refreshes. Find the latest tag on [the
-Releases page](https://github.com/rodlunt/engineering-audit/releases); to update
-deliberately, change the tag in the command and re-register.
+Releases page](https://github.com/rodlunt/engineering-audit/releases). Updating to a newer
+tag is a deliberate act with its own command, below, not something that happens on a
+`git pull`: the pin lives in your assistant's MCP registration, not in this repository.
 
 #### Claude Code
 
 Register the server (swap in the taster path from Step 3, or your full-pack path):
 
 ```sh
-claude mcp add engineering-audit -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.11.0 \
+claude mcp add engineering-audit --scope user -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.11.0 \
     engineering-audit-mcp --rules-dir /path/to/engineering-audit/examples/taster-rules
 ```
+
+`--scope user` registers it for every repository. Without it `claude mcp add` defaults to
+local scope, which registers the server for the current directory alone and leaves it
+unavailable everywhere else.
+
+**To update to a newer tag**, remove first and re-add. `claude mcp add` refuses to
+overwrite an existing name (`MCP server engineering-audit already exists in user config`),
+so changing the tag on its own is not enough:
+
+```sh
+claude mcp remove engineering-audit
+claude mcp add engineering-audit --scope user -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.11.0 \
+    engineering-audit-mcp --rules-dir /path/to/engineering-audit/examples/taster-rules
+```
+
+**The change only takes effect in a new session.** The one you are in keeps the server it
+started with, so verify after restarting rather than before:
+
+```sh
+claude mcp list | grep engineering-audit    # must show the tag you just set
+```
+
+`begin_run`'s response states `tool_version` too. If it names the old version, the session
+predates the re-registration and the run is not exercising the build you think it is.
 
 Install the audit skill (gives you a natural-language entry point: "audit this repo"):
 
