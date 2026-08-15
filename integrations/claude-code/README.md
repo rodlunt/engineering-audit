@@ -113,6 +113,59 @@ questions of each before offering to go deeper, because an interrogation nobody 
 nothing. It names the domains it cut and counts the questions it did not ask, so a short session
 cannot be mistaken for a complete one.
 
+### Optional: offer it automatically when plan mode starts
+
+The skill above is invoked deliberately. If you would rather be asked, `interrogate-offer.sh` in
+this directory injects a one-off prompt when a session enters plan mode, offering three choices:
+interrogate first, interrogate the finished draft afterwards, or skip.
+
+```
+"hooks": {
+  "UserPromptSubmit": [
+    { "hooks": [ { "type": "command",
+        "command": "s=\"$HOME/path/to/engineering-audit/integrations/claude-code/interrogate-offer.sh\"; [ -x \"$s\" ] && bash \"$s\"; exit 0",
+        "timeout": 10 } ] }
+  ],
+  "PreToolUse": [
+    { "matcher": "EnterPlanMode",
+      "hooks": [ { "type": "command",
+        "command": "s=\"$HOME/path/to/engineering-audit/integrations/claude-code/interrogate-offer.sh\"; [ -x \"$s\" ] && bash \"$s\"; exit 0",
+        "timeout": 10 } ] }
+  ]
+}
+```
+
+**Keep the trailing `exit 0`, and do not simplify the command to a bare `bash <script>`.** A shell
+script containing a syntax error exits **2** without running a line, and on `UserPromptSubmit` an
+exit code of 2 does not merely fail, it **erases the prompt you just typed**. The script's own
+never-exit-non-zero discipline cannot protect against that, because a broken script never starts.
+The `exit 0` is the only thing that holds in that case.
+
+Two legs, because there are two ways in. `UserPromptSubmit` gated on `permission_mode == "plan"`
+is the mechanism: there is no hook event for a permission-mode change, so the first prompt seen in
+plan mode stands in for the transition, and a session-keyed stamp makes every later one a no-op.
+That also covers `claude --permission-mode plan`, where the session starts in plan mode and there
+is no transition at all. The `EnterPlanMode` leg catches a model-initiated entry one turn earlier;
+it works but is undocumented upstream, so treat it as a bonus rather than a guarantee.
+
+The hook never blocks and never denies. It reports rather than fails silently: if it cannot read
+its payload, cannot find `jq`, cannot write its state directory, or finds the skill directory
+present but its `SKILL.md` unresolvable (a dangling symlink), it says so once a day and does
+nothing. If the skill is simply not installed, it stays quiet rather than offering something that
+is not there.
+
+Turn it off without touching your settings:
+
+```
+touch "${XDG_STATE_HOME:-$HOME/.local/state}/claude-interrogate-offer/off"
+# or set CLAUDE_INTERROGATE_OFFER=0
+```
+
+**One thing the hook cannot do:** if you choose "interrogate afterwards", nothing enforces it. The
+hook fires once on entry and there is no leg on `ExitPlanMode`, so the commitment is held only by
+the assistant for the rest of that session. The skill says so in its own instructions, but it is a
+gap, not a mechanism.
+
 ## Host environment metadata
 
 `begin_run` takes an `environment` map, and the skill instructs Claude Code to populate it: on

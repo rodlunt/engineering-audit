@@ -141,10 +141,17 @@ line.
   carry on. Never treat it as a reason to fall back to the pack directory, and never derive
   questions from the part that fitted: a domain half-read produces a question set that looks
   complete and is not.
-- **One question per turn is a standing preference, not a style note.** Two questions in one turn
-  gets you one answer and a silent gap in the record.
+- **One question per turn, and the reason is mechanical rather than stylistic.** Ask two in one
+  turn and you reliably get one answer: the second is dropped, and it is recorded as ANSWERED
+  because a reply arrived. That is a silent gap, and silent gaps are the one thing this skill
+  exists to prevent.
 - **Use `AskUserQuestion` for the routing and shortlist questions**, where the options are fixed
   and few. Use plain prose for the interrogation questions themselves, which are open by design
   and must not be reduced to a multiple choice.
 - **Write into this session's plan file, the one the host named.** If there is none, ask for the
   slug before writing. Never open a second file for work that already has one.
+- **If the user chose to interrogate AFTER planning, nothing enforces that but you.** The offer, if
+  it came from the hook below, fires once on entry to plan mode and there is no second hook on
+  `ExitPlanMode`. So a choice of "afterwards" is a commitment held only in this conversation: run
+  the review pass before you present the plan, and if you reach the end and realise it was missed,
+  say so plainly rather than quietly presenting an uninterrogated plan.
