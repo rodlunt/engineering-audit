@@ -7,14 +7,14 @@ Wires the `engineering-audit` MCP server and its `audit` skill into Claude Code.
 **From the published git repository** (no local clone needed):
 
 ```
-claude mcp add engineering-audit --scope user -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.13.0 engineering-audit-mcp --rules-dir <path-to-rules-clone>
+claude mcp add engineering-audit --scope user -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.14.0 engineering-audit-mcp --rules-dir <path-to-rules-clone>
 ```
 
 `--scope user` registers the server for every repository. Without it `claude mcp add` defaults
 to local scope, which registers it for the current directory alone and leaves it unavailable
 everywhere else.
 
-`@v0.13.0` pins the install to the current tagged release rather than the moving `main` branch;
+`@v0.14.0` pins the install to the current tagged release rather than the moving `main` branch;
 find the latest tag on the [Releases page](https://github.com/rodlunt/engineering-audit/releases).
 
 ### Updating to a newer tag
@@ -26,7 +26,7 @@ overwrites silently, so its own README's instruction to re-add is correct for th
 
 ```
 claude mcp remove engineering-audit
-claude mcp add engineering-audit --scope user -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.13.0 engineering-audit-mcp --rules-dir <path-to-rules-clone>
+claude mcp add engineering-audit --scope user -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.14.0 engineering-audit-mcp --rules-dir <path-to-rules-clone>
 ```
 
 **The change only takes effect in a new session.** The session you are in keeps the server it
@@ -84,11 +84,13 @@ whether this has actually been exercised against a live Claude Code session.
 
 ## Install the interrogate skill (BETA)
 
-**Beta, and the label is literal.** New in v0.13.0. Question derivation has been exercised on
-three of the sixteen domains against a single brief, and the hook's failure paths have been
-tested, but **nobody has yet completed a full interactive interrogation**. The shape of the
-session (tranches, the go-deeper routing, the bail-out record) is unproven with a real person
-answering, and question quality is sampled rather than measured. Expect it to change, and please
+**Beta, and the label is literal.** New in v0.13.0, reshaped in v0.14.0 to run every relevant
+domain and triage globally rather than capping at three domains. Question derivation has been
+exercised on three of the sixteen domains against a single brief and the hook's failure paths have
+been tested, but **the cross-domain triage has never been run, and nobody has yet completed a full
+interactive interrogation**. The shape of the session (the relevance judgement, the triage, the
+deep-dive offer, the bail-out record) is unproven with a real person answering, and question
+quality is sampled rather than measured. Expect it to change, and please
 report anything that reads like a generic quiz rather than a question about your actual work:
 that is the failure mode this design is most likely to have.
 
@@ -114,12 +116,21 @@ The two skills answer different questions and neither replaces the other:
 | Runs against | a repository | intent, or a drafted plan |
 | Produces | `report.html` plus findings | questions, and a record of what was answered |
 | Needs a git commit | yes | no |
-| Rule coverage | every rule in every selected domain | a ranked subset, at most three domains |
+| Rule coverage | every rule in every selected domain | every relevant domain, triaged to the top three questions first |
 
-`interrogate` is deliberately not exhaustive. It caps at three domains and asks the top three
-questions of each before offering to go deeper, because an interrogation nobody finishes teaches
-nothing. It names the domains it cut and counts the questions it did not ask, so a short session
-cannot be mistaken for a complete one.
+`interrogate` is exhaustive in what it *derives* and deliberately not in what it *asks*. It runs
+every domain whose trigger fires, with no cap, and works out the full question set. It then asks
+only the three most impactful from the whole pool, because an interrogation nobody finishes
+teaches nothing, and offers the rest as a deep dive with the real number attached ("that is the
+top three of 47").
+
+Nothing derived is thrown away. The record carries a per-domain table of derived, asked and not
+asked, and the domains judged irrelevant are named too, so a short session cannot be mistaken for
+a complete one and a skipped domain cannot be mistaken for a covered one.
+
+The cost lands in the fan-out: one read-only subagent per relevant domain, each reading a document
+of 300 to 800 lines. The skill tells you how many that is and asks before spending it, because
+that is the only point where the cost is knowable in advance.
 
 ### Optional: offer it automatically when plan mode starts
 
