@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from engineering_audit import feedback as feedback_module
 from engineering_audit import report as report_module
 from engineering_audit.feedback import (
     build_feedback_body,
@@ -4009,3 +4010,95 @@ def test_could_not_run_domain_does_not_render_as_all_rules_evaluated() -> None:
     assert unevaluated_base(None) == ""
     assert unevaluated_base((0, 0)) == " (no rules were verdicted)"
     assert "evaluated" not in unevaluated_base((0, 0))
+
+
+# ---------------------------------------------------------------------------
+# Issue #189, widened. The guard above is <summary>-scoped, and the defect it
+# guards is not: it is the "N of M" idiom, wherever that lands. Two blind spots
+# were already known and both have now been hit for real.
+#
+#   - <h3> headings carrying a count (_headline_block, _findings_rollup,
+#     _rules_fetched_list), recorded as an unguarded gap in the 0.10.0 baton.
+#   - a table cell, which is where #211 lived. That was the FIFTH instance of
+#     this family (#100, #122, #184, #195), and the <summary> guard written
+#     after the fourth did not see it.
+#
+# #211 also crossed a module boundary: the Confidence column's text is built in
+# feedback.unevaluated_base, not in report.py at all, so a report-only scan
+# would still have missed it. This one walks both.
+# ---------------------------------------------------------------------------
+
+_N_OF_M_RE = re.compile(r"\{[^{}]+\} of \{[^{}]+\}")
+
+_COUNTED = "renders its count over an explicit base"
+
+_N_OF_M_BLOCKS = {
+    ("report", "_count_over_population"): (
+        "the helper itself: the one place the three states (none found, none "
+        "recorded, N found) are decided. Everything classified as routed calls it."
+    ),
+    ("report", "_headline_block"): _COUNTED,
+    ("report", "_findings_rollup"): _COUNTED,
+    ("report", "_findings_section"): _COUNTED,
+    ("report", "_domains_without_findings"): _COUNTED,
+    ("report", "_not_applicable_list"): _COUNTED,
+    ("report", "_rules_fetched_list"): _COUNTED,
+    ("report", "_domain_table"): (
+        "issue #211's site. The per-domain row carries findings over the run "
+        "total, and the Confidence cell now carries could-not-evaluate over "
+        "rules verdicted, via feedback.unevaluated_base."
+    ),
+    ("report", "_severity_cell"): _COUNTED,
+    ("report", "_issues_section"): _COUNTED,
+    ("feedback", "unevaluated_base"): (
+        "issue #211's text builder, in another module. A self-reported "
+        "confidence never renders without the count of the domain's own "
+        "could-not-evaluate rules beside it."
+    ),
+}
+
+
+def _n_of_m_functions() -> set[tuple[str, str]]:
+    found: set[tuple[str, str]] = set()
+    for label, module in (("report", report_module), ("feedback", feedback_module)):
+        source = Path(module.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and _N_OF_M_RE.search(
+                ast.get_source_segment(source, node) or ""
+            ):
+                found.add((label, node.name))
+    return found
+
+
+def test_every_count_over_a_base_is_classified_wherever_it_renders() -> None:
+    # The enumeration, held against the code. A new "N of M" added anywhere in
+    # either module, in any container, fails here until somebody has decided
+    # what it does when the underlying question was never answered. That
+    # decision is the thing whose absence let this defect ship five times.
+    found = _n_of_m_functions()
+
+    assert found == set(_N_OF_M_BLOCKS), (
+        "the set of functions rendering a count over a base has changed. "
+        "Classify each new one in _N_OF_M_BLOCKS, and make sure it cannot read "
+        "as a clean zero when the question behind it was never asked.\n"
+        f"unclassified: {sorted(found - set(_N_OF_M_BLOCKS))}\n"
+        f"gone: {sorted(set(_N_OF_M_BLOCKS) - found)}"
+    )
+
+
+def test_the_widened_guard_actually_reaches_both_known_blind_spots() -> None:
+    # The control for the guard above. It is only worth anything if it covers
+    # the two places the <summary>-scoped guard demonstrably did not: an <h3>
+    # count line, and issue #211's table cell plus its cross-module text
+    # builder. If a future refactor narrows the scan, this fails rather than
+    # the registry quietly shrinking to match.
+    found = _n_of_m_functions()
+
+    assert ("report", "_headline_block") in found, "lost the <h3> blind spot"
+    assert ("report", "_rules_fetched_list") in found, "lost the <h3> blind spot"
+    assert ("report", "_domain_table") in found, "lost #211's table cell"
+    assert ("feedback", "unevaluated_base") in found, (
+        "lost the cross-module reach: #211's text is built outside report.py, "
+        "so a report-only scan would have missed it"
+    )
