@@ -27,7 +27,7 @@ documented in [the Claude Code integration guide](../claude-code/README.md).
 
 ## Four terms used in this guide
 
-- **AI assistant:** Codex or Claude Code—the application you talk to while planning and coding.
+- **AI assistant:** Codex or Claude Code, the application you talk to while planning and coding.
 - **MCP connection:** the link that lets the assistant ask engineering-audit for rules. Registering
   the MCP means adding that link to the assistant once.
 - **Rules pack:** a folder containing the engineering guidance.
@@ -44,13 +44,34 @@ documented in [the Claude Code integration guide](../claude-code/README.md).
    - **not applicable:** the intended project genuinely does not contain the thing covered;
    - **unknown:** one answer is needed before the assistant can decide.
 
-4. It loads the full rules only for the active domains.
-5. It interviews you in short rounds. Every question includes a recommended answer and explains
-   why the decision matters.
-6. After each confirmed round it checkpoints the decisions, coverage map, and next frontier. If
-   the session stops or is interrupted, it leaves an explicit incomplete marker so the next session
-   can recover honestly.
-7. It records confirmed decisions, terms, build checks, and known risks in project documents.
+4. Before reading full domain documents, it shows a first cost preview. The preview names the
+   active-now domain count, the full documents and rule inputs it plans to read, and a provisional
+   turn range. It asks whether you want to continue with that scope and estimate or adjust them.
+   It recalculates the preview after any adjustment.
+5. After you approve the scope, it reads the full rules for the active domains. A full response
+   saved to a spool file is still a successful load, so the assistant reads that file to the end.
+6. It then derives the dependency-aware decision tree. Before the first deep question, it states
+   the retained derived total or a refined turn range. The range names its ready frontier and every
+   reachable branch that could add questions. Generic candidates are filtered before they enter the
+   derived total.
+7. It considers only decisions whose prerequisites are settled, then ranks that ready frontier by
+   risk, including likely harm, reach, and difficulty of undoing the decision.
+   Blocked branches stay in open questions until their prerequisite is settled.
+8. It asks one question per turn. Every question is project-specific, includes a recommended
+   answer, and explains why the decision matters.
+9. It applies a generic-question filter before showing a question. The filter removes questions
+   that do not name a concrete project decision, actor, data, boundary, or outcome. A rule that
+   needs no user choice can instead become inspected evidence or a named build or verification
+   gate.
+10. After each confirmed answer, it checkpoints the decisions, coverage map, fact map, and next
+   frontier. At each checkpoint, completion, and early exit it reports honest question counts for
+   derived, asked, answered, deferred, and not asked. The counts obey `asked = answered + deferred`
+   and `derived = asked + not_asked`.
+11. If the session stops or is interrupted, it leaves an explicit incomplete marker, the open
+    questions, and the next frontier so the next session can recover honestly. A question already
+    shown but unanswered is deferred with its reason and resume trigger. A dependency-held question
+    is not asked and remains in the not asked count.
+12. It records confirmed decisions, terms, build checks, and known risks in project documents.
 
 An empty project folder does not make domains disappear. The assistant judges the system you
 intend to build, not only the files that happen to exist today.
@@ -61,8 +82,8 @@ The assistant writes these files inside the project being planned, not inside th
 `engineering-audit` checkout:
 
 - `CONTEXT.md`: a small dictionary of agreed project language;
-- `docs/engineering-coverage.md`: which domains apply, which are deferred, and what must be built
-  or verified;
+- `docs/engineering-coverage.md`: the domain map, checkpoint, decision ledger, deferred triggers,
+  and what must be built or verified;
 - `docs/adr/`: occasional decision records for important choices that would otherwise be hard to
   understand later.
 
@@ -70,6 +91,28 @@ Files are created only after material is confirmed. A later grill reads and upda
 documents, checks them against the conversation, and continues ADR numbering. It does not replace
 them blindly. The grill does not write project code, start an audit, make pass/fail claims, or
 file GitHub issues.
+
+## Progress and stopping
+
+The assistant reports the same five counts at every checkpoint, on completion, and on early exit:
+
+- **derived:** retained project-specific questions after the generic-question filter;
+- **asked:** questions shown to you;
+- **answered:** questions answered well enough to settle the decision;
+- **deferred:** questions shown but unanswered. If a shown question is interrupted, include its
+  reason and resume trigger;
+- **not asked:** every retained question not shown yet, including dependency-held items and the
+  remainder at early exit. Record why it was not shown, such as an unresolved prerequisite or
+  early exit.
+
+The counts must always satisfy `asked = answered + deferred` and `derived = asked + not_asked`.
+At completion, the assistant explains any non-zero deferred or not asked count and shows why no
+reachable decision remains unresolved. On early exit, it keeps the counts, writes the incomplete
+marker, and names the open questions and next frontier. It does not hide unanswered questions in a
+rounded total. If no project location exists, it keeps the full checkpoint in the conversation
+draft, shows these counts before asking where to save it or a next deep question, and asks exactly
+one location question in that turn. The checkpoint exists in the draft even though it is not on
+disk. Once you supply a location, the assistant writes or updates the checkpoint and continues.
 
 ## Support and requirements
 
