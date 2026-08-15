@@ -1644,7 +1644,14 @@ def _register_run_tools(mcp: MCPServer, state: AppState) -> None:
                 pack_metadata.requires_tool if pack_metadata else None
             ),
             update_check=check_for_update(
-                tool_commit_value, tool_version_value, enabled=update_check_enabled
+                tool_commit_value,
+                tool_version_value,
+                enabled=update_check_enabled,
+                # Issue #219: the host decides what the fix command is, and
+                # begin_run is already told which host it is. Absent or
+                # unrecognised falls back to a documentation pointer rather
+                # than a guessed command.
+                host_cli=(environment or {}).get("host_cli"),
             ),
             pack_update_check=check_pack_for_update(
                 str(state.pack.root),
