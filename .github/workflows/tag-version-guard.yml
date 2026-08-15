@@ -66,18 +66,39 @@ jobs:
         with:
           name: sbom-${{ github.ref_name }}
           path: sbom-*.cdx.json
-      - name: Attach SBOM to the GitHub release, if one exists
+      - name: Ensure a release exists, then attach the SBOM
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
-          # Releases for this repo are not created by automation, so a tag
-          # can land before its release does. Attach when possible; when
-          # not, say so plainly rather than reporting a false success, since
-          # the SBOM is still recoverable from the workflow artifact above.
+          # This step used to log "no release exists yet" and exit 0, on the
+          # reasoning that the SBOM was still recoverable from the workflow
+          # artifact above. That is detecting a problem and proceeding anyway,
+          # which is the same as not detecting it, and it bit: v0.13.0 and
+          # v0.14.0 both shipped with no SBOM and nothing said so until
+          # somebody went looking three sessions later. The message was
+          # written to a log that is only read when you already suspect the
+          # thing it reports.
+          #
+          # So the step now creates the release rather than reporting its
+          # absence. Notes are generated, because a release that exists with
+          # ordinary notes can be rewritten by hand afterwards, whereas a
+          # release that does not exist takes its SBOM with it. Anything that
+          # fails from here is a real failure and exits non-zero.
+          set -euo pipefail
+
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$TAG" "sbom-${TAG}.cdx.json" --repo "$GITHUB_REPOSITORY" --clobber
-            echo "attached SBOM to release $TAG"
+            echo "release $TAG already exists"
           else
-            echo "no GitHub release exists yet for $TAG: SBOM is available as the workflow artifact above, attach it manually once the release is created" >&2
+            echo "no release for $TAG: creating one with generated notes"
+            # --verify-tag refuses to invent a tag if the ref ever disappears
+            # between the push and this step.
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$TAG" \
+              --generate-notes \
+              --verify-tag
           fi
+
+          gh release upload "$TAG" "sbom-${TAG}.cdx.json" --repo "$GITHUB_REPOSITORY" --clobber
+          echo "attached SBOM to release $TAG"
