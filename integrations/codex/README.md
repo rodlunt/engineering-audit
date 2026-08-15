@@ -20,8 +20,23 @@ codex mcp add engineering-audit \
 ```
 
 `@v0.11.0` pins the install to the current tagged release rather than the moving `main` branch;
-see the root README's [How to use](../../README.md#how-to-use) section for how to find the latest tag
-and update to it deliberately.
+find the latest tag on the [Releases page](https://github.com/rodlunt/engineering-audit/releases).
+
+### Updating to a newer tag
+
+**Change the tag and run the same command again.** `codex mcp add` overwrites an existing
+registration of the same name without complaint, so no removal step is needed. VERIFIED on
+codex-cli 0.114.0 by registering one name twice and confirming the second command replaced the
+first.
+
+This differs from Claude Code, where `claude mcp add` refuses to overwrite and a
+`claude mcp remove` has to come first. Do not copy that host's two-step form here; it is not
+needed, and `codex mcp remove` followed by `codex mcp add` is simply a longer way to the same
+place.
+
+Confirm the change with `codex mcp list`, and check the run's own `meta.update_check`, which
+the server computes on every run and which names the latest release when the installed build
+is behind it.
 
 `<path-to-rules-clone>` is a local checkout of a rules pack: a directory of
 `NN-slug.md` domain files. Rules packs are distributed separately from this tool
