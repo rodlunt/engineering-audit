@@ -1,6 +1,6 @@
 [project]
 name = "engineering-audit"
-version = "0.10.0"
+version = "0.11.0"
 description = "Rules-pack-agnostic engineering practice audit tool delivered as a local MCP server."
 authors = [
     { name = "rodlunt", email = "181032093+rodlunt@users.noreply.github.com" }
