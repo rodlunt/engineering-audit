@@ -78,23 +78,6 @@ def _last_commit_epoch(path: str) -> int | None:
     return int(stamp) if stamp.isdigit() else None
 
 
-# Both links are currently broken (issue #225), so both are marked strict
-# xfail rather than deleted, skipped or asserted loosely. Strict is the whole
-# point: the moment the images are rebuilt these start passing, and a strict
-# xfail that passes FAILS, which forces the marker off and leaves a live guard
-# behind. Debt that clears itself, instead of a TODO nobody revisits.
-_STALE = pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "issue #225: docs/images/report-light.png predates the report it "
-        "captures, and docs/images/social-card.png predates the capture it "
-        "embeds. Rebuild both per docs/social-card/README.md, then remove this "
-        "marker; strict=True means leaving it on after the fix fails the suite."
-    ),
-)
-
-
-@_STALE
 def test_the_report_capture_is_not_older_than_the_report_it_captures() -> None:
     # The first link. docs/images/report-light.png is a picture of
     # docs/demo/report.html, so a renderer change that is not re-captured
@@ -122,7 +105,6 @@ def test_the_report_capture_is_not_older_than_the_report_it_captures() -> None:
     )
 
 
-@_STALE
 def test_social_card_is_not_older_than_the_report_capture_it_embeds() -> None:
     if _is_shallow_clone():
         pytest.skip(
