@@ -70,7 +70,7 @@ that clone's `domains/` directory. See [Rules access](#rules-access) for how to 
 
 ### Step 4: register the tool with your assistant
 
-Every command below is pinned to the current release tag (`@v0.12.0`) rather than the
+Every command below is pinned to the current release tag (`@v0.13.0`) rather than the
 moving `main` branch: an unpinned git dependency resolves to whatever `main` holds at
 install time and silently moves on later cache refreshes. Find the latest tag on [the
 Releases page](https://github.com/rodlunt/engineering-audit/releases). Updating to a newer
@@ -82,7 +82,7 @@ tag is a deliberate act with its own command, below, not something that happens 
 Register the server (swap in the taster path from Step 3, or your full-pack path):
 
 ```sh
-claude mcp add engineering-audit --scope user -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.12.0 \
+claude mcp add engineering-audit --scope user -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.13.0 \
     engineering-audit-mcp --rules-dir /path/to/engineering-audit/examples/taster-rules
 ```
 
@@ -96,7 +96,7 @@ so changing the tag on its own is not enough:
 
 ```sh
 claude mcp remove engineering-audit
-claude mcp add engineering-audit --scope user -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.12.0 \
+claude mcp add engineering-audit --scope user -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.13.0 \
     engineering-audit-mcp --rules-dir /path/to/engineering-audit/examples/taster-rules
 ```
 
@@ -125,14 +125,14 @@ Register the server (verified against codex-cli 0.114.0):
 ```sh
 codex mcp add engineering-audit \
     --env ENGINEERING_AUDIT_RULES_DIR=/path/to/engineering-audit/examples/taster-rules \
-    -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.12.0 engineering-audit-mcp
+    -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.13.0 engineering-audit-mcp
 ```
 
 Inline mode: generate the trigger fragment and append it to your repo's `AGENTS.md` (or
 `~/.codex/AGENTS.md` for all repos):
 
 ```sh
-uvx --from git+https://github.com/rodlunt/engineering-audit@v0.12.0 engineering-audit-fragments \
+uvx --from git+https://github.com/rodlunt/engineering-audit@v0.13.0 engineering-audit-fragments \
     --rules-dir /path/to/engineering-audit/examples/taster-rules --out-dir .
 cat AGENTS-fragment.md >> AGENTS.md
 ```
@@ -157,7 +157,7 @@ swapping in the taster path from Step 3:
       "command": "uvx",
       "args": [
         "--from",
-        "git+https://github.com/rodlunt/engineering-audit@v0.12.0",
+        "git+https://github.com/rodlunt/engineering-audit@v0.13.0",
         "engineering-audit-mcp"
       ],
       "env": {
@@ -180,7 +180,7 @@ Inline triggers work too, and need no extension: generate the fragment and merge
 whichever `GEMINI.md` tier you want it to apply to.
 
 ```sh
-uvx --from git+https://github.com/rodlunt/engineering-audit@v0.12.0 engineering-audit-fragments \
+uvx --from git+https://github.com/rodlunt/engineering-audit@v0.13.0 engineering-audit-fragments \
     --rules-dir /path/to/engineering-audit/examples/taster-rules --out-dir .
 cat GEMINI-fragment.md >> GEMINI.md
 ```
@@ -234,6 +234,37 @@ engineering rules"), tick the domains on the configuration page that opens, wait
 sweep, then open `audit-output/report.html`. What to expect while it runs is in
 [What a run looks like](#what-a-run-looks-like); what it costs in tokens is in
 [What a full run costs](#what-a-full-run-costs).
+
+## Interrogate, before the code exists (BETA)
+
+**Status: beta, and the label is meant literally.** Shipped in v0.13.0, and the parts of it that
+have actually been exercised are listed below alongside the parts that have not. Expect it to
+change.
+
+An audit sweeps the rules over a repository that already exists. `interrogate` runs them the
+other way, as questions about work that has not started: it picks at most three domains, derives
+a ranked question set from their rules, asks them one at a time, and records what was answered,
+what was deferred and what was never asked.
+
+Ten of the sixteen domains are design-time by their own `Load this when:` statements, so most of
+the pack was already pointed at the moment before the code, with nothing to deliver it there.
+
+It never starts a run. It calls `list_domains` and `get_domain` only, both of which work with no
+run in progress, so it works on a directory that is not a repository yet or on nothing but a
+description. Setup, including the optional hook that offers it when plan mode starts, is in
+[integrations/claude-code/README.md](integrations/claude-code/README.md).
+
+**What has been exercised:** question derivation on three domains (d02, d01, d15) against one
+brief, the no-run guarantee, and the hook's failure paths.
+
+**What has not:** the other thirteen domains, and the interactive loop itself with a real person
+answering. Nobody has yet finished a full interrogation. Until they have, treat the shape of the
+session as unproven and the question quality as sampled rather than measured.
+
+This is a beta of a Claude Code integration specifically. There is no Codex or Gemini equivalent,
+and unlike `audit` there is no assistant-neutral protocol document behind it: the skill file is
+the whole specification. That is deliberate for now and is the first thing to change if it earns
+its place.
 
 ## Scope
 

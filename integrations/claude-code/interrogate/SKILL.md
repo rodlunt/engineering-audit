@@ -5,6 +5,13 @@ description: Use when the user wants their intent or a drafted plan questioned b
 
 # Interrogate
 
+**BETA.** New in engineering-audit v0.13.0. Question derivation has been exercised on three of
+the sixteen domains, and the loop below has never been run end to end with a real person
+answering. Say so once, early, if the user has not already been told: they should know the shape
+of the session may change under them, and that a question reading as a generic quiz rather than
+as being about their actual work is a defect worth reporting rather than something to work
+around.
+
 Turns the rules pack into questions about the work in front of you, before the work is done.
 It never audits code and it never starts an audit run.
 
