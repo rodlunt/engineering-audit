@@ -7,7 +7,8 @@
 ![Checked with ruff and mypy](https://img.shields.io/badge/checked%20with-ruff%20%2B%20mypy-4b8bbe)
 
 **TL;DR:** engineering-audit turns the AI coding assistant you already use (Claude Code,
-Codex CLI, Gemini CLI) into an engineering-practice auditor. It has **two audit modes**:
+Codex CLI, Gemini CLI) into an engineering-practice auditor, with a full repository audit and
+lightweight inline decision-time rule lookup. Optional planning skills help before code exists:
 
 1. **Full repository audit**: your assistant sweeps a whole repository against a pack of
    sourced engineering rules and produces a self-contained HTML report. Every finding says
@@ -26,7 +27,7 @@ understand the framework first.
 **Three complete rule domains ship in this repository**, ready to run: data modelling,
 testing strategy and presenting data, 54 rules with their full source citations, in
 [examples/taster-rules/](examples/taster-rules/). You can run a real audit right now with
-no sign-up; the full sixteen-domain, 260-rule pack is available on request
+no sign-up; the full framework pack is available on request
 ([Rules access](#rules-access)).
 
 **[Save me the chit chat: show me how to install it →](#how-to-use)**
@@ -136,7 +137,7 @@ codex mcp add engineering-audit \
     -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.14.0 engineering-audit-mcp
 ```
 
-Inline mode: generate the trigger fragment and append it to your repo's `AGENTS.md` (or
+Inline decision-time checks: generate the trigger fragment and append it to your repo's `AGENTS.md` (or
 `~/.codex/AGENTS.md` for all repos):
 
 ```sh
@@ -202,7 +203,9 @@ it. Check `gemini --help` before an unattended run. Details and caveats:
 Install [Engineering Grill](integrations/engineering-grill/) after registering the MCP server
 if you want a guided, plain-English planning conversation before code is written. It reads the
 domains from the connected rules pack, so the taster pack gives a three-domain grill and the full
-rules pack gives the complete framework.
+rules pack gives the complete framework. Claude Code also has the beta `interrogate` workflow;
+choose one planning entry path rather than running both for the same project. See the Grill and
+Claude Code guides for the difference.
 
 #### Headless / CI
 
@@ -267,21 +270,22 @@ Triage is global on purpose. One domain's third-best question routinely matters 
 another's first, and a per-domain ranking cannot see that. Questions carry a reversibility grade
 and a blast radius so they can be compared across domains at all.
 
-Ten of the sixteen domains are design-time by their own `Load this when:` statements, so most of
-the pack was already pointed at the moment before the code, with nothing to deliver it there.
+The current full pack is an example: it returns 16 domains, ten of them design-time by their own
+`Load this when:` statements. That count can change with the connected rules pack, so the skill
+always uses the domains returned by the current `list_domains` call.
 
 It never starts a run. It calls `list_domains` and `get_domain` only, both of which work with no
 run in progress, so it works on a directory that is not a repository yet or on nothing but a
 description. Setup, including the optional hook that offers it when plan mode starts, is in
 [integrations/claude-code/README.md](integrations/claude-code/README.md).
 
-**What has been exercised:** question derivation on three domains (d02, d01, d15) against one
-brief, the no-run guarantee, and the hook's failure paths.
+**What has been exercised:** question derivation on three returned domains (d02, d01, d15)
+against one brief, the no-run guarantee, and the hook's failure paths.
 
 **What has never been run even once:** the cross-domain triage. It is the newest part and the
 part everything else now depends on, so treat its output with more suspicion than the rest.
 
-**What has not:** the other thirteen domains, and the interactive loop itself with a real person
+**What has not:** the other returned domains, and the interactive loop itself with a real person
 answering. Nobody has yet finished a full interrogation. Until they have, treat the shape of the
 session as unproven and the question quality as sampled rather than measured.
 
@@ -316,21 +320,27 @@ finding capture (a rule the agent did not check can never be recorded as a pass)
 configuration page, deterministic report rendering, source citations attached from the
 rules pack itself, and GitHub issue filing with an explicit confirmation step.
 
-Two audit modes, plus an optional project-start skill:
+The product has a standalone audit, inline decision-time lookup, and optional project-start skills:
 
 - **Engineering Grill**: before code is written, the assistant sorts the loaded domains by
   relevance, asks framework-backed questions and records the resulting plan. It uses only the
-  read-only `list_domains` and `get_domain` tools and does not start an audit run.
+  read-only `list_domains` and `get_domain` tools, runs only from an explicit invocation in a
+  fresh non-audit session, and does not start an audit run.
 - **Standalone audit**: tick the domains to audit on a local configuration page (or supply
   a saved config for headless runs), the agent sweeps the repository, and you get
   `report.html` plus optional GitHub issues.
-- **Inline**: one-line triggers merged into your assistant's instruction context tell it to
+- **Inline decision-time lookup**: one-line triggers merged into your assistant's instruction
+  context tell it to
   call `get_domain(...)` at decision moments (designing a schema, cutting a branch, shaping
-  an API), so the rules arrive exactly when they are useful.
+  an API), so the rules arrive exactly when they are useful. This is not an audit run.
+- **Claude Code `interrogate` (BETA)**: a separate pre-build plan workflow that derives questions
+  from every relevant returned domain, asks the top three first, and offers the rest as a deep dive.
+  Choose Engineering Grill or `interrogate` as the planning entry path; do not run both for the
+  same project.
 
 ## Support matrix
 
-| Assistant | Inline mode | Standalone audit |
+| Assistant | Inline lookup | Standalone audit |
 |---|---|---|
 | Claude Code | proven (in daily use via skills) | proven (recorded run 2026-08-09) |
 | OpenAI Codex CLI | documented, untested | proven (recorded run 2026-08-10) |
@@ -438,7 +448,7 @@ in `tests/fixture_pack`, not a real audit against a real repository.
 
 ## The rules
 
-The author's rules pack covers sixteen decision domains, 260 rules in all, each rule
+The author's current full rules pack returns 16 decision domains and 260 rules in all, each rule
 carrying a cited source, a volatility tier and a verification date, and each domain proven
 against a real system before it is trusted:
 

@@ -1,28 +1,37 @@
 ---
 name: interrogate
-description: Use when the user wants their intent or a drafted plan questioned before the code exists: "interrogate this", "question my plan", "what am I not thinking about", or at the start of a greenfield feature. Fans out read-only subagents over every relevant engineering-framework domain, derives the full question set, triages the three most impactful across all of them, asks those one per turn, then offers a deep dive through the rest, recording answers and gaps into the plan file.
+description: >-
+  Use when the user wants their intent or a drafted plan questioned before the code exists:
+  "interrogate this", "question my plan", "what am I not thinking about", or at the start of a
+  greenfield feature. Fans out read-only subagents over every relevant engineering-framework
+  domain, derives the full question set, triages the three most impactful across all of them, asks
+  those one per turn, then offers a deep dive through the rest, recording answers and gaps into
+  the plan file.
 ---
 
 # Interrogate
 
 **BETA.** New in engineering-audit v0.13.0, reshaped in v0.14.0. Question derivation has been
-exercised on three of the sixteen domains individually; the cross-domain triage in this file has
-never been run at all, and the loop below has never been run end to end with a real person
-answering. Say so once, early, if the user has not already been told: they should know the shape
-of the session may change under them, and that a question reading as a generic quiz rather than
-as being about their actual work is a defect worth reporting rather than something to work
-around.
+exercised on three returned domains individually; the cross-domain triage in this file has never
+been run at all, and the loop below has never been run end to end with a real person answering.
+Say so once, early, if the user has not already been told: they should know the shape of the
+session may change under them, and that a question reading as a generic quiz rather than as being
+about their actual work is a defect worth reporting rather than something to work around.
 
 Turns the rules pack into questions about the work in front of you, before the work is done.
-It never audits code and it never starts an audit run.
+It never audits code, starts an audit run, or runs during an audit. Start it only in a fresh,
+non-audit Claude Code session with no audit run active or starting. If an audit is active, finish
+it and open a new session before invoking Interrogate.
 
 The rules come from the `engineering-audit` MCP server. Two tools only: `list_domains` and
-`get_domain`. Both work with no run in progress, verified in `server.py`, where every run side
-effect inside `get_domain` sits behind `if run is not None`.
+`get_domain`. They are non-attributed and side-effect-free for Interrogate only when no run is in
+progress. When a run is active, `get_domain` can persist fetch metadata, so do not call either tool
+from an audit session or while an audit is starting. If the run state is uncertain, stop and start
+a fresh non-audit session.
 
-**Never call `begin_run`, `record_domain_result`, `file_issues` or `render_report`.** Those
-belong to the `audit` skill. They demand a repository name and commit, and work that has not
-started yet has neither.
+**Never call `begin_run`, `start_config`, `get_config`, `record_domain_result`, `file_issues` or
+`render_report`.** Those belong to the `audit` skill. Interrogate must not begin or interact with
+an audit, and work that has not started yet has no audit run to operate on.
 
 **Never load a domain's own skill inline.** Those files run 300 to 800 lines each. The whole
 point of this skill is that only a subagent ever reads one.
@@ -36,14 +45,14 @@ point of this skill is that only a subagent ever reads one.
    confirm in one question. Never assume silently.
 2. **State the work in two or three lines and show it back.** Everything downstream keys off
    this, so a misreading is cheapest to fix here. In `review` mode, read the plan file first.
-3. **Judge relevance, domain by domain. There is no cap.** Call `list_domains`: sixteen
-   triggers, no rule text, cheap. Put each trigger against the work and decide whether it
-   genuinely fires. Every domain that does is in, whether that is two or twelve. Do not trim to a
-   number, and do not include a domain because the pack would look better covered: a domain that
-   does not fire produces questions with no grip, which is the failure this skill is most likely
-   to have.
+3. **Judge relevance, domain by domain. There is no cap.** Call `list_domains` and use every
+   returned trigger; the call returns trigger metadata, not rule text, and is cheap. Put each
+   trigger against the work and decide whether it genuinely fires. Every domain that does is in,
+   whether that is two or twelve. Do not trim to a number, and do not include a domain because the
+   pack would look better covered: a domain that does not fire produces questions with no grip,
+   which is the failure this skill is most likely to have.
 4. **Show the split and the cost before spending anything.** Print two lines that between them
-   name all sixteen:
+   name every domain returned by `list_domains`:
    - `Relevant:` every domain that fired, one line of why each.
    - `Not relevant:` the rest, ids and slugs, with a handful of words on why not.
 
@@ -135,6 +144,9 @@ Written into this session's plan file under `## Design decisions (interrogate)`.
 an earlier section: a second run appends `### Second pass (<date>)`.
 
     ## Design decisions (interrogate)
+
+    The counts and domain ids in this example are illustrative. Use the domains and totals
+    returned by the current `list_domains` call.
 
     Mode: before. Run: 2026-08-15.
     Status: top three answered, deep dive declined. 4 of 47 questions asked.

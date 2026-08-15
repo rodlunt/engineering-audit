@@ -8,6 +8,23 @@ must be true before it is safe to launch.
 You do not need to understand the engineering framework or choose its domains yourself. The
 assistant does that work and explains its recommendations in ordinary language.
 
+## Choose one planning entry path
+
+For a project that has not been built yet, choose one of the two planning skills and use that
+entry point once:
+
+- **Engineering Grill (Codex and Claude Code):** an explicit-invocation, comprehensive interview.
+  It builds a dependency-aware decision tree, classifies every returned domain, and records
+  confirmed terminology, coverage, decisions, risks, and build gates in project documents.
+- **Claude Code `interrogate` (BETA):** a Claude-only plan workflow. It derives questions from
+  every relevant returned domain, asks the three highest-impact questions first, and then offers
+  the remaining questions as a deep dive in the plan file. It is deliberately lighter and its
+  cross-domain workflow is still unproven.
+
+Do not run both for the same project or in the same planning session. They ask similar questions
+with different records and pacing; choose the one whose handoff you want. `interrogate` is
+documented in [the Claude Code integration guide](../claude-code/README.md).
+
 ## Four terms used in this guide
 
 - **AI assistant:** Codex or Claude Code—the application you talk to while planning and coding.
@@ -30,7 +47,10 @@ assistant does that work and explains its recommendations in ordinary language.
 4. It loads the full rules only for the active domains.
 5. It interviews you in short rounds. Every question includes a recommended answer and explains
    why the decision matters.
-6. It records confirmed decisions, terms, build checks, and known risks in project documents.
+6. After each confirmed round it checkpoints the decisions, coverage map, and next frontier. If
+   the session stops or is interrupted, it leaves an explicit incomplete marker so the next session
+   can recover honestly.
+7. It records confirmed decisions, terms, build checks, and known risks in project documents.
 
 An empty project folder does not make domains disappear. The assistant judges the system you
 intend to build, not only the files that happen to exist today.
@@ -59,7 +79,7 @@ Gemini. The commands below are for macOS and Linux; Windows installation is not 
 
 The interview workflow has been forward-tested in Codex with example projects. Installation from
 a clean machine and the Claude Code flow are documented but have not yet been exercised end to
-end, so follow the verification step below before relying on a new setup.
+end, so follow the connection and skill-discovery checks below before relying on a new setup.
 
 You need:
 
@@ -144,12 +164,12 @@ Confirm that `engineering-audit` appears. Then start the assistant and ask:
 Use the engineering-audit list_domains tool and tell me how many domains are loaded.
 ```
 
-The taster pack returns three domains. The full pack returns its current complete domain list
-(sixteen at the time this guide was written). If the number is not what you expected, correct the
-rules-folder path in the MCP registration before continuing.
+The taster pack returns three domains. The full pack returns its current complete domain list;
+“16 currently” is only an example, so always use the number returned by this session. If it is not
+what you expected, correct the rules-folder path in the MCP registration before continuing.
 
 Return to the terminal when the check is finished. You can close the temporary assistant session;
-you will start a fresh one in the project you actually want to plan in step 5.
+you will start a fresh one in the project you actually want to plan in step 6.
 
 To correct a registration, first remove the old entry:
 
@@ -199,7 +219,28 @@ it points elsewhere or is not a shortcut, leave it unchanged until you know who 
 Advanced shared-skill setups may use `~/.agents/skills`, but use that location only when your
 assistant is already configured to discover it.
 
-### 5. Open the project you want to plan
+### 5. Run the post-install skill discovery smoke test
+
+First check that the shortcut resolves to a real skill file. Use the command for the host you
+installed:
+
+```sh
+test -f ~/.codex/skills/engineering-grill/SKILL.md && echo "Codex skill file resolves"
+```
+
+or:
+
+```sh
+test -f ~/.claude/skills/engineering-grill/SKILL.md && echo "Claude skill file resolves"
+```
+
+Then start a fresh `codex` or `claude` session and ask: **“Without invoking it, confirm that the
+`engineering-grill` skill is available.”** The assistant should name the skill and its purpose
+without starting an interview. If it cannot see the skill, close that session, inspect the
+shortcut with `ls -ld`, and repeat the check after fixing the link. This is a discovery smoke test,
+not a Grill and not an audit.
+
+### 6. Open the project you want to plan
 
 Leave the engineering-audit checkout and enter the project being planned:
 
@@ -251,22 +292,27 @@ Other useful starting prompts include:
 
 The assistant first shows its proposed domain map. Correct anything that misrepresents your
 intent, then answer the numbered questions. The session continues in rounds until the important
-decisions are settled and you confirm the shared understanding.
+decisions are settled and you confirm the shared understanding. Start from a fresh, non-audit
+session: do not invoke Engineering Grill while an audit is active or starting.
 
 ## How it stays current
 
 The skill contains no fixed domain list. At the start of each session it calls `list_domains`, so
 new, removed, or renamed domains appear automatically. When a domain becomes relevant, it calls
-`get_domain` and reads the rules currently served by the MCP.
+`get_domain` and reads the rules currently served by the MCP. An oversized response saved to a
+spool file is a successful fetch: the Grill reads the whole file before asking questions. It does
+not use a partial response or silently fall back to a local rules checkout.
 
 The MCP serves the rules pack it loaded when the assistant session started. After updating a
 rules checkout with Git, fully close and reopen the assistant so the MCP reloads it. Engineering
-Grill does not download or update the rules pack itself.
+Grill does not download or update the rules pack itself. If the MCP is genuinely unavailable, the
+Grill reports `framework unavailable` and normally stops; any explicitly authorised local fallback
+is labelled non-framework scaffolding, not live coverage.
 
 ## Troubleshooting
 
-- **The skill does not appear:** start a new assistant session and inspect the shortcut with the
-  `ls -ld` command from installation step 4.
+- **The skill does not appear:** start a new assistant session and run the discovery smoke test in
+  installation step 5; inspect the shortcut with `ls -ld` if the file check fails.
 - **engineering-audit does not appear:** repeat `codex mcp list` or `claude mcp list`, then repeat
   the MCP registration command if needed.
 - **The domain count is unexpected:** the MCP is probably pointing at the taster pack or a
@@ -284,4 +330,5 @@ Grill does not download or update the rules pack itself.
 | After building | Full repository audit | An evidence-based report of what was delivered |
 
 The grill and the audit complement each other. The grill helps you decide what good should look
-like; the audit later checks the project that was actually built.
+like; the audit later checks the project that was actually built. Inline decision-time lookup is a
+separate, lightweight aid while building, not an audit run.

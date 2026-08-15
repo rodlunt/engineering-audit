@@ -85,29 +85,40 @@ whether this has actually been exercised against a live Claude Code session.
 ## Install the interrogate skill (BETA)
 
 **Beta, and the label is literal.** New in v0.13.0, reshaped in v0.14.0 to run every relevant
-domain and triage globally rather than capping at three domains. Question derivation has been
-exercised on three of the sixteen domains against a single brief and the hook's failure paths have
+returned domain and triage globally rather than capping at three domains. Question derivation has
+been exercised on three returned domains against a single brief and the hook's failure paths have
 been tested, but **the cross-domain triage has never been run, and nobody has yet completed a full
 interactive interrogation**. The shape of the session (the relevance judgement, the triage, the
 deep-dive offer, the bail-out record) is unproven with a real person answering, and question
-quality is sampled rather than measured. Expect it to change, and please
-report anything that reads like a generic quiz rather than a question about your actual work:
-that is the failure mode this design is most likely to have.
+quality is sampled rather than measured. Expect it to change, and please report anything that
+reads like a generic quiz rather than a question about your actual work: that is the failure mode
+this design is most likely to have.
 
 `interrogate` is the pre-build counterpart to `audit`. Where `audit` sweeps the rules over a
 repository that already exists, `interrogate` turns them into questions about work that has not
 started yet, and records the answers, the deferrals and the gaps into the host's plan file.
 
+For a comprehensive pre-build interview, use **Engineering Grill** instead. Grill is available
+for Codex and Claude Code, is explicitly invoked, walks a dependency-aware design tree, and writes
+the confirmed coverage map and decisions to project documents. `interrogate` is Claude-only and
+beta: it derives the full set but asks the top three highest-impact questions first, then offers a
+plan-file deep dive. Choose one entry path for a project; do not run both Grill and `interrogate`
+for the same planning work.
+
 ```
 ln -s "$(pwd)/integrations/claude-code/interrogate" ~/.claude/skills/interrogate
 ```
 
-Same discovery convention and the same absolute-path requirement as `audit` above.
+Same discovery convention and the same absolute-path requirement as `audit` above. After linking,
+start a fresh Claude Code session and ask it to confirm that `interrogate` is available without
+invoking it; this is a post-install discovery smoke test.
 
-It uses `list_domains` and `get_domain` only, and never calls `begin_run`. Both of those tools
-work with no run in progress, which is what lets the skill run against a directory that is not a
-repository yet, or against nothing but a description. Nothing it does touches run state, so an
-interrogation and an audit cannot interfere with each other.
+It uses `list_domains` and `get_domain` only, and never calls audit lifecycle tools. Run it only in
+a fresh, non-audit session with no audit run active or starting. In that state, the two reads are
+non-attributed and side-effect-free, which lets the skill work against a directory that is not a
+repository yet, or against nothing but a description. During an active run, `get_domain` can persist
+fetch metadata, so do not invoke Interrogate from an audit session or while an audit is starting.
+It must not begin or interact with an audit.
 
 The two skills answer different questions and neither replaces the other:
 
