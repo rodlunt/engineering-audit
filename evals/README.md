@@ -285,7 +285,7 @@ GrindPoints' two write functions both take a live connection with every test ope
 sqlite, so there is no unit-testable seam for the rule to be missing. It was hit in 2 of 4
 recorded runs, and the runs that did not raise it ruled it out with written reasoning
 rather than skipping it. Scoring that as a miss measured the coin toss, not the auditor.
-Both recorded 0.11.0 runs now score exit 0, one by finding it and one by ruling it out,
+Both recorded full-pack runs now score exit 0, one by finding it and one by ruling it out,
 and the counter is what distinguishes them.
 
 Reach for this state rarely and only with evidence across runs. A spec that cannot commit
