@@ -82,6 +82,37 @@ The symlink target and Claude Code's skill discovery convention above are correc
 see the root README's [support matrix](../../README.md#support-matrix), same as above, for
 whether this has actually been exercised against a live Claude Code session.
 
+## Install the interrogate skill
+
+`interrogate` is the pre-build counterpart to `audit`. Where `audit` sweeps the rules over a
+repository that already exists, `interrogate` turns them into questions about work that has not
+started yet, and records the answers, the deferrals and the gaps into the host's plan file.
+
+```
+ln -s "$(pwd)/integrations/claude-code/interrogate" ~/.claude/skills/interrogate
+```
+
+Same discovery convention and the same absolute-path requirement as `audit` above.
+
+It uses `list_domains` and `get_domain` only, and never calls `begin_run`. Both of those tools
+work with no run in progress, which is what lets the skill run against a directory that is not a
+repository yet, or against nothing but a description. Nothing it does touches run state, so an
+interrogation and an audit cannot interfere with each other.
+
+The two skills answer different questions and neither replaces the other:
+
+| | `audit` | `interrogate` |
+|---|---|---|
+| Runs against | a repository | intent, or a drafted plan |
+| Produces | `report.html` plus findings | questions, and a record of what was answered |
+| Needs a git commit | yes | no |
+| Rule coverage | every rule in every selected domain | a ranked subset, at most three domains |
+
+`interrogate` is deliberately not exhaustive. It caps at three domains and asks the top three
+questions of each before offering to go deeper, because an interrogation nobody finishes teaches
+nothing. It names the domains it cut and counts the questions it did not ask, so a short session
+cannot be mistaken for a complete one.
+
 ## Host environment metadata
 
 `begin_run` takes an `environment` map, and the skill instructs Claude Code to populate it: on
