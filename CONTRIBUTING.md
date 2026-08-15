@@ -53,7 +53,9 @@ to nearly every line, hiding whoever actually wrote them.
 - **Branch from `main`**, named descriptively (`fix/...`, `feat/...`, `docs/...`).
 - **Conventional commit messages** (`fix:`, `feat:`, `docs:`, `refactor:`, `test:`,
   `ci:`, `chore:`), imperative subject, body explaining why rather than what.
-- **Link the tracking issue** with a `Closes #N` line in the PR body.
+- **Link the tracking issue** with a `Closes #N` line in the PR body, when the PR has one.
+  Release PRs and housekeeping PRs with no tracking issue behind them are the exception:
+  there is nothing to close, so no keyword is expected.
 - **Tests for behaviour changes.** This project's hardening rules apply: a check whose
   failure can be read as a pass does not count as a check, and validation rejections
   need a failing-case test asserting the error message is actionable.

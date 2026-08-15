@@ -28,6 +28,14 @@ jobs:
       # serves flags tag-pinned actions, and this repo should survive its own
       # audit. Comments record the human-readable version each digest is.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history. tests/test_social_card_currency.py dates committed
+          # image assets against what they are pictures of, and on the default
+          # shallow clone every path resolves to the same single commit, so the
+          # comparison holds trivially and the guard reports success while
+          # establishing nothing. It skips loudly on a shallow clone now, but
+          # a guard that always skips in CI is not a guard.
+          fetch-depth: 0
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           enable-cache: true
@@ -54,4 +62,11 @@ jobs:
         # blocks the merge instead of going quietly red in a side job.
         run: uv run --with mypy==2.3.0 mypy src
       - name: Run tests
+        # tests/conftest.py's autouse fixture already sets this for a local
+        # run; it is set again here so CI does not depend on that fixture
+        # being present, and so the intent (no live git ls-remote calls to
+        # github.com from a shared runner, see issue #190) is visible in the
+        # workflow itself.
+        env:
+          ENGINEERING_AUDIT_NO_UPDATE_CHECK: "1"
         run: uv run pytest -q

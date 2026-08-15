@@ -44,4 +44,30 @@ uv run python scripts/generate-demo-report.py
 python3 -m http.server 8931 --bind 127.0.0.1   # from docs/demo/
 ```
 
-Capture at 1172px wide, device pixel ratio 1, in both colour schemes.
+Then, for each of the four report images, in an **isolated browser context** (a draft
+cookie otherwise renders a returning-visitor view as the first-run experience):
+
+| image | viewport | scrolled to |
+|---|---|---|
+| `report-light.png`, `report-dark.png` | 1157x1672 | top |
+| `issues-feedback-light.png`, `issues-feedback-dark.png` | 1157x1222 | the Issues heading, minus 40px |
+
+Emulate the colour scheme explicitly for each, capture at **device pixel ratio 2**, then
+downscale by half with Lanczos. The extra pixels are for text crispness; the committed
+files are device pixel ratio 1 at the sizes above.
+
+**Suppress the page scrollbar before capturing**, or it appears down the right edge and
+steals 15px of content width:
+
+```js
+document.head.insertAdjacentHTML('beforeend',
+  '<style>html{scrollbar-width:none!important}html::-webkit-scrollbar{display:none!important}</style>')
+```
+
+The 1157 figure is the content width, not the window width. An earlier round captured at a
+1172 window where a real scrollbar took the other 15px, which is why the committed files
+have always been 1157 wide; setting the viewport to 1157 with the scrollbar suppressed
+reaches the same layout in one step.
+
+`tests/test_social_card_currency.py` fails the suite if either of these images falls behind
+what it is a picture of, so none of this has to be remembered.

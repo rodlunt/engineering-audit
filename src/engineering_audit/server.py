@@ -100,8 +100,10 @@ from engineering_audit.schema import (
     RunMeta,
     RunProgress,
     RunState,
+    Verdict,
     validate_completeness,
     validate_consulted_sources,
+    validate_finding_locations,
     validate_environment,
 )
 from engineering_audit.update_check import check_for_update, check_pack_for_update
@@ -448,6 +450,16 @@ class RunTracker:
     # existed, and only reaches the models by being loaded from disk.
     rules_fetched: set[str] = field(default_factory=set)
     rules_fetch_unknown: set[str] = field(default_factory=set)
+    # Per-domain stamps from the server's own clock (issue #205). Held as
+    # plain dicts while the run is live, for the same reason rules_fetched is
+    # a live set: a running tracker always records, so the None the schema
+    # allows belongs to a saved file written before these existed and only
+    # reaches the models by being loaded from disk. See
+    # DOMAIN_RULES_FETCHED_AT_DESCRIPTION and DOMAIN_RECORDED_AT_DESCRIPTION
+    # in schema.py, in particular that these are arrival stamps and not
+    # per-domain durations.
+    domain_rules_fetched_at: dict[str, str] = field(default_factory=dict)
+    domain_recorded_at: dict[str, str] = field(default_factory=dict)
     feedback_issue_url: str | None = None
     resumed: bool = False
     # Persistence failures waiting to be reported, and the set of facts
@@ -662,6 +674,11 @@ def _run_progress(run: RunTracker, *, completed: bool = False) -> RunProgress:
         # processes.
         rules_fetched_domain_ids=sorted(run.rules_fetched),
         rules_fetch_unknown_domain_ids=sorted(run.rules_fetch_unknown),
+        # Copied, not handed over: the tracker keeps mutating after this
+        # snapshot is written, and a shared dict would let a later domain
+        # appear in a record that was saved before it was recorded.
+        domain_rules_fetched_at=dict(run.domain_rules_fetched_at),
+        domain_recorded_at=dict(run.domain_recorded_at),
         feedback_issue_url=run.feedback_issue_url,
         completed=completed,
     )
@@ -1045,6 +1062,12 @@ def _resume_run(
         config=config,
         rules_fetched=rules_fetched,
         rules_fetch_unknown=rules_fetch_unknown,
+        # Restored so a resumed run keeps what the saved record stamped and
+        # adds only what it stamps itself. A saved file that predates these
+        # maps restores as empty, which leaves its already-recorded domains
+        # simply absent rather than stamped with the resume time (issue #205).
+        domain_rules_fetched_at=dict(progress.domain_rules_fetched_at or {}),
+        domain_recorded_at=dict(progress.domain_recorded_at or {}),
         # Only meaningful alongside a resolved config: a saved "interactive"
         # mode with no config describes a config page served by a process that
         # is gone, and restoring it would leave get_config waiting on a server
@@ -1213,8 +1236,28 @@ def _file_pending_issues(
             else None
         )
         rules_fetched = _rules_fetched_state(run, issue.domain_id)
+        # Issue #211: the base the confidence claim rests on, so an issue
+        # filed through this gh CLI path says the same thing about its
+        # domain as the same finding's card and copy text in the report. A
+        # could-not-run domain has no verdicts and so no denominator.
+        unevaluated = (
+            None
+            if domain_result.status == "could-not-run"
+            else (
+                sum(
+                    1
+                    for rv in domain_result.rule_verdicts
+                    if rv.verdict is Verdict.COULD_NOT_EVALUATE
+                ),
+                len(domain_result.rule_verdicts),
+            )
+        )
         trailing_line = build_issue_trailing_line(
-            finding, rule, confidence=confidence, rules_fetched=rules_fetched
+            finding,
+            rule,
+            confidence=confidence,
+            rules_fetched=rules_fetched,
+            unevaluated=unevaluated,
         )
         # issue_title and issue_body are assistant-authored and untrusted,
         # same as body_md; stripped here for the same reason report.py's
@@ -1396,6 +1439,13 @@ def _register_pack_tools(mcp: MCPServer, state: AppState) -> None:
             )
             raise ValueError(f"Unknown domain id '{domain_id}'. Valid ids: {valid_ids}")
         run = state.run
+        if run is not None:
+            # setdefault, not assignment: this names the FIRST time the rules
+            # were served for this domain, and a re-fetch later in the same
+            # run does not move it. On a resume the saved stamp is restored
+            # before this runs, so a re-fetch after resuming keeps the
+            # original rather than rewriting history.
+            run.domain_rules_fetched_at.setdefault(domain_id, _now_utc_iso())
         if run is not None and domain_id not in run.rules_fetched:
             run.rules_fetched.add(domain_id)
             # Positive evidence beats an absence of it: a domain carried in
@@ -1594,7 +1644,14 @@ def _register_run_tools(mcp: MCPServer, state: AppState) -> None:
                 pack_metadata.requires_tool if pack_metadata else None
             ),
             update_check=check_for_update(
-                tool_commit_value, tool_version_value, enabled=update_check_enabled
+                tool_commit_value,
+                tool_version_value,
+                enabled=update_check_enabled,
+                # Issue #219: the host decides what the fix command is, and
+                # begin_run is already told which host it is. Absent or
+                # unrecognised falls back to a documentation pointer rather
+                # than a guessed command.
+                host_cli=(environment or {}).get("host_cli"),
             ),
             pack_update_check=check_pack_for_update(
                 str(state.pack.root),
@@ -1915,6 +1972,13 @@ def _register_result_tools(mcp: MCPServer, state: AppState) -> None:
                 )
             validate_consulted_sources(domain, result)
 
+        # Issue #216. Checked regardless of status, and at the record
+        # boundary rather than on Finding itself: the model is also what a
+        # stored run-state.json is read through, so enforcing this there
+        # would refuse every run already on disk that carries such a
+        # location. Strict on write, readable forever.
+        validate_finding_locations(result)
+
         if domain_id in run.domain_results and not replace:
             raise ValueError(
                 f"domain '{domain_id}' already has a recorded result; pass replace=True to "
@@ -1922,6 +1986,10 @@ def _register_result_tools(mcp: MCPServer, state: AppState) -> None:
             )
 
         run.domain_results[domain_id] = result
+        # Plain assignment, not setdefault: unlike the fetch stamp this names
+        # when the result currently held was accepted, so a replace=True
+        # re-record legitimately moves it (issue #205).
+        run.domain_recorded_at[domain_id] = _now_utc_iso()
         # Saved before the response goes back, so a server that dies between
         # this domain and the next one loses nothing that has been reported as
         # recorded. A save failure is reported in warnings, never raised: the
@@ -2256,6 +2324,11 @@ def _register_report_tools(mcp: MCPServer, state: AppState) -> None:
             # carries the signal rather than quietly losing it (issue #110).
             rules_fetched_domain_ids=sorted(run.rules_fetched),
             rules_fetch_unknown_domain_ids=sorted(run.rules_fetch_unknown),
+            # Carried into the finished record for the same reason the fetch
+            # lists are: a report re-rendered from run-state.json months later
+            # should still carry where the run's time went (issue #205).
+            domain_rules_fetched_at=dict(run.domain_rules_fetched_at),
+            domain_recorded_at=dict(run.domain_recorded_at),
             feedback_issue_url=run.feedback_issue_url,
         )
 

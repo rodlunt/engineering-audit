@@ -31,9 +31,9 @@
     },
     {
       "rule_id": "D05-R08",
-      "expect": "finding",
+      "expect": "finding-or-not-applicable",
       "location_contains": "tests/",
-      "why": "Planted. The whole test suite (tests/test_signup_flow.py, tests/test_redemption_flow.py) runs the full write path against a real sqlite connection; there is no unit-level test of any function in isolation, so the suite has no fast-feedback layer at all."
+      "why": "Planted, and the one expectation in this spec that accepts two answers (issue #213). The whole test suite (tests/test_signup_flow.py, tests/test_redemption_flow.py) runs the full write path against a real sqlite connection, so the suite has no fast-feedback layer. But both functions in loyalty_writer.py take a live connection and every test opens sqlite, so the fixture offers no unit-testable seam for the layering rule to be missing, and ruling the rule out is as defensible as raising it. Hit in 2 of 4 recorded runs, and the runs that ruled it out did so with written reasoning rather than by skipping it. A reasoned not-applicable therefore counts; pass, could-not-evaluate and silence still do not."
     },
     {
       "rule_id": "D05-R17",
@@ -67,6 +67,24 @@
       "rule_id": "D16-R06",
       "expect": "no-finding",
       "why": "Control. plot_daily_active_customers_line in reports/charts.py labels its one series directly with ax.annotate and never builds a legend. The rule is exercised and satisfied."
+    },
+    {
+      "rule_id": "D01-R04",
+      "expect": "finding",
+      "location_contains": "schema.sql",
+      "why": "Not planted: found by audit and verified by hand afterwards (issue #215). customers.points_balance is a stored running total derivable from visits (earn) minus redemptions.points_spent, carried with no derivation marking and no comment recording the denormalisation as a decision. D01-R04 requires derived data to be marked as derived and stored only as a recorded decision, sourced to Halpin's ORM Conceptual Schema Design Procedure step 3 (derivation notation). The schema does carry explanatory comments on phone and on reward_name, so the absence of one here is a gap in this column specifically rather than a file-wide comment style."
+    },
+    {
+      "rule_id": "D05-R05",
+      "expect": "finding",
+      "location_contains": "tests/",
+      "why": "Not planted: found by audit and verified by hand afterwards (issue #215). The suite gives the redemption path and the sign-up path exactly one test each, so effort is spread uniformly across paths of plainly unequal risk: redemption moves points balances and is the same function D01-R14 is planted on for committing its insert and its balance deduction as two unguarded statements. D05-R05 requires effort weighted by risk, complexity and defect clustering, sourced to ISTQB Foundation Level syllabus v4.0.1 Testing Principle 4 (defects cluster together; the Pareto principle)."
+    },
+    {
+      "rule_id": "D16-R10",
+      "expect": "finding",
+      "location_contains": "reports/charts.py",
+      "why": "Not planted: found by audit and verified by hand afterwards (issue #215). Both charts are titled with their topic rather than their finding: \"Visits per month\" (charts.py:16) and \"Daily active customers, August\" (charts.py:29). D16-R10 requires the title to carry the finding, sourced to NN/g's \"Contrast: One of the 3Cs for Better Charts\", which states it almost as a description of this defect: \"Titles should not merely describe the data shown\" and \"Use a meaningful title that tells the audience the finding or takeaway\"."
     }
   ]
 }

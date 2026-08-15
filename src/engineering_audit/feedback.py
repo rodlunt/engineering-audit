@@ -37,6 +37,7 @@ __all__ = [
     "duration_text",
     "strip_markdown_emphasis",
     "domain_confidence_note",
+    "unevaluated_base",
     "build_feedback_sections",
     "build_feedback_body",
     "build_mailto_url",
@@ -712,24 +713,22 @@ def build_feedback_body(
         sections.append(free_text.strip())
 
     sections.append(sections_by_name["run_metadata"])
-    if consent.coverage:
-        sections.append(sections_by_name["coverage"])
-    if consent.rollup:
-        sections.append(sections_by_name["rollup"])
-    if consent.self_assessment:
-        sections.append(sections_by_name["self_assessment"])
-    if consent.environment:
-        sections.append(sections_by_name["environment"])
-    if consent.consulted_sources:
-        sections.append(sections_by_name["consulted_sources"])
-    if consent.verdict_distribution:
-        sections.append(sections_by_name["verdict_distribution"])
-    if consent.duration:
-        sections.append(sections_by_name["duration"])
-    if consent.rules_fetched:
-        sections.append(sections_by_name["rules_fetched"])
-    if consent.reader_conclusions:
-        sections.append(sections_by_name["reader_conclusions"])
+    # Driven from TelemetryConsent.model_fields rather than nine hand-written
+    # if-statements (issue #188): a flag added to the model with no matching
+    # section used to collect consent that did nothing, silently, because
+    # nothing here checked the two stayed in step. This checks every flag
+    # against sections_by_name on every call, not only the ones this
+    # particular consent has set, so the gap surfaces the moment a flag is
+    # added rather than only when a caller happens to tick that one box.
+    for flag_name in TelemetryConsent.model_fields:
+        if flag_name not in sections_by_name:
+            raise ValueError(
+                f"consent flag {flag_name!r} has no matching feedback section; "
+                "add one to build_feedback_sections or remove the flag from "
+                "TelemetryConsent"
+            )
+        if getattr(consent, flag_name):
+            sections.append(sections_by_name[flag_name])
 
     return "\n\n".join(sections)
 
@@ -747,11 +746,43 @@ def build_mailto_url(email: str, subject: str, body: str) -> str:
     return f"mailto:{email}?subject={quote(subject)}&body={quote(body)}"
 
 
-def _confidence_clause(confidence: str | None) -> str:
+def unevaluated_base(unevaluated: tuple[int, int] | None) -> str:
+    """The base a confidence claim is made on: how many of the domain's own
+    rules could not be evaluated, out of how many (issue #211).
+
+    ``confidence`` is self-reported and AUDIT.md is explicit that the server
+    cannot check it. That stays true. What the server *can* do, and until
+    #211 did not, is refuse to render the claim on its own. A run that
+    reported ``high`` for a domain where 10 of 18 rules were verdicted
+    could-not-evaluate rendered identically to one where 2 of 15 were, which
+    is exactly what README.md promises a reader will not happen. This is
+    hardening rule 3: the work computed a number, so the number ships.
+
+    ``None`` means no verdict distribution was available to the caller, and
+    reproduces the pre-#211 wording byte for byte rather than inventing a
+    base that was never counted.
+    """
+    if unevaluated is None:
+        return ""
+    could_not, total = unevaluated
+    if total == 0:
+        # A could-not-run domain: no verdicts by construction, so there is no
+        # denominator to be a count out of. Saying nothing was checked is the
+        # whole content, and a fraction here would invent one.
+        return " (no rules were verdicted)"
+    if could_not == 0:
+        return f" (all {total} rules evaluated)"
+    return f" ({could_not} of {total} rules could not be evaluated)"
+
+
+def _confidence_clause(
+    confidence: str | None, unevaluated: tuple[int, int] | None = None
+) -> str:
+    base = unevaluated_base(unevaluated)
     return (
-        f"self-assessed confidence {confidence}"
+        f"self-assessed confidence {confidence}{base}"
         if confidence
-        else "no self-assessed confidence reported"
+        else f"no self-assessed confidence reported{base}"
     )
 
 
@@ -771,7 +802,11 @@ def _rules_fetched_clause(rules_fetched: bool | None) -> str:
     return "whether its rule text was fetched this run is not recorded"
 
 
-def domain_confidence_note(confidence: str | None, rules_fetched: bool | None) -> str:
+def domain_confidence_note(
+    confidence: str | None,
+    rules_fetched: bool | None,
+    unevaluated: tuple[int, int] | None = None,
+) -> str:
     """One line carrying a finding's domain confidence and rules-fetched
     status onto the finding itself (issue #130).
 
@@ -782,8 +817,17 @@ def domain_confidence_note(confidence: str | None, rules_fetched: bool | None) -
     rules were. Shared by report.py's per-finding card and
     build_issue_trailing_line below, so a finding's report card and its
     filed-issue text can never describe the same domain differently.
+
+    ``unevaluated`` is ``(could_not_evaluate_count, rules_verdicted)`` for
+    the finding's own domain (issue #211). Pass it to ship the confidence
+    claim with the base it was made on; leave it ``None`` where the caller
+    has no verdict distribution to hand, which reproduces the pre-#211
+    wording exactly.
     """
-    return f"This finding's domain: {_confidence_clause(confidence)}; {_rules_fetched_clause(rules_fetched)}."
+    return (
+        f"This finding's domain: {_confidence_clause(confidence, unevaluated)}; "
+        f"{_rules_fetched_clause(rules_fetched)}."
+    )
 
 
 def build_issue_trailing_line(
@@ -792,6 +836,7 @@ def build_issue_trailing_line(
     *,
     confidence: str | None = None,
     rules_fetched: bool | None = None,
+    unevaluated: tuple[int, int] | None = None,
 ) -> str:
     """Build the trailing attribution line appended after every filed or
     copyable issue body: "Found by an engineering-practice audit (rule
@@ -811,6 +856,12 @@ def build_issue_trailing_line(
     this function's pre-#130 output byte for byte. Passing only one is
     still honoured (the note names the other as not reported/not recorded)
     since a caller that has one may not have the other.
+
+    ``unevaluated`` (issue #211) is the domain's
+    ``(could_not_evaluate_count, rules_verdicted)``, and ships the
+    confidence claim with the base it rests on. It never triggers the note
+    on its own: a caller with a verdict distribution but no confidence and
+    no fetch status has nothing to qualify, so the line stays as it was.
     """
     if not rule.source:
         raise ValueError(
@@ -823,7 +874,7 @@ def build_issue_trailing_line(
         f"{finding.severity.value}, at {finding.location})."
     ]
     if confidence is not None or rules_fetched is not None:
-        parts.append(domain_confidence_note(confidence, rules_fetched))
+        parts.append(domain_confidence_note(confidence, rules_fetched, unevaluated))
     # Issue #128: a citation copied from the rules pack can carry markdown
     # emphasis (nested *italic* titles, or a whole footer wrapped in
     # asterisks); this is the boundary where it is stripped before

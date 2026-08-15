@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 from pathlib import Path
 
 import pytest
 
+from engineering_audit import feedback as feedback_module
 from engineering_audit import report as report_module
-from engineering_audit.feedback import build_feedback_body, build_feedback_sections
+from engineering_audit.feedback import (
+    build_feedback_body,
+    build_feedback_sections,
+    unevaluated_base,
+)
 from engineering_audit.report import (
     _INLINE_SCRIPT,
     ReportError,
@@ -2169,7 +2175,8 @@ def test_issue_embedded_body_ends_with_shared_trailing_line_byte_identical_to_fi
         "bed-14 has two occupants and no shared-bed flag. See ledger/beds.py:42.\n\n"
         "Found by an engineering-practice audit (rule D01-R02, severity high, "
         "at ledger/beds.py:42). This finding's domain: self-assessed confidence "
-        "high; whether its rule text was fetched this run is not recorded. "
+        "high (1 of 4 rules could not be evaluated); whether its rule text was "
+        "fetched this run is not recorded. "
         "Reference: invented for test fixtures only, no external source"
     )
     pack = _pack()
@@ -2903,7 +2910,10 @@ def test_self_assessment_limits_survive_the_move_into_the_table() -> None:
     pack = _pack()
     rendered = render_report(_base_run_state(pack), pack)
 
-    assert "1 of 2 domains reported a limit on its own assessment" in rendered
+    assert (
+        "Self-assessment limits: 1 of 2 selected domains reported a limit on "
+        "their own assessment" in rendered
+    )
     assert "d02: Teacup Logistics Handling: did not check archived routes" in rendered
 
 
@@ -2915,9 +2925,13 @@ def test_self_assessment_limits_block_still_renders_when_nobody_reported_one() -
     run_state.domain_results["d02"].self_assessment.limits = ""
     rendered = render_report(run_state, pack)
 
+    # Both domains answered and neither had a limit, which is a result. The
+    # sentence says both halves of it, so it cannot be read as the run below
+    # where nobody answered at all.
     assert (
-        "None of the 2 selected domains reported a limit on their own assessment."
-        in rendered
+        "Self-assessment limits: 0 of 2 selected domains reported a limit on "
+        "their own assessment, and all 2 selected domains recorded a "
+        "self-assessment" in rendered
     )
 
 
@@ -3678,3 +3692,413 @@ def test_ticked_note_grammar_across_the_four_count_combinations() -> None:
         pack,
     )
     assert "3 of 6 issues are ticked: the critical and high findings." in rendered
+
+
+# ---------------------------------------------------------------------------
+# #189: a check on the class, not a fourth check on one instance.
+#
+# The same defect has now been found four times in the renderer: a summary
+# that reads as a clean result when the underlying question was never asked.
+# #100 (172 not-applicable verdicts rendering as "0 findings"), #122 item 5 (a
+# could-not-run domain rendering as a bare zero), #184 (an evidence boundary
+# reading "0 of 16" when no domain recorded one) and #195 ("None of the N
+# domains reported a limit" when no domain was asked for a self-assessment).
+# Each fix landed only where the defect was found, which is how the fourth
+# shipped inside the block written to prevent the third.
+#
+# Every summary line stating a count over a population now goes through
+# report._count_over_population. These tests walk that registry, so a new
+# summary line inherits them instead of needing its own.
+# ---------------------------------------------------------------------------
+
+_POPULATION = 8
+
+
+def _three_states(key: str) -> dict[str, str]:
+    """One registered summary line rendered in the three states it has to keep
+    apart, at one population so nothing but the state differs between them."""
+    render = report_module._count_over_population
+    return {
+        "none found": render(
+            key,
+            found=0,
+            never_recorded=0,
+            population=_POPULATION,
+            never_recorded_population=_POPULATION,
+        ),
+        "none recorded": render(
+            key,
+            found=0,
+            never_recorded=_POPULATION,
+            population=_POPULATION,
+            never_recorded_population=_POPULATION,
+        ),
+        "N found": render(
+            key,
+            found=3,
+            never_recorded=0,
+            population=_POPULATION,
+            never_recorded_population=_POPULATION,
+        ),
+    }
+
+
+def test_every_counted_summary_reads_differently_in_all_three_states() -> None:
+    # The class check. Two of these three states producing the same sentence
+    # is the defect itself, whichever summary line it happens at.
+    assert report_module._COUNT_SUMMARIES, "no summary lines registered to walk"
+
+    for key in report_module._COUNT_SUMMARIES:
+        states = _three_states(key)
+        assert len(set(states.values())) == 3, (
+            f"{key}: two of the three states render the same sentence, which is "
+            f"the defect #100, #122, #184 and #195 all are: {states}"
+        )
+
+
+def test_a_summary_nobody_answered_never_leads_with_the_zero() -> None:
+    # "0 of 16" is the reassuring reading of a question that was never put,
+    # and it is the sentence a reader skims and quotes. The never-recorded
+    # state must carry its own count instead.
+    for key in report_module._COUNT_SUMMARIES:
+        none_recorded = _three_states(key)["none recorded"]
+        assert f"{_POPULATION} of {_POPULATION}" in none_recorded, (
+            f"{key}: the never-recorded state drops the count of how many "
+            f"never answered: {none_recorded!r}"
+        )
+        assert "0 of" not in none_recorded, (
+            f"{key}: the never-recorded state still leads with a zero count, "
+            f"which reads as a clean result: {none_recorded!r}"
+        )
+
+
+def test_a_mixed_population_carries_both_counts() -> None:
+    # Some answered, some did not. Dropping either count puts the sentence
+    # back into one of the two states the run is not in.
+    for key in report_module._COUNT_SUMMARIES:
+        mixed = report_module._count_over_population(
+            key,
+            found=3,
+            never_recorded=2,
+            population=_POPULATION,
+            never_recorded_population=_POPULATION,
+        )
+        assert f"3 of {_POPULATION}" in mixed, mixed
+        assert f"2 of {_POPULATION}" in mixed, mixed
+
+
+# What each collapsed summary block in the renderer is: routed through the
+# helper, or out of the class with the reason written down. The test below
+# holds this against the source, so a new <summary> block fails the suite
+# until somebody classifies it. That is the part that was missing when the
+# fourth instance shipped.
+_ROUTED = "routed through _count_over_population"
+
+_COLLAPSED_SUMMARY_BLOCKS = {
+    "_evidence_boundary_list": _ROUTED,
+    "_self_assessment_limits": _ROUTED,
+    "_could_not_evaluate_list": _ROUTED,
+    "_not_applicable_list": (
+        "out of the class: not-applicable is recorded on the rule verdict "
+        "itself, so a rule nobody asked about carries no verdict and is not in "
+        "this block's denominator. The domain that produced none of them is "
+        "counted by the could-not-evaluate summary, which is routed."
+    ),
+    "_domains_without_findings": (
+        "already three-state, and the block this class was first understood "
+        "in: the summary splits its zeros into audited and clean, every rule "
+        "set aside, and did not run at all, and prints all three counts."
+    ),
+    "_render_meta_block": (
+        "out of the class: the field count counts rows rendered, every row is "
+        "always rendered, and a value nobody recorded reads as 'unknown' or "
+        "'not checked' in its own row rather than dropping out of the count."
+    ),
+}
+
+
+def _functions_containing(marker: str) -> set[str]:
+    source = Path(report_module.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    return {
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+        and marker in (ast.get_source_segment(source, node) or "")
+    }
+
+
+def test_every_collapsed_summary_block_is_classified() -> None:
+    # The enumeration, held against the code rather than written down beside
+    # it. A summary line added without a decision about its never-recorded
+    # state fails here.
+    found = _functions_containing("<summary>")
+
+    assert found == set(_COLLAPSED_SUMMARY_BLOCKS), (
+        "the set of functions rendering a collapsed <summary> has changed. "
+        "Classify each new one in _COLLAPSED_SUMMARY_BLOCKS: route it through "
+        "_count_over_population, or write down why its population has no "
+        "never-recorded state.\n"
+        f"unclassified: {sorted(found - set(_COLLAPSED_SUMMARY_BLOCKS))}\n"
+        f"gone: {sorted(set(_COLLAPSED_SUMMARY_BLOCKS) - found)}"
+    )
+
+    routed_in_source = _functions_containing("_count_over_population(")
+    claimed = {
+        name
+        for name, verdict in _COLLAPSED_SUMMARY_BLOCKS.items()
+        if verdict == _ROUTED
+    }
+    assert claimed <= routed_in_source, (
+        "a block classified as routed does not call the helper: "
+        f"{sorted(claimed - routed_in_source)}"
+    )
+
+
+def test_every_registered_summary_is_actually_used() -> None:
+    # An entry in the registry that no summary line calls is a wording nobody
+    # renders, and would make the walking tests above pass over nothing.
+    source = Path(report_module.__file__).read_text(encoding="utf-8")
+    for key in report_module._COUNT_SUMMARIES:
+        assert source.count(f'"{key}"') >= 2, (
+            f"{key!r} is registered but never used at a summary line"
+        )
+
+
+def test_evidence_boundary_summary_carries_the_never_recorded_count() -> None:
+    # Issue #184, in the summary rather than only in the body: on a run where
+    # no domain recorded an evidence boundary, "0 of 2" was literally true and
+    # materially misleading, and it is the line a reader who does not open the
+    # details takes away.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    for result in run_state.domain_results.values():
+        result.uninspected_evidence = None
+    rendered = render_report(run_state, pack)
+
+    boundary = [s for s in _summaries(rendered) if s.startswith("Evidence boundary")]
+    assert boundary == [
+        "Evidence boundary: 2 of 2 completed domains never recorded what they "
+        "did not read, which is not the same as having read everything"
+    ], boundary
+
+
+def test_evidence_boundary_summary_still_counts_real_gaps() -> None:
+    # Control for the test above: with the boundaries recorded, the found
+    # count is the headline and no never-recorded clause is invented.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.domain_results["d01"].uninspected_evidence = [
+        "the shipment ledger service: not in this checkout"
+    ]
+    rendered = render_report(run_state, pack)
+
+    boundary = [s for s in _summaries(rendered) if s.startswith("Evidence boundary")]
+    assert boundary == [
+        "Evidence boundary: 1 of 2 completed domains reached verdicts without "
+        "reading something the repository points at"
+    ], boundary
+
+
+def test_self_assessment_limits_summary_says_when_nobody_was_asked() -> None:
+    # Issue #195. AUDIT.md never asks the auditor for a self_assessment, so
+    # every domain coming back None is the default rather than the edge case,
+    # and it used to render the same reassuring sentence as a run where every
+    # domain answered and none had a limit.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    for result in run_state.domain_results.values():
+        result.self_assessment = None
+    rendered = render_report(run_state, pack)
+
+    assert (
+        "Self-assessment limits: 2 of 2 selected domains never recorded a "
+        "self-assessment at all, which is not the same as reporting no limits"
+        in rendered
+    )
+    assert "reported a limit on their own assessment" not in rendered
+    # The confidence column is the house pattern this block now follows, and
+    # it must still say the same thing about the same run.
+    assert "not reported" in _domain_row(rendered, "d01")
+
+
+def test_could_not_evaluate_summary_carries_the_domain_that_never_ran() -> None:
+    # The same defect at a third site, in different units: the not-run domains
+    # were named in the body and missing from the summary, so a run with a
+    # whole domain that never started could be headlined as a small count of
+    # rules behind a closed <details>.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.domain_results["d02"] = DomainResult(
+        domain_id="d02", status="could-not-run", reason="no rules apply here"
+    )
+    rendered = render_report(run_state, pack)
+
+    could_not = [s for s in _summaries(rendered) if s.startswith("Could not evaluate")]
+    assert len(could_not) == 1, could_not
+    assert could_not[0].startswith("Could not evaluate: 1 of "), could_not
+    assert (
+        "1 of 2 selected domains did not run at all, so no rule in them was "
+        "evaluated" in could_not[0]
+    ), could_not
+
+
+def test_same_confidence_word_renders_differently_when_the_unevaluated_base_differs() -> (
+    None
+):
+    # Issue #211. The 0.10.0 smoke run against evals/golden/repo produced the
+    # first real self_assessment data any run had carried, and put beside each
+    # domain's own verdict distribution it read: d05 could not evaluate 10 of
+    # its 18 rules and self-reported "high", rendering identically to d01,
+    # which could not evaluate 2 of 15. README.md:323 promises a reader the
+    # opposite, that "a finding from a shaky domain does not look identical to
+    # one from a solid one".
+    #
+    # This is the fifth instance of the family #100, #122, #184, #189 and #195
+    # were each a fix for: a rendered summary that reads clean over a gap.
+    # #189's ast guard is <summary>-scoped and does not catch a table cell, so
+    # this test is the guard for this one. It pins the distinction itself
+    # rather than the wording: two domains claiming the same confidence with
+    # different amounts unevaluated must not produce the same string.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+
+    # Both domains claim "high". d01 has one could-not-evaluate (set by
+    # _base_run_state); d02 has none.
+    run_state.domain_results["d01"].self_assessment = SelfAssessment(
+        confidence="high", limits=""
+    )
+    run_state.domain_results["d02"].self_assessment = SelfAssessment(
+        confidence="high", limits=""
+    )
+    rendered = render_report(run_state, pack)
+
+    d01_unevaluated = sum(
+        1
+        for rv in run_state.domain_results["d01"].rule_verdicts
+        if rv.verdict is Verdict.COULD_NOT_EVALUATE
+    )
+    d02_unevaluated = sum(
+        1
+        for rv in run_state.domain_results["d02"].rule_verdicts
+        if rv.verdict is Verdict.COULD_NOT_EVALUATE
+    )
+    # The control for this test: if the fixture ever stops differing, the
+    # assertion below would pass for the wrong reason.
+    assert d01_unevaluated != d02_unevaluated, (
+        "fixture no longer has two domains with different could-not-evaluate "
+        "counts, so this test can no longer detect the defect it guards"
+    )
+
+    d01_total = len(run_state.domain_results["d01"].rule_verdicts)
+    d02_total = len(run_state.domain_results["d02"].rule_verdicts)
+    d01_cell = f"high ({d01_unevaluated} of {d01_total} rules could not be evaluated)"
+    d02_cell = f"high (all {d02_total} rules evaluated)"
+
+    assert d01_cell in rendered
+    assert d02_cell in rendered
+    assert d01_cell != d02_cell
+
+
+def test_could_not_run_domain_does_not_render_as_all_rules_evaluated() -> None:
+    # Issue #211's own trap, and the reason unevaluated_base takes None rather
+    # than (0, 0) for a could-not-run domain: such a domain has no verdicts by
+    # construction, so "all 0 rules evaluated" would present a domain that
+    # never ran as one swept clean. That is the defect #55 and #100 were about,
+    # and shipping it inside the fix for #211 would repeat #189's exact
+    # history.
+    assert unevaluated_base(None) == ""
+    assert unevaluated_base((0, 0)) == " (no rules were verdicted)"
+    assert "evaluated" not in unevaluated_base((0, 0))
+
+
+# ---------------------------------------------------------------------------
+# Issue #189, widened. The guard above is <summary>-scoped, and the defect it
+# guards is not: it is the "N of M" idiom, wherever that lands. Two blind spots
+# were already known and both have now been hit for real.
+#
+#   - <h3> headings carrying a count (_headline_block, _findings_rollup,
+#     _rules_fetched_list), recorded as an unguarded gap in the 0.10.0 baton.
+#   - a table cell, which is where #211 lived. That was the FIFTH instance of
+#     this family (#100, #122, #184, #195), and the <summary> guard written
+#     after the fourth did not see it.
+#
+# #211 also crossed a module boundary: the Confidence column's text is built in
+# feedback.unevaluated_base, not in report.py at all, so a report-only scan
+# would still have missed it. This one walks both.
+# ---------------------------------------------------------------------------
+
+_N_OF_M_RE = re.compile(r"\{[^{}]+\} of \{[^{}]+\}")
+
+_COUNTED = "renders its count over an explicit base"
+
+_N_OF_M_BLOCKS = {
+    ("report", "_count_over_population"): (
+        "the helper itself: the one place the three states (none found, none "
+        "recorded, N found) are decided. Everything classified as routed calls it."
+    ),
+    ("report", "_headline_block"): _COUNTED,
+    ("report", "_findings_rollup"): _COUNTED,
+    ("report", "_findings_section"): _COUNTED,
+    ("report", "_domains_without_findings"): _COUNTED,
+    ("report", "_not_applicable_list"): _COUNTED,
+    ("report", "_rules_fetched_list"): _COUNTED,
+    ("report", "_domain_table"): (
+        "issue #211's site. The per-domain row carries findings over the run "
+        "total, and the Confidence cell now carries could-not-evaluate over "
+        "rules verdicted, via feedback.unevaluated_base."
+    ),
+    ("report", "_severity_cell"): _COUNTED,
+    ("report", "_issues_section"): _COUNTED,
+    ("feedback", "unevaluated_base"): (
+        "issue #211's text builder, in another module. A self-reported "
+        "confidence never renders without the count of the domain's own "
+        "could-not-evaluate rules beside it."
+    ),
+}
+
+
+def _n_of_m_functions() -> set[tuple[str, str]]:
+    found: set[tuple[str, str]] = set()
+    for label, module in (("report", report_module), ("feedback", feedback_module)):
+        source = Path(module.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and _N_OF_M_RE.search(
+                ast.get_source_segment(source, node) or ""
+            ):
+                found.add((label, node.name))
+    return found
+
+
+def test_every_count_over_a_base_is_classified_wherever_it_renders() -> None:
+    # The enumeration, held against the code. A new "N of M" added anywhere in
+    # either module, in any container, fails here until somebody has decided
+    # what it does when the underlying question was never answered. That
+    # decision is the thing whose absence let this defect ship five times.
+    found = _n_of_m_functions()
+
+    assert found == set(_N_OF_M_BLOCKS), (
+        "the set of functions rendering a count over a base has changed. "
+        "Classify each new one in _N_OF_M_BLOCKS, and make sure it cannot read "
+        "as a clean zero when the question behind it was never asked.\n"
+        f"unclassified: {sorted(found - set(_N_OF_M_BLOCKS))}\n"
+        f"gone: {sorted(set(_N_OF_M_BLOCKS) - found)}"
+    )
+
+
+def test_the_widened_guard_actually_reaches_both_known_blind_spots() -> None:
+    # The control for the guard above. It is only worth anything if it covers
+    # the two places the <summary>-scoped guard demonstrably did not: an <h3>
+    # count line, and issue #211's table cell plus its cross-module text
+    # builder. If a future refactor narrows the scan, this fails rather than
+    # the registry quietly shrinking to match.
+    found = _n_of_m_functions()
+
+    assert ("report", "_headline_block") in found, "lost the <h3> blind spot"
+    assert ("report", "_rules_fetched_list") in found, "lost the <h3> blind spot"
+    assert ("report", "_domain_table") in found, "lost #211's table cell"
+    assert ("feedback", "unevaluated_base") in found, (
+        "lost the cross-module reach: #211's text is built outside report.py, "
+        "so a report-only scan would have missed it"
+    )

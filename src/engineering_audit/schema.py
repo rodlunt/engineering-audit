@@ -37,6 +37,8 @@ __all__ = [
     "RunState",
     "RunProgress",
     "RUN_STATE_SCHEMA_VERSION",
+    "DOMAIN_RULES_FETCHED_AT_DESCRIPTION",
+    "DOMAIN_RECORDED_AT_DESCRIPTION",
     "NOT_APPLICABLE_NOTE_SCHEMA_VERSION",
     "LEGACY_NOT_APPLICABLE_CONTEXT_KEY",
     "FINDING_PRECONDITION_SCHEMA_VERSION",
@@ -45,8 +47,10 @@ __all__ = [
     "RunStateVersionError",
     "IncompleteResultError",
     "UnknownRuleIdError",
+    "MalformedLocationError",
     "validate_completeness",
     "validate_consulted_sources",
+    "validate_finding_locations",
     "validate_environment",
     "ENVIRONMENT_KEYS",
     "MAX_ENVIRONMENT_VALUE_CHARS",
@@ -228,6 +232,15 @@ class RuleVerdict(BaseModel):
 # reference itself.
 _LOCATION_LINE_SUFFIX_RE = re.compile(r":(?P<start>\d+)(?:-(?P<end>\d+))?$")
 
+# Issue #216. A tail that opens like a line suffix (colon then a digit) but
+# does not parse as the documented 'path:line' or 'path:start-end'. Used only
+# to tell "this is a path containing a colon" apart from "this is a malformed
+# line suffix", so the second is refused instead of being absorbed into the
+# path and leaving the line numbers unvalidated. Deliberately narrow: it
+# requires the colon to be followed by a digit, so a genuine path with a colon
+# in it and no digits after (a Windows drive, a URL-ish fragment) is untouched.
+_LOCATION_MALFORMED_SUFFIX_RE = re.compile(r":\d[^/]*$")
+
 
 class Finding(BaseModel):
     """A single audit finding: a rule verdicted as 'finding', with detail."""
@@ -292,6 +305,15 @@ class Finding(BaseModel):
         # This only checks the shape (a non-empty path, an optional positive
         # line or line range), not that the path exists in the repository:
         # that check belongs to whoever has repository access, not the model.
+        # Issue #216's malformed-suffix check is deliberately NOT here. This
+        # model is what a stored run-state.json is deserialised through as
+        # well as what a new finding is built with, so a rule enforced here
+        # is enforced retroactively against every run already on disk: the
+        # first cut of that fix made the 0.10.0 eval run unloadable by both
+        # the scorer and engineering-audit-render. Recording is guarded by
+        # validate_finding_locations, called from record_domain_result, the
+        # same split validate_completeness and validate_consulted_sources
+        # already use. Strict on write, readable forever.
         suffix_match = _LOCATION_LINE_SUFFIX_RE.search(self.location)
         path = self.location[: suffix_match.start()] if suffix_match else self.location
         if not path.strip():
@@ -528,6 +550,13 @@ class DomainResult(BaseModel):
             raise ValueError(
                 f"domain {self.domain_id}: finding(s) for rule id(s) "
                 f"{sorted(missing_verdicts)} have no matching rule_verdict with verdict=finding"
+            )
+        missing_findings = verdicted_finding_ids - finding_rule_ids
+        if missing_findings:
+            raise ValueError(
+                f"domain {self.domain_id}: rule_verdict(s) for rule id(s) "
+                f"{sorted(missing_findings)} are verdicted finding but have no matching "
+                "entry in findings"
             )
         return self
 
@@ -895,6 +924,47 @@ RULES_FETCH_UNKNOWN_FIELD_DESCRIPTION = (
 )
 
 
+# The two per-domain stamp maps (issue #205). Shared by RunState and
+# RunProgress for the same reason the fetch descriptions above are: the
+# resumed run and the finished run are the same run, and a description that
+# drifted between the two would be a second definition of what a stamp means.
+#
+# No schema_version bump, on the #110 reasoning. An older reader can ignore
+# both maps and nothing it renders becomes wrong, and the distinction a
+# version number would have carried is already in the document: absent means
+# never recorded, an empty dict means recorded and empty.
+_STAMP_CONTRACT = (
+    "\n\nTaken from the server's own clock, so this needs no consent toggle and "
+    "carries none of the self-reported qualifier the assistant-supplied header "
+    "rows do (issue #176).\n\n"
+    "None and an empty map are different answers. None means stamps were never "
+    "recorded at all, which is every run-state written before this field "
+    "existed. An empty map means this build recorded and there was nothing to "
+    "record. A domain carried in by a resume is simply absent from the map, "
+    "because this run did not stamp it; absent is the honest answer and "
+    "inventing a stamp would not be."
+)
+
+DOMAIN_RULES_FETCHED_AT_DESCRIPTION = (
+    "Domain id -> UTC timestamp of the FIRST get_domain call that served that "
+    "domain's rule text this run. First rather than last, because it is the "
+    "'started looking at this domain' marker; a later re-fetch of the same "
+    "domain does not move it." + _STAMP_CONTRACT
+)
+
+DOMAIN_RECORDED_AT_DESCRIPTION = (
+    "Domain id -> UTC timestamp of the record_domain_result call that accepted "
+    "that domain's result. A replace=True re-record overwrites it, because the "
+    "stamp names when the result now held was accepted.\n\n"
+    "These are arrival stamps, NOT per-domain durations, and nothing may "
+    "present them as such. In a run that sweeps domains one at a time the gap "
+    "between consecutive stamps approximates a domain's elapsed time; in a run "
+    "that fans out to a subagent per domain the domains overlap and those gaps "
+    "mean nothing. Deriving a duration needs the orchestration shape first, "
+    "which is a separate question (issue #196)." + _STAMP_CONTRACT
+)
+
+
 class RunState(BaseModel):
     """The full state of one audit run: metadata, config and per-domain results."""
 
@@ -918,6 +988,14 @@ class RunState(BaseModel):
     rules_fetch_unknown_domain_ids: list[str] = Field(
         default_factory=list,
         description=RULES_FETCH_UNKNOWN_FIELD_DESCRIPTION,
+    )
+    domain_rules_fetched_at: dict[str, str] | None = Field(
+        default=None,
+        description=DOMAIN_RULES_FETCHED_AT_DESCRIPTION,
+    )
+    domain_recorded_at: dict[str, str] | None = Field(
+        default=None,
+        description=DOMAIN_RECORDED_AT_DESCRIPTION,
     )
     feedback_issue_url: str | None = None
 
@@ -1039,6 +1117,14 @@ class RunProgress(BaseModel):
     rules_fetch_unknown_domain_ids: list[str] = Field(
         default_factory=list,
         description=RULES_FETCH_UNKNOWN_FIELD_DESCRIPTION,
+    )
+    domain_rules_fetched_at: dict[str, str] | None = Field(
+        default=None,
+        description=DOMAIN_RULES_FETCHED_AT_DESCRIPTION,
+    )
+    domain_recorded_at: dict[str, str] | None = Field(
+        default=None,
+        description=DOMAIN_RECORDED_AT_DESCRIPTION,
     )
     feedback_issue_url: str | None = None
     completed: bool = Field(
@@ -1213,6 +1299,52 @@ class UnknownRuleIdError(Exception):
     not one of the domain's own rules. A citation cannot be attributed to a
     rule that does not exist in this domain, the same way a rule_verdict for
     a nonexistent rule id is rejected by :func:`validate_completeness`."""
+
+
+class MalformedLocationError(ValueError):
+    """A finding being recorded carries a location that is not one of the
+    documented forms (issue #216)."""
+
+
+def validate_finding_locations(result: DomainResult) -> None:
+    """Raise :class:`MalformedLocationError` if any finding being recorded
+    carries a line suffix that is not `path:line` or `path:start-end`.
+
+    Enforced here, at the record boundary, rather than on
+    :class:`Finding` itself. Finding is also what a stored run-state.json is
+    deserialised through, so the same rule placed on the model would apply
+    retroactively to every run already written: the first attempt at this
+    fix made the 0.10.0 eval run unloadable by both the eval scorer and
+    engineering-audit-render, turning a cosmetic defect into data loss.
+
+    What this catches is a tail that opens like a line suffix (a colon then
+    a digit) but does not parse as one, e.g. the comma list
+    "reports/charts.py:16,29" a live 0.10.0 run produced. Such a location
+    used to fall through Finding's own validator as "no suffix, so the whole
+    string is the path", leaving the line numbers unvalidated, the
+    start/end checks dead for that input, and the eval scorer unable to
+    strip the tail, so a correctly located finding scored
+    found-wrong-location. A check that never ran must not be representable
+    as one that passed.
+
+    Deliberately narrow: it requires a digit straight after the colon, so a
+    path that merely contains a colon (a Windows drive letter) is untouched.
+    """
+    bad = [
+        finding
+        for finding in result.findings
+        if _LOCATION_LINE_SUFFIX_RE.search(finding.location) is None
+        and _LOCATION_MALFORMED_SUFFIX_RE.search(finding.location)
+    ]
+    if bad:
+        detail = "; ".join(f"{f.rule_id} at {f.location!r}" for f in bad)
+        raise MalformedLocationError(
+            f"domain {result.domain_id}: {len(bad)} finding(s) carry a line suffix that is "
+            f"not one of the documented forms ({detail}). The format is 'path', "
+            "'path:line' or 'path:start-end'. To cite several separate lines, give the "
+            "file alone ('reports/charts.py') or record one finding per location: a "
+            "finding is a single claim about a single place."
+        )
 
 
 def validate_consulted_sources(domain: "Domain", result: DomainResult) -> None:

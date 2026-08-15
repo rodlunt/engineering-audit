@@ -75,11 +75,12 @@ that clone's `domains/` directory. See [Rules access](#rules-access) for how to 
 
 ### Step 4: register the tool with your assistant
 
-Every command below is pinned to the current release tag (`@v0.9.1`) rather than the
+Every command below is pinned to the current release tag (`@v0.14.0`) rather than the
 moving `main` branch: an unpinned git dependency resolves to whatever `main` holds at
 install time and silently moves on later cache refreshes. Find the latest tag on [the
-Releases page](https://github.com/rodlunt/engineering-audit/releases); to update
-deliberately, change the tag in the command and re-register.
+Releases page](https://github.com/rodlunt/engineering-audit/releases). Updating to a newer
+tag is a deliberate act with its own command, below, not something that happens on a
+`git pull`: the pin lives in your assistant's MCP registration, not in this repository.
 
 Paths beginning with `/path/to/` are placeholders. Replace them with the real absolute path
 on your computer; run `pwd` inside a folder when you need to see its absolute path.
@@ -89,9 +90,33 @@ on your computer; run `pwd` inside a folder when you need to see its absolute pa
 Register the server (swap in the taster path from Step 3, or your full-pack path):
 
 ```sh
-claude mcp add engineering-audit -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.9.1 \
+claude mcp add engineering-audit --scope user -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.14.0 \
     engineering-audit-mcp --rules-dir /path/to/engineering-audit/examples/taster-rules
 ```
+
+`--scope user` registers it for every repository. Without it `claude mcp add` defaults to
+local scope, which registers the server for the current directory alone and leaves it
+unavailable everywhere else.
+
+**To update to a newer tag**, remove first and re-add. `claude mcp add` refuses to
+overwrite an existing name (`MCP server engineering-audit already exists in user config`),
+so changing the tag on its own is not enough:
+
+```sh
+claude mcp remove engineering-audit
+claude mcp add engineering-audit --scope user -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.14.0 \
+    engineering-audit-mcp --rules-dir /path/to/engineering-audit/examples/taster-rules
+```
+
+**The change only takes effect in a new session.** The one you are in keeps the server it
+started with, so verify after restarting rather than before:
+
+```sh
+claude mcp list | grep engineering-audit    # must show the tag you just set
+```
+
+`begin_run`'s response states `tool_version` too. If it names the old version, the session
+predates the re-registration and the run is not exercising the build you think it is.
 
 Install the audit skill (gives you a natural-language entry point: "audit this repo"):
 
@@ -108,14 +133,14 @@ Register the server (verified against codex-cli 0.114.0):
 ```sh
 codex mcp add engineering-audit \
     --env ENGINEERING_AUDIT_RULES_DIR=/path/to/engineering-audit/examples/taster-rules \
-    -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.9.1 engineering-audit-mcp
+    -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.14.0 engineering-audit-mcp
 ```
 
 Inline mode: generate the trigger fragment and append it to your repo's `AGENTS.md` (or
 `~/.codex/AGENTS.md` for all repos):
 
 ```sh
-uvx --from git+https://github.com/rodlunt/engineering-audit@v0.9.1 engineering-audit-fragments \
+uvx --from git+https://github.com/rodlunt/engineering-audit@v0.14.0 engineering-audit-fragments \
     --rules-dir /path/to/engineering-audit/examples/taster-rules --out-dir .
 cat AGENTS-fragment.md >> AGENTS.md
 ```
@@ -140,7 +165,7 @@ swapping in the taster path from Step 3:
       "command": "uvx",
       "args": [
         "--from",
-        "git+https://github.com/rodlunt/engineering-audit@v0.9.1",
+        "git+https://github.com/rodlunt/engineering-audit@v0.14.0",
         "engineering-audit-mcp"
       ],
       "env": {
@@ -163,7 +188,7 @@ Inline triggers work too, and need no extension: generate the fragment and merge
 whichever `GEMINI.md` tier you want it to apply to.
 
 ```sh
-uvx --from git+https://github.com/rodlunt/engineering-audit@v0.9.1 engineering-audit-fragments \
+uvx --from git+https://github.com/rodlunt/engineering-audit@v0.14.0 engineering-audit-fragments \
     --rules-dir /path/to/engineering-audit/examples/taster-rules --out-dir .
 cat GEMINI-fragment.md >> GEMINI.md
 ```
@@ -225,14 +250,62 @@ sweep, then open `audit-output/report.html`. What to expect while it runs is in
 [What a run looks like](#what-a-run-looks-like); what it costs in tokens is in
 [What a full run costs](#what-a-full-run-costs).
 
+## Interrogate, before the code exists (BETA)
+
+**Status: beta, and the label is meant literally.** Shipped in v0.13.0, and the parts of it that
+have actually been exercised are listed below alongside the parts that have not. Expect it to
+change.
+
+An audit sweeps the rules over a repository that already exists. `interrogate` runs them the
+other way, as questions about work that has not started. It fans out over **every domain whose
+trigger genuinely fires**, with no cap, derives the full question set from their rules, then
+triages **the three most impactful across the whole pool** and asks those one at a time. The rest
+are held, not discarded: it names the total, offers a deep dive through everything remaining, and
+records what was answered, what was deferred and what was never asked.
+
+Triage is global on purpose. One domain's third-best question routinely matters more than
+another's first, and a per-domain ranking cannot see that. Questions carry a reversibility grade
+and a blast radius so they can be compared across domains at all.
+
+Ten of the sixteen domains are design-time by their own `Load this when:` statements, so most of
+the pack was already pointed at the moment before the code, with nothing to deliver it there.
+
+It never starts a run. It calls `list_domains` and `get_domain` only, both of which work with no
+run in progress, so it works on a directory that is not a repository yet or on nothing but a
+description. Setup, including the optional hook that offers it when plan mode starts, is in
+[integrations/claude-code/README.md](integrations/claude-code/README.md).
+
+**What has been exercised:** question derivation on three domains (d02, d01, d15) against one
+brief, the no-run guarantee, and the hook's failure paths.
+
+**What has never been run even once:** the cross-domain triage. It is the newest part and the
+part everything else now depends on, so treat its output with more suspicion than the rest.
+
+**What has not:** the other thirteen domains, and the interactive loop itself with a real person
+answering. Nobody has yet finished a full interrogation. Until they have, treat the shape of the
+session as unproven and the question quality as sampled rather than measured.
+
+This is a beta of a Claude Code integration specifically. There is no Codex or Gemini equivalent,
+and unlike `audit` there is no assistant-neutral protocol document behind it: the skill file is
+the whole specification. That is deliberate for now and is the first thing to change if it earns
+its place.
+
 ## Scope
 
 This documentation states functional behaviour (what the tool does) and the security and
 privacy properties documented inline (how the access token is held, what telemetry you opt
 into, what leaves your machine and when). The two human-facing surfaces, the configuration page
-and the report page, target [WCAG 2.2](https://www.w3.org/TR/WCAG22/) Level AA. Performance is
-explicitly out of scope for now: no throughput or latency target is stated or tested anywhere in
-this repository.
+and the report page, target [WCAG 2.2](https://www.w3.org/TR/WCAG22/) Level AA. Applying the
+same [proven versus documented, untested](#support-matrix) distinction used below for the
+assistant integrations: one criterion is proven, the rest are documented, untested. Contrast is
+machine-checked on every test run, `tests/test_report_stylesheet.py` computes contrast ratios
+from the CSS custom properties and asserts 4.5:1 in both the light and dark palettes. No
+keyboard-only pass and no screen reader pass has been recorded against either surface, and
+neither template currently sets an explicit minimum target size on its interactive controls, so
+those criteria (and WCAG 2.2's target size, success criterion 2.5.8, specifically) have not been
+checked by anyone. The target is real; only the contrast ratio has a recorded check behind it.
+Performance is explicitly out of scope for now: no throughput or latency target is stated or
+tested anywhere in this repository.
 
 ## How it works
 
@@ -298,10 +371,15 @@ A full sweep is token-hungry, and the configuration page's domain tick boxes are
 control: cost scales close to linearly with the domains you tick. Budget from these
 recorded runs rather than guessing, one row per host that has completed one:
 
-| Host | Scope | Active time | Findings | Tokens |
-|---|---|---|---|---|
-| Claude Code, Fable 5 orchestrating Sonnet subagents (this repository, 2026-08-09) | all 16 domains, 260 rules | 47 minutes end to end, sweeps running four at a time | 33 (every one filed as a GitHub issue) | 2,010,691 subagent tokens, roughly 100k to 170k per domain (excludes the orchestrator) |
-| Codex CLI 0.147.0, gpt-5.6-sol at high reasoning effort (external React SPA, roughly 344 files, 2026-08-10) | all 16 domains of the standard pack | 19 minutes 21 seconds | 32 (122 rules could not be evaluated) | 6,172,397 input plus output, of which 96% is cached input; 269,293 non-cached input plus output |
+| Host | Tool version | Scope | Active time | Findings | Tokens |
+|---|---|---|---|---|---|
+| Claude Code, Fable 5 orchestrating Sonnet subagents (this repository, 2026-08-09) | 0.4.0 (established from tag history, not stamped into a retained report; see [docs/example-audit-cost.md](docs/example-audit-cost.md)) | all 16 domains, 260 rules | 47 minutes end to end, sweeps running four at a time | 33 (every one filed as a GitHub issue) | 2,010,691 subagent tokens, roughly 100k to 170k per domain (excludes the orchestrator) |
+| Codex CLI 0.147.0, gpt-5.6-sol at high reasoning effort (external React SPA, roughly 344 files, 2026-08-10) | 0.5.1 | all 16 domains of the standard pack | 19 minutes 21 seconds | 32 (122 rules could not be evaluated) | 6,172,397 input plus output, of which 96% is cached input; 269,293 non-cached input plus output |
+
+Both rows predate `v0.9.0` and `v0.9.1`, which added required per-finding and per-domain
+output that neither run had to produce; see the comparability note in
+[docs/example-audit-cost.md](docs/example-audit-cost.md) before budgeting a current run from
+either figure.
 
 **The two token columns are not the same measurement and must not be subtracted or
 averaged.** Codex does not fan out to one subagent per domain the way the Claude Code skill
@@ -326,7 +404,10 @@ send or file it. It is a written report meant to be read top to bottom, in this 
   citation appended automatically from the rules pack. The tool refuses to publish a
   finding whose rule carries no citation. Each finding also carries its domain's
   self-assessed confidence and whether that domain's rule text was fetched this run, so a
-  finding from a shaky domain does not look identical to one from a solid one. The four
+  finding from a shaky domain does not look identical to one from a solid one. The
+  confidence never appears on its own: it ships with how many of that domain's rules could
+  not be evaluated, out of how many, so a domain claiming high confidence over half a
+  domain it could not check says so in the same breath. The four
   severity levels are defined on the page, and stated as assigned by the assistant named
   in the header rather than measured.
 - **Issues**: tick boxes to select findings, then file them to GitHub directly from the
@@ -416,9 +497,14 @@ configured.
 
 Up to now, the PR description has been the deliberate change record for this project: each PR
 body explains what changed and why, and that has been treated as sufficient in place of a
-separate issue-linked history. From now on, every PR links its tracking issue with a
+separate issue-linked history. From now on, every PR that has a tracking issue links it with a
 `Closes #N` line (or `Fixes #N`), so the issue tracker and the merge history stay in step
-instead of relying on the PR description alone.
+instead of relying on the PR description alone. Release PRs (`chore(release): X.Y.Z`) and
+housekeeping PRs with no issue behind them are the standing exception: there is nothing for
+either to close, so no keyword is expected on them. Nothing currently checks for the keyword on
+a PR that does carry a tracking issue; a CI check failing a PR with no closing keyword and no
+opt-out label is an option the maintainer can pick up separately, not something this policy
+statement adds on its own.
 
 ### Eval harness
 

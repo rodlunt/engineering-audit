@@ -174,3 +174,124 @@ the auditor:
   The fixture now binds it to the fixed reward menu with a CHECK. That control has now been
   falsified and repaired three times (points_balance, points_spent, reward_name), which is the
   strongest evidence in this file that the controls are being genuinely exercised.
+
+### Third run
+
+2026-08-15, Claude Code headless on Sonnet, **full pack** (`engineering-framework/domains`
+v0.6.1+18, not the taster pack the first two used), tool_version 0.10.0 at tool_commit
+`2b2d357`, against GrindPoints: **7 of 7 planted findings hit, 4 of 4 controls held, no false
+positives, no wrong-location, 9 unexpected findings.** Exit code 0, the first run to score
+clean on both halves.
+
+Scoring was controlled before it was believed: a copy of the run-state with every finding
+stripped and every finding-verdict flipped to `pass` was scored first and had to fail, which
+it did (exit 1, 0 hit, 7 missed). A scorer that has not been seen to fail cannot be read as
+having passed.
+
+The full pack was used deliberately. The taster pack and the full pack carry identical rule-id
+sets for d01, d05 and d16 (15, 18 and 21 ids, verified by comparing both), so `expected.json`'s
+taster-authored ids score a full-pack run without a mapping.
+
+This was the run the 0.10.0 release baton called for, and it earned its keep: it produced the
+first `self_assessment` data any run has carried, and putting that beside each domain's own
+verdict distribution surfaced **#211** immediately. d05 self-reported `high` confidence while
+10 of its 18 rules were verdicted could-not-evaluate, rendering identically to d01, which could
+not evaluate 2 of 15, in direct contradiction of README.md's promise that a finding from a
+shaky domain does not look identical to one from a solid one. No earlier run could have found
+this: before #192 landed there was no self-assessment data to compare against.
+
+Also confirmed for the first time against a real auditor rather than a test: the per-domain
+`domain_rules_fetched_at` and `domain_recorded_at` stamps (#205, #206) populate and are
+monotonic; `uninspected_evidence` came back `[]` and that claim is truthful (the fixture points
+at no external evidence store, verified with a control grep); and each domain's `limits` text
+cross-checks against its own verdicts, naming exactly the rules actually recorded as
+could-not-evaluate.
+
+### Fourth run
+
+2026-08-15, same setup, on the #211 branch build (tool_commit `f53df48`) to confirm the fix
+end-to-end: **6 of 7 planted findings hit, 4 of 4 controls held, no false positives, 9
+unexpected findings.** Exit code 1. The #211 fix rendered correctly on a live run, with the
+three domains' confidence cells reading distinctly for the first time.
+
+The single miss was D05-R08, verdicted `not-applicable` with reasoning rather than skipped.
+That takes D05-R08 to **2 hits in 4 recorded runs**, which retires this file's earlier reading
+of the first run's miss as ordinary variance. It is filed as **#213**: the fixture gives the
+layering rule no unit-testable seam to be missing, since both functions in
+`loyalty_writer.py` take a live connection and every test opens sqlite, so `not-applicable` and
+`finding` are both defensible readings of the same fixture. A golden expectation must not be a
+judgement call. It is deliberately left unfixed rather than repaired unattended: `expected.json`
+is the answer key for every later run, and a single green result after editing it would be
+indistinguishable from the coin landing heads again.
+
+These two runs together are the clearest demonstration yet of this file's first Known
+limitation. Same fixture, same model, same pack, forty minutes apart, and one scored clean
+while the other did not.
+
+## Spec growth, and reading the run entries above
+
+The entries above quote the score against the spec **as it stood when the run was
+scored**. The spec has since grown, so those figures are not directly comparable with a
+later run's.
+
+On 2026-08-15 three expectations were promoted from emergent findings to plants
+(issue #215): D01-R04, D05-R05 and D16-R10. They were not planted. They were found by
+audit, checked against the fixture by hand afterwards, and each one's `why` says so
+rather than claiming a deliberate plant, because a spec that misdescribes its own
+provenance is worse than a smaller one.
+
+They qualified on two tests, both required:
+
+- **Sourced.** Each rule carries a primary citation that supports the claim, not merely
+  a citation: Halpin's ORM CSDP step 3 for derivation notation (D01-R04), ISTQB v4.0.1
+  Testing Principle 4 on defect clustering (D05-R05), and NN/g's "Contrast: One of the
+  3Cs for Better Charts", which states D16-R10's defect almost verbatim ("Titles should
+  not merely describe the data shown").
+- **Reproduced.** Each was found in both full-pack runs, and the fixture evidence was
+  re-checked by hand with the negative greps controlled first.
+
+Three further candidates were rejected on the same tests and deliberately left as
+unexpected findings, because promoting them would have measured the toss rather than the
+auditor: D01-R15 (least privilege; "no grants in schema.sql" is an absence claim across a
+repo boundary, since grants routinely live outside DDL), D05-R18 (the rule's second limb
+is "automate it where the pipeline can carry it", and this fixture has no pipeline for
+the precondition to hold in), and D16-R12 (the rule is about significance thresholds, and
+nothing in the fixture performs a significance analysis at all; it also lands on the same
+two lines as the already-planted D16-R11).
+
+That leaves 14 expectations against the three domains' 54 rules. The remaining 40 rules
+are still scored neither way, so a finding on one of them is neither credited nor
+penalised: see issue #215 for what that does and does not tell you about a score.
+
+## The third expectation state
+
+`expect` accepts `"finding-or-not-applicable"` alongside the strict `"finding"` and
+`"no-finding"` pair (issue #213). It says the fixture genuinely admits two defensible
+readings of the same rule, so either raising the finding or ruling the rule out counts,
+and it scores its own outcome, `ruled-out`.
+
+**It still refuses `pass`, `could-not-evaluate` and no verdict at all.** Those are the
+auditor not engaging, which is the failure this harness exists to catch, and they score
+`missed` exactly as before. The line between them is that since schema version 4 a
+`not-applicable` verdict must carry a note naming the precondition that does not hold, so
+it is a position the auditor had to write down. `could-not-evaluate` is the shrug.
+
+**`ruled-out` exits clean but is counted and printed separately from `hit`**, on every run
+rather than only when non-zero. A score resting partly on the permissive state must never
+be able to read identically to one that found everything outright.
+
+Exactly one expectation uses it: **D05-R08**. The rule wants a layered test suite, and
+GrindPoints' two write functions both take a live connection with every test opening
+sqlite, so there is no unit-testable seam for the rule to be missing. It was hit in 2 of 4
+recorded runs, and the runs that did not raise it ruled it out with written reasoning
+rather than skipping it. Scoring that as a miss measured the coin toss, not the auditor.
+Both recorded full-pack runs now score exit 0, one by finding it and one by ruling it out,
+and the counter is what distinguishes them.
+
+Reach for this state rarely and only with evidence across runs. A spec that cannot commit
+to an answer is not testing much, and every expectation moved here is one the harness has
+stopped being able to fail.
+
+This is **not** the strict `not-applicable` state discussed in issue #199, which is for a
+domain that genuinely does not apply to a fixture at all and where a finding would be
+wrong. That state is still unbuilt, and is what a 16-domain golden repo would need.
