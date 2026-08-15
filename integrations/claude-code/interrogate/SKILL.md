@@ -1,12 +1,13 @@
 ---
 name: interrogate
-description: Use when the user wants their intent or a drafted plan questioned before the code exists: "interrogate this", "question my plan", "what am I not thinking about", or at the start of a greenfield feature. Selects at most three engineering-framework domains, fans out read-only subagents to derive ranked questions from the rules, asks them one per turn, and records the answers and the gaps into the plan file.
+description: Use when the user wants their intent or a drafted plan questioned before the code exists: "interrogate this", "question my plan", "what am I not thinking about", or at the start of a greenfield feature. Fans out read-only subagents over every relevant engineering-framework domain, derives the full question set, triages the three most impactful across all of them, asks those one per turn, then offers a deep dive through the rest, recording answers and gaps into the plan file.
 ---
 
 # Interrogate
 
-**BETA.** New in engineering-audit v0.13.0. Question derivation has been exercised on three of
-the sixteen domains, and the loop below has never been run end to end with a real person
+**BETA.** New in engineering-audit v0.13.0, reshaped in v0.14.0. Question derivation has been
+exercised on three of the sixteen domains individually; the cross-domain triage in this file has
+never been run at all, and the loop below has never been run end to end with a real person
 answering. Say so once, early, if the user has not already been told: they should know the shape
 of the session may change under them, and that a question reading as a generic quiz rather than
 as being about their actual work is a defect worth reporting rather than something to work
@@ -35,36 +36,46 @@ point of this skill is that only a subagent ever reads one.
    confirm in one question. Never assume silently.
 2. **State the work in two or three lines and show it back.** Everything downstream keys off
    this, so a misreading is cheapest to fix here. In `review` mode, read the plan file first.
-3. **Shortlist.** Call `list_domains`: sixteen triggers, no rule text, cheap. Score each trigger
-   against the work and take **at most three**. Prefer the design-time domains: d02, d03, d01,
-   d11, d10, d15, d08, d05, d13, d12. The other six are eligible only when the work plainly
-   fires their trigger.
-4. **Show the cut before acting on it.** Print three lines that between them name all sixteen:
-   - `Selected:` up to three, one line of why each.
-   - `Cut at the cap:` every domain whose trigger fired but lost a slot, one line each on what
-     it would have covered. This line is the honesty-critical one. A relevant domain that
-     vanishes without being named reads as coverage.
-   - `Not relevant:` the rest, ids and slugs only, no prose.
+3. **Judge relevance, domain by domain. There is no cap.** Call `list_domains`: sixteen
+   triggers, no rule text, cheap. Put each trigger against the work and decide whether it
+   genuinely fires. Every domain that does is in, whether that is two or twelve. Do not trim to a
+   number, and do not include a domain because the pack would look better covered: a domain that
+   does not fire produces questions with no grip, which is the failure this skill is most likely
+   to have.
+4. **Show the split and the cost before spending anything.** Print two lines that between them
+   name all sixteen:
+   - `Relevant:` every domain that fired, one line of why each.
+   - `Not relevant:` the rest, ids and slugs, with a handful of words on why not.
 
-   Then ask one question: accept, or swap. The user may name any domain to swap in, and may
-   raise the cap. **You may never raise it yourself.** If they raise it, say so in the record.
-5. **Fan out one read-only subagent per selected domain, in parallel.** Each calls
+   Then say how many subagents that means and ask one question: go, or adjust. The user may add
+   or drop any domain. This is the only point where the cost is knowable in advance, so it is the
+   only fair place to ask.
+5. **Fan out one read-only subagent per relevant domain, all in parallel.** Each calls
    `get_domain(<id>)`, reads the whole document, and returns the JSON below as its final message
    and nothing else. Tell each one plainly: you may call `get_domain` and read; you may not
    write, edit or create any file including scratch files, run any mutating command, or call any
    other engineering-audit tool.
-6. **Ask.** One question per turn, in shortlist order. Never batch. Never join two questions with
-   "and". Record each answer as ANSWERED, or DEFERRED with the user's reason. "Not decided yet"
-   is a deferral, not an answer; if no reason is offered, ask once, then record `none given`.
-7. **Tranches.** Ask ranks 1 to 3 of a domain, then spend one turn on the routing question: go
-   deeper here, or move to the next domain. Deeper serves the next three by rank, and the offer
-   repeats at every boundary until the set runs out, at which point say so with the number
-   ("that is all d02 had, eight questions"). Moving on marks the remainder NOT ASKED, counted.
-8. **Bail out is unconditional.** On stop, enough, or that will do: write the record
-   immediately, mark the session `ended early`, and give the unasked count per domain. A short
-   session must never read as a complete one.
-9. **Write the record after each domain finishes**, not only at the end, so an interrupted
-   session still leaves an honest record rather than none.
+6. **Triage across the whole pool, not within each domain.** Collect every question from every
+   subagent, then pick **the three most impactful in the entire set**, judged on what it costs to
+   get wrong. Two of the three may come from one domain and none from another; that is the point
+   of triaging globally. A domain's own ranking orders it internally and says nothing about how it
+   compares to another domain's worst question.
+
+   Say the totals out loud before asking anything: how many questions came back, from how many
+   domains, and that three are being put now with the rest held. **Never present the three as
+   though they were all there was.**
+7. **Ask those three, one question per turn.** Never batch. Never join two with "and". Record each
+   answer as ANSWERED, or DEFERRED with the user's reason. "Not decided yet" is a deferral, not an
+   answer; if no reason is offered, ask once, then record `none given`.
+8. **Then offer the deep dive, with the real number attached.** "That is the top three of 47.
+   Work through the rest?" If they say yes, go through everything held back, grouped by domain,
+   still one question per turn, and offer a checkpoint at each domain boundary so they can stop
+   without abandoning the record. If they say no, the remainder is NOT ASKED and is counted.
+9. **Bail out is unconditional.** On stop, enough, or that will do: write the record
+   immediately, mark the session `ended early`, and give the unasked count. A short session must
+   never read as a complete one.
+10. **Write the record as you go**, after the top three and after each domain in the deep dive,
+    not only at the end, so an interrupted session still leaves an honest record rather than none.
 
 ## What each subagent returns
 
@@ -78,24 +89,45 @@ point of this skill is that only a subagent ever reads one.
           "rule_id": "D02-R01",
           "question": "Who is the one user this fails for, and what do they lose?",
           "why": "A problem statement with no named user cannot be tested against anything.",
-          "cost_if_unanswered": "You build it well for nobody and find out at the demo."
+          "cost_if_unanswered": "You build it well for nobody and find out at the demo.",
+          "reversibility": "irreversible-once-shipped",
+          "blast_radius": "every screen, the data model, and what 'done' means"
         }
       ]
     }
 
 **Rank by cost of getting it wrong, never by rule order.** Rule order teaches; it does not weigh
-risk. Ranks 1 to 3 go to the decisions that are expensive or impossible to reverse once code
-exists: data shape and identifiers, published contracts, trust boundaries, what "done" means, who
-the user actually is, and failures that surface late and somewhere else. Deeper ranks take
-refinements, technique choices and process hygiene, the things that stay cheap to change.
+risk. Ranks run 1 to N with no gaps and no ties. Return five to ten questions, eight is a good
+target. Fold several rules into one question where they ask the same thing of this work, and cite
+the strongest rule id. Drop rules this work does not touch.
 
-Ranks run 1 to N with no gaps and no ties. Return five to ten questions, eight is a good target.
-Fold several rules into one question where they ask the same thing of this work, and cite the
-strongest rule id. Drop rules this work does not touch.
+`reversibility` is one of `irreversible-once-shipped`, `expensive-to-change` or
+`cheap-to-change`, and `blast_radius` names in a few words what else has to move if the answer
+turns out wrong. **These two exist so the parent can compare questions across domains, which a
+within-domain rank cannot support**: d01's third-best question may matter far more than d15's
+first, and nothing in either ranking says so. Judge reversibility against this work as described,
+not in the abstract.
 
 **A question that could be asked of any project is not a question, it is filler.** Never pad to
 reach a number. This is the failure mode that kills the skill: rules restated without grip on
 the actual work, producing a quiz instead of an interrogation.
+
+## Triage
+
+The parent picks the top three from the pooled set, in this order:
+
+1. Everything marked `irreversible-once-shipped`, widest `blast_radius` first.
+2. Then `expensive-to-change`, same tiebreak.
+3. `cheap-to-change` reaches the top three only when nothing above it did.
+
+Spread across domains only where the impact genuinely ties. Do not take one from each domain for
+the sake of a tidy spread: three questions from one domain is the correct answer when that is
+where the irreversible decisions are, and forcing variety buries a real one to make room for a
+cosmetic one.
+
+**State the arithmetic before the first question.** How many questions came back, from how many
+domains, and that three are being asked now with the rest held. Three questions presented without
+that sentence read as the whole interrogation, and the user calibrates their trust accordingly.
 
 ## The record
 
@@ -104,34 +136,35 @@ an earlier section: a second run appends `### Second pass (<date>)`.
 
     ## Design decisions (interrogate)
 
-    Mode: before. Run: 2026-08-15. Status: ended early by the user after 7 of 24 questions.
-    Cap: 3 domains (default).
+    Mode: before. Run: 2026-08-15.
+    Status: top three answered, deep dive declined. 4 of 47 questions asked.
 
-    | Domain | Asked | Answered | Deferred | Not asked |
-    |---|---|---|---|---|
-    | d02 requirements-elicitation | 6 of 8 | 5 | 1 | 2 |
-    | d01 data-modelling | 1 of 7 | 1 | 0 | 6 |
-    | d08 threat-modelling-risk | 0 of 9 | 0 | 0 | 9 |
+    | Domain | Derived | Asked | Answered | Deferred | Not asked |
+    |---|---|---|---|---|---|
+    | d02 requirements-elicitation | 8 | 2 | 2 | 0 | 6 |
+    | d01 data-modelling | 9 | 1 | 0 | 1 | 8 |
+    | d10 api-design | 7 | 1 | 1 | 0 | 6 |
+    | d11 architecture-deployment | 8 | 0 | 0 | 0 | 8 |
+    | d15 interface-design | 8 | 0 | 0 | 0 | 8 |
+    | d08 threat-modelling-risk | 7 | 0 | 0 | 0 | 7 |
+    | **Total** | **47** | **4** | **3** | **1** | **43** |
 
-    Cut at the cap: d10 api-design (fired, lost a slot: verbs, errors, versioning),
-    d11 architecture-deployment (fired, lost a slot: topology and scaling).
-    Not relevant: d03, d04, d05, d06, d07, d09, d12, d13, d14, d15, d16.
+    Not relevant: d03, d04, d05, d06, d07, d09, d12, d13, d14, d16.
 
-    ### d02 requirements-elicitation
+    ### Asked (the triaged top three, plus one from the deep dive before it was stopped)
 
-    **D02-R01 ANSWERED. Who is the one user this fails for, and what do they lose?**
+    **D02-R01 ANSWERED. irreversible-once-shipped. Who is the one user this fails for, and what
+    do they lose?**
     Small clinics with one receptionist. They lose the afternoon to re-keying bookings.
 
-    **D02-R04 DEFERRED (waiting on Tuesday's client call). What must be true for this to be done?**
+    **D01-R11 DEFERRED (waiting on Tuesday's client call). Does a sent quote copy its prices or
+    point at the live rate card?**
 
-    **Not asked: 2 of 8 remain (ranks 7 to 8). The user moved on at the second tranche boundary.**
+    ### Not asked: 43 of 47
 
-The coverage table comes first because a missing question is an absence, and absences do not draw
-the eye. A number in a `Not asked` column does.
-
-Every selected domain gets a heading, including one that was never reached: a heading with a zero
-row under it is the point. A domain cut at the cap gets no heading and appears only on the cut
-line.
+    The deep dive was offered after the top three and declined. Every domain above still holds
+    unasked questions; the per-domain counts are in the table. Nothing here was judged
+    unimportant, it was simply never put.
 
 ## Claude Code notes
 
@@ -152,7 +185,7 @@ line.
   turn and you reliably get one answer: the second is dropped, and it is recorded as ANSWERED
   because a reply arrived. That is a silent gap, and silent gaps are the one thing this skill
   exists to prevent.
-- **Use `AskUserQuestion` for the routing and shortlist questions**, where the options are fixed
+- **Use `AskUserQuestion` for the relevance confirmation and the deep-dive offer**, where the options are fixed
   and few. Use plain prose for the interrogation questions themselves, which are open by design
   and must not be reduced to a multiple choice.
 - **Write into this session's plan file, the one the host named.** If there is none, ask for the
