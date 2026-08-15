@@ -7,12 +7,39 @@ Wires the `engineering-audit` MCP server and its `audit` skill into Claude Code.
 **From the published git repository** (no local clone needed):
 
 ```
-claude mcp add engineering-audit -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.11.0 engineering-audit-mcp --rules-dir <path-to-rules-clone>
+claude mcp add engineering-audit --scope user -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.11.0 engineering-audit-mcp --rules-dir <path-to-rules-clone>
 ```
 
+`--scope user` registers the server for every repository. Without it `claude mcp add` defaults
+to local scope, which registers it for the current directory alone and leaves it unavailable
+everywhere else.
+
 `@v0.11.0` pins the install to the current tagged release rather than the moving `main` branch;
-see the root README's [How to use](../../README.md#how-to-use) section for how to find the latest tag
-and update to it deliberately.
+find the latest tag on the [Releases page](https://github.com/rodlunt/engineering-audit/releases).
+
+### Updating to a newer tag
+
+**Remove first.** `claude mcp add` refuses to overwrite an existing name, so changing the tag
+in the command above and running it again fails with `MCP server engineering-audit already
+exists in user config`. VERIFIED on claude-code 2.1.232. (Codex differs here: `codex mcp add`
+overwrites silently, so its own README's instruction to re-add is correct for that host.)
+
+```
+claude mcp remove engineering-audit
+claude mcp add engineering-audit --scope user -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.11.0 engineering-audit-mcp --rules-dir <path-to-rules-clone>
+```
+
+**The change only takes effect in a new session.** The session you are in keeps the server it
+started with, and will report the old `tool_version` while appearing to work normally, so
+verify after restarting rather than before:
+
+```
+claude mcp list | grep engineering-audit    # must show the tag you just set
+```
+
+`begin_run`'s response states `tool_version` too. If it names the old version, the session
+predates the re-registration and the run is not exercising the build you think it is. The
+server also checks its own currency on every run and reports it as `meta.update_check`.
 
 `<path-to-rules-clone>` is a local checkout of a rules pack: a directory of `NN-slug.md` domain
 files. Rules packs are distributed separately from this tool (see the repository root README);
