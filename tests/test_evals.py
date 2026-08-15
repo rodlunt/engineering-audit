@@ -720,9 +720,7 @@ def test_finding_or_not_applicable_accepts_only_a_reasoned_ruling_out(
     pack = _load_taster_pack()
     spec = _load_expected_spec()
     planted = {k: v for k, v in PLANTED_FINDINGS.items() if k != "D05-R08"}
-    run_state = _build_run_state(
-        pack, planted, verdict_overrides={"D05-R08": verdict}
-    )
+    run_state = _build_run_state(pack, planted, verdict_overrides={"D05-R08": verdict})
 
     result = score(run_state, spec, pack)
 
@@ -735,9 +733,9 @@ def test_a_strict_finding_expectation_still_fails_a_not_applicable() -> None:
     # a not-applicable there is still a miss.
     pack = _load_taster_pack()
     spec = _load_expected_spec()
-    assert next(
-        e.expect for e in spec.expectations if e.rule_id == "D01-R05"
-    ) == "finding", "fixture changed: D01-R05 is no longer a strict finding expectation"
+    assert (
+        next(e.expect for e in spec.expectations if e.rule_id == "D01-R05") == "finding"
+    ), "fixture changed: D01-R05 is no longer a strict finding expectation"
 
     planted = {k: v for k, v in PLANTED_FINDINGS.items() if k != "D01-R05"}
     run_state = _build_run_state(
@@ -767,6 +765,4 @@ def test_ruled_out_exits_clean_but_is_counted_separately_from_hit() -> None:
     assert result.exit_code == 0
     assert result.expected_ruled_out == 1
     assert result.expected_missed == 0
-    assert "D05-R08" not in {
-        o.rule_id for o in result.outcomes if o.outcome == "hit"
-    }
+    assert "D05-R08" not in {o.rule_id for o in result.outcomes if o.outcome == "hit"}
