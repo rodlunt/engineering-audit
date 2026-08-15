@@ -1,0 +1,11 @@
+interface:
+  display_name: "Engineering Grill"
+  short_description: "Plan a project with engineering best practice"
+  default_prompt: "Use $engineering-grill to help me shape this project idea with the engineering framework before I start building."
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "engineering-audit"
+      description: "Lists engineering domains and serves their full rules"
+policy:
+  allow_implicit_invocation: false

@@ -7,8 +7,7 @@
 ![Checked with ruff and mypy](https://img.shields.io/badge/checked%20with-ruff%20%2B%20mypy-4b8bbe)
 
 **TL;DR:** engineering-audit turns the AI coding assistant you already use (Claude Code,
-Codex CLI, Gemini CLI) into an engineering-practice auditor. It is one tool with **two
-distinct modes**:
+Codex CLI, Gemini CLI) into an engineering-practice auditor. It has **two audit modes**:
 
 1. **Full repository audit**: your assistant sweeps a whole repository against a pack of
    sourced engineering rules and produces a self-contained HTML report. Every finding says
@@ -18,6 +17,11 @@ distinct modes**:
    load the relevant rules at the moment you are making a matching decision (designing a
    schema, cutting a branch, shaping an API). No report, just the right rules at the right
    moment.
+
+Starting a new project? The optional [Engineering Grill](integrations/engineering-grill/)
+uses the same rules before you build. Your assistant interviews you, works out which domains
+matter, and records the decisions and checks the project will need—without expecting you to
+understand the framework first.
 
 **Three complete rule domains ship in this repository**, ready to run: data modelling,
 testing strategy and presenting data, 54 rules with their full source citations, in
@@ -63,6 +67,7 @@ a working rules directory at `examples/taster-rules/`:
 
 ```sh
 git clone https://github.com/rodlunt/engineering-audit
+cd engineering-audit
 ```
 
 Have the full pack instead? Registration below is identical, just point `--rules-dir` at
@@ -75,6 +80,9 @@ moving `main` branch: an unpinned git dependency resolves to whatever `main` hol
 install time and silently moves on later cache refreshes. Find the latest tag on [the
 Releases page](https://github.com/rodlunt/engineering-audit/releases); to update
 deliberately, change the tag in the command and re-register.
+
+Paths beginning with `/path/to/` are placeholders. Replace them with the real absolute path
+on your computer; run `pwd` inside a folder when you need to see its absolute path.
 
 #### Claude Code
 
@@ -164,6 +172,13 @@ Gemini support is **documented, untested**: Gemini CLI was not available to exer
 it. Check `gemini --help` before an unattended run. Details and caveats:
 [integrations/gemini/](integrations/gemini/).
 
+### Optional: plan before you build
+
+Install [Engineering Grill](integrations/engineering-grill/) after registering the MCP server
+if you want a guided, plain-English planning conversation before code is written. It reads the
+domains from the connected rules pack, so the taster pack gives a three-domain grill and the full
+rules pack gives the complete framework.
+
 #### Headless / CI
 
 Skip the interactive configuration page by pointing `ENGINEERING_AUDIT_CONFIG` at a saved
@@ -228,8 +243,11 @@ finding capture (a rule the agent did not check can never be recorded as a pass)
 configuration page, deterministic report rendering, source citations attached from the
 rules pack itself, and GitHub issue filing with an explicit confirmation step.
 
-Two modes:
+Two audit modes, plus an optional project-start skill:
 
+- **Engineering Grill**: before code is written, the assistant sorts the loaded domains by
+  relevance, asks framework-backed questions and records the resulting plan. It uses only the
+  read-only `list_domains` and `get_domain` tools and does not start an audit run.
 - **Standalone audit**: tick the domains to audit on a local configuration page (or supply
   a saved config for headless runs), the agent sweeps the repository, and you get
   `report.html` plus optional GitHub issues.
