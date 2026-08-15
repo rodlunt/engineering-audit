@@ -133,6 +133,14 @@ line.
   subagent to do the same for `get_domain`. A subagent that cannot see the tool will otherwise
   improvise from the rules directory on disk, which is not the same thing and will not be
   reported as a failure.
+- **A large domain will exceed the tool-result limit and be spooled to a file.** The full
+  documents carry the private `Verification:` trails that the generated skills strip, so they run
+  far larger than those files suggest: d15 measured 155,706 characters on 2026-08-15 and came
+  back as `Error: result (...) exceeds maximum allowed tokens. Output has been saved to
+  <path>`. **That is not a failure and not an empty fetch.** Read the spooled file in full and
+  carry on. Never treat it as a reason to fall back to the pack directory, and never derive
+  questions from the part that fitted: a domain half-read produces a question set that looks
+  complete and is not.
 - **One question per turn is a standing preference, not a style note.** Two questions in one turn
   gets you one answer and a silent gap in the record.
 - **Use `AskUserQuestion` for the routing and shortlist questions**, where the options are fixed
