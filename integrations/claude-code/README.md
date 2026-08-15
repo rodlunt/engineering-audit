@@ -7,14 +7,14 @@ Wires the `engineering-audit` MCP server and its `audit` skill into Claude Code.
 **From the published git repository** (no local clone needed):
 
 ```
-claude mcp add engineering-audit --scope user -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.12.0 engineering-audit-mcp --rules-dir <path-to-rules-clone>
+claude mcp add engineering-audit --scope user -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.13.0 engineering-audit-mcp --rules-dir <path-to-rules-clone>
 ```
 
 `--scope user` registers the server for every repository. Without it `claude mcp add` defaults
 to local scope, which registers it for the current directory alone and leaves it unavailable
 everywhere else.
 
-`@v0.12.0` pins the install to the current tagged release rather than the moving `main` branch;
+`@v0.13.0` pins the install to the current tagged release rather than the moving `main` branch;
 find the latest tag on the [Releases page](https://github.com/rodlunt/engineering-audit/releases).
 
 ### Updating to a newer tag
@@ -26,7 +26,7 @@ overwrites silently, so its own README's instruction to re-add is correct for th
 
 ```
 claude mcp remove engineering-audit
-claude mcp add engineering-audit --scope user -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.12.0 engineering-audit-mcp --rules-dir <path-to-rules-clone>
+claude mcp add engineering-audit --scope user -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.13.0 engineering-audit-mcp --rules-dir <path-to-rules-clone>
 ```
 
 **The change only takes effect in a new session.** The session you are in keeps the server it
@@ -82,7 +82,15 @@ The symlink target and Claude Code's skill discovery convention above are correc
 see the root README's [support matrix](../../README.md#support-matrix), same as above, for
 whether this has actually been exercised against a live Claude Code session.
 
-## Install the interrogate skill
+## Install the interrogate skill (BETA)
+
+**Beta, and the label is literal.** New in v0.13.0. Question derivation has been exercised on
+three of the sixteen domains against a single brief, and the hook's failure paths have been
+tested, but **nobody has yet completed a full interactive interrogation**. The shape of the
+session (tranches, the go-deeper routing, the bail-out record) is unproven with a real person
+answering, and question quality is sampled rather than measured. Expect it to change, and please
+report anything that reads like a generic quiz rather than a question about your actual work:
+that is the failure mode this design is most likely to have.
 
 `interrogate` is the pre-build counterpart to `audit`. Where `audit` sweeps the rules over a
 repository that already exists, `interrogate` turns them into questions about work that has not
