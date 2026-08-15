@@ -31,9 +31,9 @@
     },
     {
       "rule_id": "D05-R08",
-      "expect": "finding",
+      "expect": "finding-or-not-applicable",
       "location_contains": "tests/",
-      "why": "Planted. The whole test suite (tests/test_signup_flow.py, tests/test_redemption_flow.py) runs the full write path against a real sqlite connection; there is no unit-level test of any function in isolation, so the suite has no fast-feedback layer at all."
+      "why": "Planted, and the one expectation in this spec that accepts two answers (issue #213). The whole test suite (tests/test_signup_flow.py, tests/test_redemption_flow.py) runs the full write path against a real sqlite connection, so the suite has no fast-feedback layer. But both functions in loyalty_writer.py take a live connection and every test opens sqlite, so the fixture offers no unit-testable seam for the layering rule to be missing, and ruling the rule out is as defensible as raising it. Hit in 2 of 4 recorded runs, and the runs that ruled it out did so with written reasoning rather than by skipping it. A reasoned not-applicable therefore counts; pass, could-not-evaluate and silence still do not."
     },
     {
       "rule_id": "D05-R17",
