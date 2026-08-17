@@ -55,6 +55,15 @@ point of this skill is that only a subagent ever reads one.
    and nothing else. Tell each one plainly: you may call `get_domain` and read; you may not
    write, edit or create any file including scratch files, run any mutating command, or call any
    other engineering-audit tool.
+
+   **Every subagent must report how it actually read the domain, and one that reached no source
+   must say so instead of answering.** A subagent that cannot see `get_domain` will otherwise
+   read whatever it finds in the rules directory, derive questions from that, and return a
+   payload of exactly the right shape. You cannot tell that apart from a real read, so the run
+   completes, the counts look right, and a smaller question set is presented as a full one. The
+   `source` field in the payload exists for this and is required. **A domain that could not be
+   read returns `source: "none"` and no questions. It must never substitute a smaller source
+   silently.**
 6. **Triage across the whole pool, not within each domain.** Collect every question from every
    subagent, then pick **the three most impactful in the entire set**, judged on what it costs to
    get wrong. Two of the three may come from one domain and none from another; that is the point
@@ -82,6 +91,7 @@ point of this skill is that only a subagent ever reads one.
     {
       "domain_id": "d02",
       "domain_slug": "requirements-elicitation",
+      "source": "mcp",
       "rules_total": 16,
       "questions": [
         {
@@ -95,6 +105,29 @@ point of this skill is that only a subagent ever reads one.
         }
       ]
     }
+
+`source` is required and is one of:
+
+- `mcp`: `get_domain` returned the document, including the spooled-to-file case below, which is a
+  successful read and not a fallback.
+- `fallback`: the tool was unreachable and the documented fallback was used. Name the path read in
+  a `source_detail` field. The questions are real but derived from a smaller text than the full
+  domain document, so the parent must not present them as equivalent.
+- `none`: no source was reached at all.
+
+**A subagent returning `source: "none"` returns no questions.** The shape is the whole payload:
+
+    {
+      "domain_id": "d15",
+      "domain_slug": "interface-design",
+      "source": "none",
+      "source_detail": "get_domain unavailable after ToolSearch; rules directory not present",
+      "rules_total": null,
+      "questions": []
+    }
+
+This is the point of the field. A skipped read must never be representable as a completed one, and
+the only way the parent can tell is if the subagent says so in a field the parent already reads.
 
 **Rank by cost of getting it wrong, never by rule order.** Rule order teaches; it does not weigh
 risk. Ranks run 1 to N with no gaps and no ties. Return five to ten questions, eight is a good
@@ -129,6 +162,15 @@ cosmetic one.
 domains, and that three are being asked now with the rest held. Three questions presented without
 that sentence read as the whole interrogation, and the user calibrates their trust accordingly.
 
+**The arithmetic must separate domains that were read from domains that were not.** Any domain
+returning `source: "none"` is named in that sentence and excluded from the derived total, because
+counting it as zero questions makes an unreadable domain look like a domain with nothing to ask.
+Any domain returning `source: "fallback"` is named too, with the caveat that its questions came
+from a smaller text. Say it plainly: "47 questions from 5 of 6 relevant domains. d15
+interface-design could not be read and is not in that total." A run that silently drops a domain
+is the exact failure this skill exists to prevent, and it is worse here than elsewhere because the
+user is being asked to trust a number.
+
 ## The record
 
 Written into this session's plan file under `## Design decisions (interrogate)`. Never overwrite
@@ -138,18 +180,25 @@ an earlier section: a second run appends `### Second pass (<date>)`.
 
     Mode: before. Run: 2026-08-15.
     Status: top three answered, deep dive declined. 4 of 47 questions asked.
+    Sources: 5 domains read via MCP, 1 via fallback, 1 not read.
 
-    | Domain | Derived | Asked | Answered | Deferred | Not asked |
-    |---|---|---|---|---|---|
-    | d02 requirements-elicitation | 8 | 2 | 2 | 0 | 6 |
-    | d01 data-modelling | 9 | 1 | 0 | 1 | 8 |
-    | d10 api-design | 7 | 1 | 1 | 0 | 6 |
-    | d11 architecture-deployment | 8 | 0 | 0 | 0 | 8 |
-    | d15 interface-design | 8 | 0 | 0 | 0 | 8 |
-    | d08 threat-modelling-risk | 7 | 0 | 0 | 0 | 7 |
-    | **Total** | **47** | **4** | **3** | **1** | **43** |
+    | Domain | Source | Derived | Asked | Answered | Deferred | Not asked |
+    |---|---|---|---|---|---|---|
+    | d02 requirements-elicitation | mcp | 8 | 2 | 2 | 0 | 6 |
+    | d01 data-modelling | mcp | 9 | 1 | 0 | 1 | 8 |
+    | d10 api-design | mcp | 7 | 1 | 1 | 0 | 6 |
+    | d11 architecture-deployment | mcp | 8 | 0 | 0 | 0 | 8 |
+    | d15 interface-design | mcp | 8 | 0 | 0 | 0 | 8 |
+    | d08 threat-modelling-risk | fallback | 7 | 0 | 0 | 0 | 7 |
+    | d16 ethics-professional-judgement | **none** | n/a | 0 | 0 | 0 | n/a |
+    | **Total** | | **47** | **4** | **3** | **1** | **43** |
 
-    Not relevant: d03, d04, d05, d06, d07, d09, d12, d13, d14, d16.
+    Not relevant: d03, d04, d05, d06, d07, d09, d12, d13, d14.
+
+    **d16 could not be read** (get_domain unavailable after ToolSearch). It was judged relevant
+    and produced nothing. It is not counted in the 47 and its questions are unknown, not zero.
+    **d08 was read via fallback** from the rules directory, so its 7 questions came from a
+    smaller text than the full domain document and are not equivalent to the rest.
 
     ### Asked (the triaged top three, plus one from the deep dive before it was stopped)
 
@@ -171,8 +220,11 @@ an earlier section: a second run appends `### Second pass (<date>)`.
 - **The MCP tools may be deferred.** Load both in one call before starting: `ToolSearch` with
   `select:mcp__engineering-audit__list_domains,mcp__engineering-audit__get_domain`. Tell each
   subagent to do the same for `get_domain`. A subagent that cannot see the tool will otherwise
-  improvise from the rules directory on disk, which is not the same thing and will not be
-  reported as a failure.
+  improvise from the rules directory on disk, which is not the same thing. **That is what the
+  required `source` field is for**: it makes the difference visible to the parent instead of
+  leaving it to be inferred from a payload that looks identical either way. This bullet used to
+  state the failure and stop there, which is the shape of bug this repository's rules pack exists
+  to catch.
 - **A large domain will exceed the tool-result limit and be spooled to a file.** The full
   documents carry the private `Verification:` trails that the generated skills strip, so they run
   far larger than those files suggest: d15 measured 155,706 characters on 2026-08-15 and came
