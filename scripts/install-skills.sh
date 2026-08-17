@@ -47,13 +47,23 @@ done
 
 # source directory | which hosts it belongs on.
 #
-# Only engineering-grill is cross-host. audit and interrogate are Claude Code
-# packaging: interrogate uses AskUserQuestion and a sub-agent fan-out, neither of
-# which Codex has, so installing it there would ship a skill that cannot run.
+# engineering-grill is cross-host: it states the no-full-domain-document rule as an
+# invariant and lets each host meet it its own way, sub-agents where they exist and
+# serial read-and-discard where they do not. audit is Claude Code packaging.
+#
+# `interrogate` was a third entry here until #239 folded it into engineering-grill.
+# If you installed it before that, remove the leftover: this script will not, because
+# it only manages the skills it ships.
 SKILLS=(
   "integrations/claude-code/audit|claude"
-  "integrations/claude-code/interrogate|claude"
   "integrations/engineering-grill/engineering-grill|claude codex"
+)
+
+# Skills this repository used to ship and no longer does. They are removed on install
+# rather than left behind, because a retired skill that stays installed keeps being
+# offered to the assistant and there is nothing anywhere to say it is dead.
+RETIRED=(
+  "interrogate"
 )
 
 # A skill's identity is the content of its directory. Comparing that against the
@@ -148,6 +158,30 @@ for entry in "${hosts[@]}"; do
     else
       printf '  %-22s %s\n' "" "-> COPY FAILED"
       failed=1
+    fi
+  done
+done
+
+# Retired skills, checked on every host regardless of which skills were named, because
+# a leftover is not something you would think to ask about by name.
+retired_header=0
+for entry in "${hosts[@]}"; do
+  rest="${entry#*:}"
+  dest_root="${rest%%:*}"
+  host_name="${rest##*:}"
+  for old in "${RETIRED[@]}"; do
+    leftover="$dest_root/$old"
+    [ -e "$leftover" ] || [ -L "$leftover" ] || continue
+    if [ "$retired_header" -eq 0 ]; then echo "== retired, no longer shipped =="; retired_header=1; fi
+    printf '  %-22s %s\n' "$old" "still installed under $host_name"
+    drift=1
+    if [ "$MODE" = "install" ]; then
+      if rm -rf "$leftover"; then
+        printf '  %-22s %s\n' "" "-> removed"
+      else
+        printf '  %-22s %s\n' "" "-> REMOVE FAILED"
+        failed=1
+      fi
     fi
   done
 done

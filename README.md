@@ -254,16 +254,16 @@ sweep, then open `audit-output/report.html`. What to expect while it runs is in
 [What a run looks like](#what-a-run-looks-like); what it costs in tokens is in
 [What a full run costs](#what-a-full-run-costs).
 
-## Interrogate, before the code exists (BETA)
+## Engineering Grill, before the code exists (BETA)
 
-**Status: beta, and the label is meant literally.** Shipped in v0.13.0, and the parts of it that
-have actually been exercised are listed below alongside the parts that have not. Expect it to
-change.
+**Status: beta, and the label is meant literally.** The interview shipped in v0.13.0 as a separate
+`interrogate` skill and was folded into Engineering Grill by issue #239: one pre-build skill, not
+two. **Nobody has yet completed a full interactive session with it.** Expect it to change.
 
-An audit sweeps the rules over a repository that already exists. `interrogate` runs them the
-other way, as questions about work that has not started. It fans out over **every domain whose
-trigger genuinely fires**, with no cap, derives the full question set from their rules, then
-triages **the three most impactful across the whole pool** and asks those one at a time. The rest
+An audit sweeps the rules over a repository that already exists. Engineering Grill runs them the
+other way, as questions about work that has not started. It classifies **every domain the pack
+returns**, derives the full question set from the rules of those whose triggers genuinely fire,
+then puts **the highest-consequence questions first**, one at a time, in the Hot Seat. The rest
 are held, not discarded: it names the total, offers a deep dive through everything remaining, and
 records what was answered, what was deferred and what was never asked.
 
@@ -271,12 +271,18 @@ Triage is global on purpose. One domain's third-best question routinely matters 
 another's first, and a per-domain ranking cannot see that. Questions carry a reversibility grade
 and a blast radius so they can be compared across domains at all.
 
+The rule that shapes the whole design is that **no full domain document enters the conversation
+with the user**. That is stated as an invariant rather than an architecture: sub-agents satisfy it
+where the host has them, serial read-and-discard satisfies it where the host does not, which is
+what keeps one skill shippable on more than one assistant.
+
 Ten of the sixteen domains are design-time by their own `Load this when:` statements, so most of
 the pack was already pointed at the moment before the code, with nothing to deliver it there.
 
 It never starts a run. It calls `list_domains` and `get_domain` only, both of which work with no
 run in progress, so it works on a directory that is not a repository yet or on nothing but a
-description. Setup, including the optional hook that offers it when plan mode starts, is in
+description. Setup is in [integrations/engineering-grill/](integrations/engineering-grill/), and
+the optional hook that offers it when plan mode starts is in
 [integrations/claude-code/README.md](integrations/claude-code/README.md).
 
 **What has been exercised:** question derivation on three domains (d02, d01, d15) against one
