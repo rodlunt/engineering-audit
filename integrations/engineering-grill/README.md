@@ -10,7 +10,7 @@ assistant does that work and explains its recommendations in ordinary language.
 
 ## Four terms used in this guide
 
-- **AI assistant:** Codex or Claude Code—the application you talk to while planning and coding.
+- **AI assistant:** Codex or Claude Code, the application you talk to while planning and coding.
 - **MCP connection:** the link that lets the assistant ask engineering-audit for rules. Registering
   the MCP means adding that link to the assistant once.
 - **Rules pack:** a folder containing the engineering guidance.
@@ -107,8 +107,8 @@ pwd
 ```
 
 `pwd` prints the folder you are currently in. Confirm that it ends in `engineering-audit` before
-continuing. Keep this checkout in the same location after installation because the skill shortcut
-will point to it.
+continuing. Keep this checkout so you can re-run the installer after pulling; the installed skill
+itself is a copy and will keep working regardless of what happens to this folder.
 
 ### 2. Register engineering-audit
 
@@ -167,34 +167,30 @@ Then repeat step 2 with the correct rules-folder path and run this verification 
 
 ### 4. Install the skill
 
-Run one of these from the `engineering-audit` checkout used in step 1. The `ln -s` command creates
-a shortcut; it does not copy the skill.
-
-#### OpenAI Codex
+Run this from the `engineering-audit` checkout used in step 1. It installs into whichever of
+Codex and Claude Code it finds on the machine:
 
 ```sh
-mkdir -p ~/.codex/skills
-ln -s "$(pwd)/integrations/engineering-grill/engineering-grill" \
-  ~/.codex/skills/engineering-grill
+scripts/install-skills.sh engineering-grill
 ```
 
-#### Claude Code
-
-```sh
-mkdir -p ~/.claude/skills
-ln -s "$(pwd)/integrations/engineering-grill/engineering-grill" \
-  ~/.claude/skills/engineering-grill
-```
+It **copies** the skill rather than creating a shortcut to it, and that is deliberate. A shortcut
+into this checkout means whichever branch the checkout is sitting on is what your assistant runs.
+Check out a branch to try something and the skill silently changes in every session on the
+machine, with nothing announcing it. Copying makes updating a deliberate act.
 
 If the command reports `File exists`, inspect the existing shortcut:
 
 ```sh
-ls -ld ~/.codex/skills/engineering-grill
+scripts/install-skills.sh --check engineering-grill
 ```
 
-For Claude Code, replace `.codex` with `.claude`. If the displayed arrow points to this checkout's
-`integrations/engineering-grill/engineering-grill` folder, installation is already complete. If
-it points elsewhere or is not a shortcut, leave it unchanged until you know who owns it.
+That reports one of three states per host, and the three exist because two would hide a problem:
+`current` (the installed copy matches this checkout), `STALE` (it is installed but the checkout
+has moved on, so re-run the installer), and `NOT INSTALLED`. It also names any leftover `SYMLINK`
+from the previous install method, which is worth replacing for the reason above.
+
+If you find a skill folder you did not install, leave it unchanged until you know who owns it.
 
 Advanced shared-skill setups may use `~/.agents/skills`, but use that location only when your
 assistant is already configured to discover it.
