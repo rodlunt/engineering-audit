@@ -86,62 +86,70 @@ The symlink target and Claude Code's skill discovery convention above are correc
 see the root README's [support matrix](../../README.md#support-matrix), same as above, for
 whether this has actually been exercised against a live Claude Code session.
 
-## Install the interrogate skill (BETA)
+## The pre-build interrogation lives in Engineering Grill
 
-**Beta, and the label is literal.** New in v0.13.0, reshaped in v0.14.0 to run every relevant
-domain and triage globally rather than capping at three domains. Question derivation has been
-exercised on three of the sixteen domains against a single brief and the hook's failure paths have
-been tested, but **the cross-domain triage has never been run, and nobody has yet completed a full
-interactive interrogation**. The shape of the session (the relevance judgement, the triage, the
-deep-dive offer, the bail-out record) is unproven with a real person answering, and question
-quality is sampled rather than measured. Expect it to change, and please
-report anything that reads like a generic quiz rather than a question about your actual work:
-that is the failure mode this design is most likely to have.
+**Beta, and the label is literal.** `interrogate` shipped in v0.13.0 as a separate skill and was
+folded into [Engineering Grill](../engineering-grill/) by issue #239. One pre-build skill, not
+two: they were written independently in the same week against the same rules pack and the same two
+read-only tools, and shipping both would have meant two skills classifying the same domains in the
+same project.
 
-`interrogate` is the pre-build counterpart to `audit`. Where `audit` sweeps the rules over a
-repository that already exists, `interrogate` turns them into questions about work that has not
-started yet, and records the answers, the deferrals and the gaps into the host's plan file.
+**Nobody has completed a full interactive session with either half yet.** Question derivation has
+been exercised on a few domains against a single brief and the hook's failure paths have been
+tested, but the cross-domain triage has never run end to end with a real person answering. Expect
+it to change, and please report anything that reads like a generic quiz rather than a question
+about your actual work: that is the failure mode this design is most likely to have.
 
 ```
-scripts/install-skills.sh interrogate
+scripts/install-skills.sh engineering-grill
 ```
 
-Same discovery convention as `audit` above, and the same reason for copying rather than linking.
-Run `scripts/install-skills.sh` with no arguments to install every skill this repository ships.
+If you installed `interrogate` before the merge, the installer removes the leftover. It will not
+silently leave a retired skill on disk being offered to the assistant.
+
+Engineering Grill is the pre-build counterpart to `audit`. Where `audit` sweeps the rules over a
+repository that already exists, Grill turns them into questions about work that has not started
+yet, and records the answers, the deferrals and the gaps.
 
 It uses `list_domains` and `get_domain` only, and never calls `begin_run`. Both of those tools
-work with no run in progress, which is what lets the skill run against a directory that is not a
+work with no run in progress, which is what lets it run against a directory that is not a
 repository yet, or against nothing but a description. Nothing it does touches run state, so an
-interrogation and an audit cannot interfere with each other.
+interview and an audit cannot interfere with each other.
 
 The two skills answer different questions and neither replaces the other:
 
-| | `audit` | `interrogate` |
+| | `audit` | `engineering-grill` |
 |---|---|---|
 | Runs against | a repository | intent, or a drafted plan |
-| Produces | `report.html` plus findings | questions, and a record of what was answered |
+| Produces | `report.html` plus findings | questions, plus `CONTEXT.md`, a coverage document and ADRs |
 | Needs a git commit | yes | no |
-| Rule coverage | every rule in every selected domain | every relevant domain, triaged to the top three questions first |
+| Rule coverage | every rule in every selected domain | every domain whose trigger fires, impact-triaged so the worst questions come first |
 
-`interrogate` is exhaustive in what it *derives* and deliberately not in what it *asks*. It runs
-every domain whose trigger fires, with no cap, and works out the full question set. It then asks
-only the three most impactful from the whole pool, because an interrogation nobody finishes
-teaches nothing, and offers the rest as a deep dive with the real number attached ("that is the
-top three of 47").
+Grill is exhaustive in what it *derives* and deliberately not in what it *asks*. It runs every
+domain whose trigger fires, with no cap, works out the full question set, then puts the
+highest-consequence ones first in the **Hot Seat**, one question per turn. The rest are offered as
+a deep dive with the real number attached ("that is the top three of 47"), where batching is
+allowed because those questions are no longer the irreversible ones.
 
-Nothing derived is thrown away. The record carries a per-domain table of derived, asked and not
-asked, and the domains judged irrelevant are named too, so a short session cannot be mistaken for
-a complete one and a skipped domain cannot be mistaken for a covered one.
+Nothing derived is thrown away. The coverage document carries a per-domain table of derived, asked
+and not asked, and names the domains judged irrelevant, so a short session cannot be mistaken for a
+complete one and a skipped domain cannot be mistaken for a covered one. A domain that could not be
+read at all says so and is excluded from the total rather than counted as zero questions.
 
-The cost lands in the fan-out: one read-only subagent per relevant domain, each reading a document
-of 300 to 800 lines. The skill tells you how many that is and asks before spending it, because
-that is the only point where the cost is knowable in advance.
+The cost lands in reading the domains: each is a document of several hundred lines, and the rule
+is that **no full domain document enters the conversation with the user**. On this host that means
+one read-only sub-agent per active domain. The skill tells you how many that is and asks before
+spending it, because that is the only point where the cost is knowable in advance.
 
 ### Optional: offer it automatically when plan mode starts
 
 The skill above is invoked deliberately. If you would rather be asked, `interrogate-offer.sh` in
 this directory injects a one-off prompt when a session enters plan mode, offering three choices:
-interrogate first, interrogate the finished draft afterwards, or skip.
+interview first, interview the finished draft afterwards, or skip.
+
+**The script keeps its old name on purpose.** Renaming it would silently break every
+`settings.json` that already registers it, and a hook that no longer resolves is a hook that
+quietly stops firing while still looking configured.
 
 ```
 "hooks": {
@@ -174,9 +182,8 @@ it works but is undocumented upstream, so treat it as a bonus rather than a guar
 
 The hook never blocks and never denies. It reports rather than fails silently: if it cannot read
 its payload, cannot find `jq`, cannot write its state directory, or finds the skill directory
-present but its `SKILL.md` unresolvable (a dangling symlink), it says so once a day and does
-nothing. If the skill is simply not installed, it stays quiet rather than offering something that
-is not there.
+present but its `SKILL.md` unresolvable, it says so once a day and does nothing. If the skill is
+simply not installed, it stays quiet rather than offering something that is not there.
 
 Turn it off without touching your settings:
 
@@ -185,7 +192,7 @@ touch "${XDG_STATE_HOME:-$HOME/.local/state}/claude-interrogate-offer/off"
 # or set CLAUDE_INTERROGATE_OFFER=0
 ```
 
-**One thing the hook cannot do:** if you choose "interrogate afterwards", nothing enforces it. The
+**One thing the hook cannot do:** if you choose "interview afterwards", nothing enforces it. The
 hook fires once on entry and there is no leg on `ExitPlanMode`, so the commitment is held only by
 the assistant for the rest of that session. The skill says so in its own instructions, but it is a
 gap, not a mechanism.

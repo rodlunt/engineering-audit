@@ -26,11 +26,30 @@ Write `docs/engineering-coverage.md` as a design ledger, not an audit report or 
 
 ## Domain coverage
 
-| Domain | Status | Basis | Rules loaded | Revisit trigger |
-|---|---|---|---|---|
-| D01 — Designing a Data Model | active-now | Persistent customer records are planned. | Full domain (15 rules) | — |
-| D09 — Incident Response | required-later | The service will run in production. | — | Deployment topology settled |
-| D16 — Presenting Data | not-applicable | The product has no decision-support output. | — | Reporting enters scope |
+| Domain | Status | Basis | Source | Derived | Asked | Answered | Deferred | Not asked | Revisit trigger |
+|---|---|---|---|---|---|---|---|---|---|
+| D01 Designing a Data Model | active-now | Persistent customer records are planned. | mcp | 9 | 1 | 0 | 1 | 8 | |
+| D02 Requirements Elicitation | active-now | New system. | mcp | 8 | 2 | 2 | 0 | 6 | |
+| D08 Threat Modelling and Risk | active-now | Bulk personal data. | fallback | 7 | 0 | 0 | 0 | 7 | |
+| D15 Interface Design | active-now | Operator screens planned. | **none** | n/a | 0 | 0 | 0 | n/a | |
+| D09 Incident Response | required-later | The service will run in production. | | | | | | | Deployment topology settled |
+| D16 Presenting Data | not-applicable | The product has no decision-support output. | | | | | | | Reporting enters scope |
+| **Total** | | | | **24** | **3** | **2** | **1** | **21** | |
+
+The count columns are what make a short session legible afterwards. A run that asked
+three of twenty-four and a run that asked all twenty-four are the same document
+without them, and the second is the only one that earned its conclusions.
+
+Fill them only for `active-now` domains; the other states have no derived questions
+and leave the count cells empty rather than writing a zero, because zero is a
+finding and blank is an absence.
+
+`Source` records how the domain was actually read: `mcp` when the tool returned the
+document, `fallback` when the tool was unreachable and the rules pack was read
+instead, and `none` when no source was reached at all. A `none` domain contributes
+`n/a` rather than `0` to Derived and Not asked, and is excluded from the totals. Its
+questions are unknown, not zero, and a table that cannot tell those apart is the
+reason this column exists.
 
 ## Confirmed decisions
 
@@ -50,7 +69,7 @@ Write `docs/engineering-coverage.md` as a design ledger, not an audit report or 
 
 ## Build and verification gates
 
-- [ ] <Observable artifact or acceptance condition> — <rule ids>
+- [ ] <Observable artifact or acceptance condition> (<rule ids>)
 
 ## Open items
 

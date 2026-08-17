@@ -4,8 +4,13 @@
 #
 # A UserPromptSubmit hook, plus an optional PreToolUse(EnterPlanMode) leg. Once
 # per session, on entry into plan mode, it injects context telling Claude to
-# offer the user a three-way choice about the `interrogate` skill: run it BEFORE
-# planning, run it AFTER the plan is drafted, or skip.
+# offer the user a three-way choice about the `engineering-grill` skill: run the
+# interview BEFORE planning, run it AFTER the plan is drafted, or skip.
+#
+# The file keeps its original name deliberately. The skill it offers was renamed
+# when #239 folded `interrogate` into `engineering-grill`, but renaming this script
+# would break every settings.json already registering it by path, and a hook that no
+# longer resolves stops firing while still looking configured.
 #
 # The hook cannot ask anything itself. Hooks are shell commands; AskUserQuestion
 # is a model tool. So this script does not ask, it tells the model to ask. Same
@@ -244,16 +249,25 @@ skill_state() {
     for root in "$HOME/.claude/skills" "${CLAUDE_PROJECT_DIR:-.}/.claude/skills"; do
         [ -d "$root" ] || continue
         roots_seen=1
-        if [ -f "$root/interrogate/SKILL.md" ]; then
+        if [ -f "$root/engineering-grill/SKILL.md" ]; then
             echo found
             return
         fi
+        # The pre-build interview used to ship as a separate `interrogate` skill and
+        # was folded into engineering-grill by #239. A machine still carrying only the
+        # retired one is not "absent": it has the feature installed under a dead name,
+        # and saying so beats going quiet.
+        if [ -f "$root/interrogate/SKILL.md" ]; then
+            echo retired
+            return
+        fi
         # A skill directory that exists but whose SKILL.md does not resolve is
-        # BROKEN, not absent, and the difference matters here because the usual
-        # install is a symlink into a checkout of engineering-audit. Move or
-        # rename that checkout and the link dangles: the feature dies, and
-        # "absent" would exit silently and never say why.
-        if [ -e "$root/interrogate" ] || [ -L "$root/interrogate" ]; then
+        # BROKEN, not absent, and the difference matters. Installs used to be a
+        # symlink into a checkout of engineering-audit; move or rename that checkout
+        # and the link dangles, the feature dies, and "absent" would exit silently and
+        # never say why. scripts/install-skills.sh now copies for that reason, but a
+        # machine installed the old way can still be in this state.
+        if [ -e "$root/engineering-grill" ] || [ -L "$root/engineering-grill" ]; then
             broken=1
         fi
     done
@@ -269,11 +283,14 @@ skill_state() {
 case "$(skill_state)" in
     found) : ;;
     absent) exit 0 ;;
+    retired)
+        emit_not_enforced "only the retired 'interrogate' skill is installed; it was folded into engineering-grill by #239. Run scripts/install-skills.sh to replace it" skill
+        ;;
     broken)
-        emit_not_enforced "the interrogate skill directory exists but its SKILL.md does not resolve, so the install is broken (a dangling symlink?)" skill
+        emit_not_enforced "the engineering-grill skill directory exists but its SKILL.md does not resolve, so the install is broken (a dangling symlink?)" skill
         ;;
     cannot-tell)
-        emit_not_enforced "could not read any skills directory, so could not confirm the interrogate skill is installed" skill
+        emit_not_enforced "could not read any skills directory, so could not confirm the engineering-grill skill is installed" skill
         ;;
 esac
 
@@ -319,19 +336,20 @@ find "$STATE_DIR" -maxdepth 1 -name 'offered-*.stamp' -mtime +14 -delete 2>/dev/
 # error exited 2, which blocks. Here the same bug would erase the user's prompt.
 OFFER="$(
     cat <<'MSG'
-This session has just entered plan mode, and the `interrogate` skill is installed.
+This session has just entered plan mode, and the `engineering-grill` skill is
+installed. It runs a pre-build interview against the live engineering rules pack.
 
 Before you start planning, use the AskUserQuestion tool to ask the user which of
 these three they want. Offer these options and no others:
 
-  1. Interrogate first  - run the `interrogate` skill now, before any planning, so
-                          the decisions are pinned down before there is a plan for
-                          them to be retrofitted to.
-  2. Interrogate after  - draft the plan first, then run `interrogate` over the
-                          finished draft as a review pass. Nothing further is
-                          needed to make this happen: hold it for the session and
-                          run it before you call ExitPlanMode.
-  3. Skip               - plan as normal, no interrogation.
+  1. Interview first  - run the `engineering-grill` skill now, before any planning,
+                        so the decisions are pinned down before there is a plan for
+                        them to be retrofitted to.
+  2. Interview after  - draft the plan first, then run `engineering-grill` over the
+                        finished draft as a review pass. Nothing further is
+                        needed to make this happen: hold it for the session and
+                        run it before you call ExitPlanMode.
+  3. Skip             - plan as normal, no interview.
 
 Ask once. Do not raise it again later in this session. If you cannot ask, for
 instance in a non-interactive run, treat the answer as option 3 and continue
