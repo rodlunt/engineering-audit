@@ -66,15 +66,19 @@ flow is actually run. Confirm the server appears in `claude mcp list` and respon
 
 ## Install the skill
 
-Symlink the skill directory into Claude Code's user-level skills folder so it is available in
-every project:
+Install the skill into Claude Code's user-level skills folder so it is available in every
+project:
 
 ```
-ln -s "$(pwd)/integrations/claude-code/audit" ~/.claude/skills/audit
+scripts/install-skills.sh audit
 ```
 
-Run this from inside a local clone of this repository (the symlink target must be an absolute
-path). Claude Code picks up skills from `~/.claude/skills/*/SKILL.md`; after linking, `audit`
+Run this from inside a local clone of this repository. It **copies** the skill; it does not
+symlink it. A symlink into a checkout means whichever branch that checkout is sitting on is what
+Claude Code executes, so checking out a branch to try something silently changes the skill in
+every session on the machine. Copying makes updating a deliberate act: re-run the script after
+pulling, and `scripts/install-skills.sh --check` reports any installed copy that has fallen
+behind. Claude Code picks up skills from `~/.claude/skills/*/SKILL.md`; after installing, `audit`
 should appear whenever you ask Claude Code to audit a repository, run the engineering audit, or
 run a practice audit (see the skill's own frontmatter for the exact trigger phrasing).
 
@@ -99,10 +103,11 @@ repository that already exists, `interrogate` turns them into questions about wo
 started yet, and records the answers, the deferrals and the gaps into the host's plan file.
 
 ```
-ln -s "$(pwd)/integrations/claude-code/interrogate" ~/.claude/skills/interrogate
+scripts/install-skills.sh interrogate
 ```
 
-Same discovery convention and the same absolute-path requirement as `audit` above.
+Same discovery convention as `audit` above, and the same reason for copying rather than linking.
+Run `scripts/install-skills.sh` with no arguments to install every skill this repository ships.
 
 It uses `list_domains` and `get_domain` only, and never calls `begin_run`. Both of those tools
 work with no run in progress, which is what lets the skill run against a directory that is not a

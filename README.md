@@ -20,7 +20,7 @@ Codex CLI, Gemini CLI) into an engineering-practice auditor. It has **two audit 
 
 Starting a new project? The optional [Engineering Grill](integrations/engineering-grill/)
 uses the same rules before you build. Your assistant interviews you, works out which domains
-matter, and records the decisions and checks the project will need—without expecting you to
+matter, and records the decisions and checks the project will need, without expecting you to
 understand the framework first.
 
 **Three complete rule domains ship in this repository**, ready to run: data modelling,
@@ -121,8 +121,12 @@ predates the re-registration and the run is not exercising the build you think i
 Install the audit skill (gives you a natural-language entry point: "audit this repo"):
 
 ```sh
-ln -s /path/to/engineering-audit/integrations/claude-code/audit ~/.claude/skills/audit
+cd /path/to/engineering-audit
+scripts/install-skills.sh audit
 ```
+
+It copies rather than symlinks, so the installed skill does not change under you when this
+checkout switches branch. `scripts/install-skills.sh --check` reports when a copy is stale.
 
 Full details: [integrations/claude-code/](integrations/claude-code/).
 
