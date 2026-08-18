@@ -387,6 +387,25 @@ def _render_meta_block(run_state: RunState) -> str:
         ("Repository", meta.repo_name, False),
         ("Commit", meta.repo_commit, False),
         ("Rules pack", rules_pack_label(meta), False),
+        # Only when the pack's own pack.toml declares it a subset of a larger
+        # pack (issue #255): self-declared, never inferred from domain count,
+        # so an ordinary custom pack renders no row here at all.
+        *(
+            [
+                (
+                    "Rules pack edition",
+                    meta.rules_pack_edition
+                    + (
+                        f"; full pack available on request: {meta.rules_pack_full_pack_url}"
+                        if meta.rules_pack_full_pack_url
+                        else ""
+                    ),
+                    False,
+                )
+            ]
+            if meta.rules_pack_edition
+            else []
+        ),
         ("Rules commit", meta.rules_pack_commit or "unknown", False),
         ("Assistant", meta.assistant, True),
         ("Model", meta.model, True),
@@ -1434,6 +1453,40 @@ def _provenance_blind_notice(meta: RunMeta) -> str:
         'no mechanism in this report can detect if either has drifted. See "What keeps '
         'the staleness checks working" in the project README for the install shapes '
         "that keep both checks attached.</p>"
+        "</div>"
+    )
+
+
+def _stale_build_notice(meta: RunMeta) -> str:
+    """A loud line when either staleness check positively confirmed a newer
+    release than the one this run used (issue #254).
+
+    The check's result already sat in the Tool update / Rules pack update
+    meta rows, but a meta row inside a collapsed details block is where a
+    caveat goes to be technically-disclosed: a report produced by an
+    outdated build is itself a caveat on the findings, and gets the same
+    prominent treatment as a modified build (_modified_tool_notice) for the
+    same reason. Fires on a "stale" prefix only: "could-not-check" has its
+    own notice above when both checks are blind, and neither it nor
+    "not-checked" is evidence of staleness (nothing was established), so
+    neither may borrow this one. Matches the register of its siblings: a
+    stale build is not evidence the findings are wrong, only that they
+    cannot claim to have come from the current release.
+    """
+    lines = []
+    if (meta.update_check or "").startswith("stale"):
+        lines.append(f"<p>Tool: <code>{_esc(meta.update_check)}</code></p>")
+    if (meta.pack_update_check or "").startswith("stale"):
+        lines.append(f"<p>Rules pack: <code>{_esc(meta.pack_update_check)}</code></p>")
+    if not lines:
+        return ""
+    return (
+        '<div class="perf-block prominent">'
+        "<h3>A newer release existed when this run was made</h3>"
+        + "".join(lines)
+        + "<p>That is not evidence the findings below are wrong, only that this "
+        "run cannot claim they came from the current release. The status above "
+        "carries the update command for the host that ran this audit.</p>"
         "</div>"
     )
 
@@ -2491,6 +2544,7 @@ def render_report(run_state: RunState, pack: RulesPack) -> str:
 
     performance_summary = (
         f"{_provenance_blind_notice(run_state.meta)}"
+        f"{_stale_build_notice(run_state.meta)}"
         f"{_modified_tool_notice(run_state.meta)}"
         f"{_pack_requires_tool_notice(run_state.meta)}"
         f"{_pack_format_notice(run_state.meta)}"
