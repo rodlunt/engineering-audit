@@ -7,7 +7,7 @@ Wires the `engineering-audit` MCP server and its `audit` skill into Claude Code.
 **From the published git repository** (no local clone needed):
 
 ```
-claude mcp add engineering-audit --scope user -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.14.0 engineering-audit-mcp --rules-dir <path-to-rules-clone>
+claude mcp add engineering-audit --scope user -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.15.0 engineering-audit-mcp --rules-dir <path-to-rules-clone>
 ```
 
 `--scope user` registers the server for every repository. Without it `claude mcp add` defaults
@@ -18,7 +18,7 @@ happens, run `claude mcp list` in the project where it failed; if `engineering-a
 there but present in the directory you installed from, it was registered without `--scope user`.
 Fix it with `claude mcp remove engineering-audit` followed by the add command above.
 
-`@v0.14.0` pins the install to the current tagged release rather than the moving `main` branch;
+`@v0.15.0` pins the install to the current tagged release rather than the moving `main` branch;
 find the latest tag on the [Releases page](https://github.com/rodlunt/engineering-audit/releases).
 
 ### Updating to a newer tag
@@ -30,7 +30,7 @@ overwrites silently, so its own README's instruction to re-add is correct for th
 
 ```
 claude mcp remove engineering-audit
-claude mcp add engineering-audit --scope user -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.14.0 engineering-audit-mcp --rules-dir <path-to-rules-clone>
+claude mcp add engineering-audit --scope user -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.15.0 engineering-audit-mcp --rules-dir <path-to-rules-clone>
 ```
 
 **The change only takes effect in a new session.** The session you are in keeps the server it

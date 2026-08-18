@@ -75,7 +75,7 @@ that clone's `domains/` directory. See [Rules access](#rules-access) for how to 
 
 ### Step 4: register the tool with your assistant
 
-Every command below is pinned to the current release tag (`@v0.14.0`) rather than the
+Every command below is pinned to the current release tag (`@v0.15.0`) rather than the
 moving `main` branch: an unpinned git dependency resolves to whatever `main` holds at
 install time and silently moves on later cache refreshes. Find the latest tag on [the
 Releases page](https://github.com/rodlunt/engineering-audit/releases). Updating to a newer
@@ -90,7 +90,7 @@ on your computer; run `pwd` inside a folder when you need to see its absolute pa
 Register the server (swap in the taster path from Step 3, or your full-pack path):
 
 ```sh
-claude mcp add engineering-audit --scope user -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.14.0 \
+claude mcp add engineering-audit --scope user -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.15.0 \
     engineering-audit-mcp --rules-dir /path/to/engineering-audit/examples/taster-rules
 ```
 
@@ -109,7 +109,7 @@ so changing the tag on its own is not enough:
 
 ```sh
 claude mcp remove engineering-audit
-claude mcp add engineering-audit --scope user -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.14.0 \
+claude mcp add engineering-audit --scope user -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.15.0 \
     engineering-audit-mcp --rules-dir /path/to/engineering-audit/examples/taster-rules
 ```
 
@@ -142,14 +142,14 @@ Register the server (verified against codex-cli 0.114.0):
 ```sh
 codex mcp add engineering-audit \
     --env ENGINEERING_AUDIT_RULES_DIR=/path/to/engineering-audit/examples/taster-rules \
-    -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.14.0 engineering-audit-mcp
+    -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.15.0 engineering-audit-mcp
 ```
 
 Inline mode: generate the trigger fragment and append it to your repo's `AGENTS.md` (or
 `~/.codex/AGENTS.md` for all repos):
 
 ```sh
-uvx --from git+https://github.com/rodlunt/engineering-audit@v0.14.0 engineering-audit-fragments \
+uvx --from git+https://github.com/rodlunt/engineering-audit@v0.15.0 engineering-audit-fragments \
     --rules-dir /path/to/engineering-audit/examples/taster-rules --out-dir .
 cat AGENTS-fragment.md >> AGENTS.md
 ```
@@ -174,7 +174,7 @@ swapping in the taster path from Step 3:
       "command": "uvx",
       "args": [
         "--from",
-        "git+https://github.com/rodlunt/engineering-audit@v0.14.0",
+        "git+https://github.com/rodlunt/engineering-audit@v0.15.0",
         "engineering-audit-mcp"
       ],
       "env": {
@@ -197,7 +197,7 @@ Inline triggers work too, and need no extension: generate the fragment and merge
 whichever `GEMINI.md` tier you want it to apply to.
 
 ```sh
-uvx --from git+https://github.com/rodlunt/engineering-audit@v0.14.0 engineering-audit-fragments \
+uvx --from git+https://github.com/rodlunt/engineering-audit@v0.15.0 engineering-audit-fragments \
     --rules-dir /path/to/engineering-audit/examples/taster-rules --out-dir .
 cat GEMINI-fragment.md >> GEMINI.md
 ```
