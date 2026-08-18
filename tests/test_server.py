@@ -2128,6 +2128,11 @@ def test_begin_run_relays_a_self_declared_pack_edition(tmp_path: Path) -> None:
     assert result["meta"]["rules_pack_full_pack_url"] == "https://example.test/request"
     assert "taster (3 of 16 domains)" in result["rules_pack_notice"]
     assert "https://example.test/request" in result["rules_pack_notice"]
+    # A user whose access was already granted has the opposite problem to the
+    # one the URL solves: the pack is on disk and the registration still
+    # points at the subset. The notice must carry the re-point remedy too,
+    # because the tool never searches the disk for a fuller pack itself.
+    assert "re-register with --rules-dir" in result["rules_pack_notice"]
 
 
 def test_begin_run_makes_no_edition_claim_for_a_pack_that_makes_none(

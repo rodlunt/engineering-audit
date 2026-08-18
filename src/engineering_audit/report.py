@@ -397,6 +397,8 @@ def _render_meta_block(run_state: RunState) -> str:
                     meta.rules_pack_edition
                     + (
                         f"; full pack available on request: {meta.rules_pack_full_pack_url}"
+                        " (already have it? re-register with --rules-dir aimed at its"
+                        " domains/ directory; this run used the subset)"
                         if meta.rules_pack_full_pack_url
                         else ""
                     ),

@@ -1084,6 +1084,7 @@ def test_meta_block_shows_a_self_declared_pack_edition_with_the_request_url() ->
     assert "Rules pack edition" in rendered
     assert "taster (3 of 16 domains)" in rendered
     assert "full pack available on request: https://example.test/request" in rendered
+    assert "re-register with --rules-dir" in rendered
 
 
 def test_meta_block_has_no_edition_row_when_the_pack_makes_no_claim() -> None:
