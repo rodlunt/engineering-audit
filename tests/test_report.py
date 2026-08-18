@@ -1042,6 +1042,35 @@ def test_pack_format_notice_silent_when_metadata_absent() -> None:
     assert "This pack declares an unreadable rule-file format" not in rendered
 
 
+def test_stale_build_notice_fires_prominently_on_a_confirmed_stale_status() -> None:
+    # Issue #254: a report made by an outdated build is itself a caveat on
+    # the findings, so a confirmed "stale" status gets a prominent block,
+    # not only a meta row inside a collapsed details element.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.meta.update_check = (
+        "stale: latest release is v9.9.9 (abcabcabcabc), installed build is "
+        "0.1.0 @ deadbeefdead; to update: re-register with v9.9.9"
+    )
+    rendered = render_report(run_state, pack)
+
+    assert "A newer release existed when this run was made" in rendered
+    assert "re-register with v9.9.9" in rendered
+    assert "not evidence the findings below are wrong" in rendered
+
+
+def test_stale_build_notice_silent_on_could_not_check_and_current() -> None:
+    # The control, mirroring the server side: neither an unrunnable check
+    # nor a current one is evidence of staleness, so neither may fire this.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.meta.update_check = "could-not-check: network unreachable"
+    run_state.meta.pack_update_check = "current (v1.0.0)"
+    rendered = render_report(run_state, pack)
+
+    assert "A newer release existed when this run was made" not in rendered
+
+
 def test_meta_block_shows_a_self_declared_pack_edition_with_the_request_url() -> None:
     # Issue #255: the reader of the report (who may not be the person who
     # installed the pack) also learns the run covered a declared subset,

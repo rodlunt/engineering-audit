@@ -638,6 +638,52 @@ def test_begin_run_update_checks_run_by_default(
     assert seen == {"tool": True, "pack": True}
 
 
+def test_begin_run_instructs_when_a_check_confirms_a_stale_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Issue #254: a confirmed-stale status used to land only in the meta
+    # rows, discoverable after a full run on the old build. The response now
+    # instructs the agent to relay it up front, quoting the status verbatim,
+    # which carries the per-host remedy (#219) with it.
+    monkeypatch.delenv("ENGINEERING_AUDIT_NO_UPDATE_CHECK", raising=False)
+    stale = (
+        "stale: latest release is v9.9.9 (abcabcabcabc), installed build is "
+        "0.1.0 @ deadbeefdead; to update: re-register with v9.9.9"
+    )
+    monkeypatch.setattr(server_module, "check_for_update", lambda *a, **k: stale)
+    monkeypatch.setattr(
+        server_module, "check_pack_for_update", lambda *a, **k: "current (v1.0.0)"
+    )
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    result = _begin_run(mcp, tmp_path / "audit-output")
+
+    assert stale in result["instruction"]
+    assert "tell the user" in result["instruction"]
+
+
+def test_begin_run_never_nags_on_could_not_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The control, and the discipline update_check.py already keeps: a check
+    # that could not run established nothing, so it must not produce the
+    # stale instruction. Same for "current", checked here via the pack.
+    monkeypatch.delenv("ENGINEERING_AUDIT_NO_UPDATE_CHECK", raising=False)
+    monkeypatch.setattr(
+        server_module,
+        "check_for_update",
+        lambda *a, **k: "could-not-check: network unreachable",
+    )
+    monkeypatch.setattr(
+        server_module, "check_pack_for_update", lambda *a, **k: "current (v1.0.0)"
+    )
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    result = _begin_run(mcp, tmp_path / "audit-output")
+
+    assert "instruction" not in result
+
+
 def test_begin_run_update_checks_disabled_via_env_var(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
