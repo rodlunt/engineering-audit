@@ -2062,6 +2062,41 @@ def test_begin_run_leaves_pack_format_and_requires_tool_none_without_pack_toml(
     assert result["meta"]["rules_pack_requires_tool"] is None
 
 
+def test_begin_run_relays_a_self_declared_pack_edition(tmp_path: Path) -> None:
+    # Issue #255: a pack that declares itself a subset gets one notice in
+    # the begin_run response, carrying the edition and the request URL, so
+    # whether the user learns the full pack exists does not depend on the
+    # agent noticing a metadata field.
+    rules_dir = tmp_path / "rules-pack"
+    shutil.copytree(FIXTURE_PACK, rules_dir)
+    (rules_dir / "pack.toml").write_text(
+        'edition = "taster (3 of 16 domains)"\n'
+        'full_pack_url = "https://example.test/request"\n',
+        encoding="utf-8",
+    )
+
+    mcp, _state = build_server(rules_dir)
+    result = _begin_run(mcp, tmp_path / "audit-output")
+
+    assert result["meta"]["rules_pack_edition"] == "taster (3 of 16 domains)"
+    assert result["meta"]["rules_pack_full_pack_url"] == "https://example.test/request"
+    assert "taster (3 of 16 domains)" in result["rules_pack_notice"]
+    assert "https://example.test/request" in result["rules_pack_notice"]
+
+
+def test_begin_run_makes_no_edition_claim_for_a_pack_that_makes_none(
+    tmp_path: Path,
+) -> None:
+    # The control: a pack with no edition key, which is every custom pack,
+    # must produce no notice at all. A small pack is a complete pack; the
+    # tool must never infer partiality from domain count.
+    mcp, _state = build_server(FIXTURE_PACK)
+    result = _begin_run(mcp, tmp_path / "audit-output")
+
+    assert result["meta"]["rules_pack_edition"] is None
+    assert "rules_pack_notice" not in result
+
+
 # ---------------------------------------------------------------------------
 # Full happy-path integration test: every tool, in order, on the fixture pack.
 # ---------------------------------------------------------------------------

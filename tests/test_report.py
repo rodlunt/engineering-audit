@@ -1042,6 +1042,33 @@ def test_pack_format_notice_silent_when_metadata_absent() -> None:
     assert "This pack declares an unreadable rule-file format" not in rendered
 
 
+def test_meta_block_shows_a_self_declared_pack_edition_with_the_request_url() -> None:
+    # Issue #255: the reader of the report (who may not be the person who
+    # installed the pack) also learns the run covered a declared subset,
+    # and where the full pack can be requested.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.meta.rules_pack_edition = "taster (3 of 16 domains)"
+    run_state.meta.rules_pack_full_pack_url = "https://example.test/request"
+    rendered = render_report(run_state, pack)
+
+    assert "Rules pack edition" in rendered
+    assert "taster (3 of 16 domains)" in rendered
+    assert "full pack available on request: https://example.test/request" in rendered
+
+
+def test_meta_block_has_no_edition_row_when_the_pack_makes_no_claim() -> None:
+    # The control: every pack without an edition key, which is every custom
+    # pack, renders no row and no request pointer.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    assert run_state.meta.rules_pack_edition is None
+    rendered = render_report(run_state, pack)
+
+    assert "Rules pack edition" not in rendered
+    assert "full pack available on request" not in rendered
+
+
 def test_not_applicable_verdict_for_unknown_rule_id_raises() -> None:
     # Same loudness the could-not-evaluate path already has: a verdict for a
     # rule id absent from the pack is a broken run, not a cosmetic gap.

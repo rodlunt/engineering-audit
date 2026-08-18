@@ -387,6 +387,25 @@ def _render_meta_block(run_state: RunState) -> str:
         ("Repository", meta.repo_name, False),
         ("Commit", meta.repo_commit, False),
         ("Rules pack", rules_pack_label(meta), False),
+        # Only when the pack's own pack.toml declares it a subset of a larger
+        # pack (issue #255): self-declared, never inferred from domain count,
+        # so an ordinary custom pack renders no row here at all.
+        *(
+            [
+                (
+                    "Rules pack edition",
+                    meta.rules_pack_edition
+                    + (
+                        f"; full pack available on request: {meta.rules_pack_full_pack_url}"
+                        if meta.rules_pack_full_pack_url
+                        else ""
+                    ),
+                    False,
+                )
+            ]
+            if meta.rules_pack_edition
+            else []
+        ),
         ("Rules commit", meta.rules_pack_commit or "unknown", False),
         ("Assistant", meta.assistant, True),
         ("Model", meta.model, True),

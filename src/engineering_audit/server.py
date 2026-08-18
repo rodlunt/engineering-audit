@@ -1558,6 +1558,13 @@ def _register_run_tools(mcp: MCPServer, state: AppState) -> None:
         environment variable, in which case both fields read "not-checked",
         which is not something to warn the user about, since turning it off
         was their own choice.
+
+        When the loaded rules pack declares itself a subset of a larger
+        pack (its pack.toml carries an 'edition' key; issue #255), the
+        response carries a rules_pack_notice naming the edition and, when
+        declared, where the full pack can be requested. Relay it to the
+        user once, when telling them the run has started, and never again.
+        Absent means the pack made no such claim.
         """
         # First, before any branch can return early: an environment the tool
         # will not accept is a bad call, and the caller has to hear that
@@ -1643,6 +1650,10 @@ def _register_run_tools(mcp: MCPServer, state: AppState) -> None:
             rules_pack_requires_tool=(
                 pack_metadata.requires_tool if pack_metadata else None
             ),
+            rules_pack_edition=pack_metadata.edition if pack_metadata else None,
+            rules_pack_full_pack_url=(
+                pack_metadata.full_pack_url if pack_metadata else None
+            ),
             update_check=check_for_update(
                 tool_commit_value,
                 tool_version_value,
@@ -1685,6 +1696,9 @@ def _register_run_tools(mcp: MCPServer, state: AppState) -> None:
             "output_dir": str(output_dir_path),
             "repo_dir": str(repo_dir_path) if repo_dir_path else None,
         }
+        pack_edition_notice = _pack_edition_notice(meta)
+        if pack_edition_notice is not None:
+            response["rules_pack_notice"] = pack_edition_notice
         if prior is not None:
             # Saying what was thrown away is the difference between a discard
             # the user chose and one they will only find out about later.
@@ -1694,6 +1708,36 @@ def _register_run_tools(mcp: MCPServer, state: AppState) -> None:
                 else {"path": str(prior.path), "readable": False, "error": prior.error}
             )
         return _with_warnings(run, response)
+
+
+def _pack_edition_notice(meta: RunMeta) -> str | None:
+    """One factual line for the agent to relay when the loaded pack declares
+    itself a subset of a larger one (issue #255), or None when it makes no
+    such claim.
+
+    Fires only on the pack's own pack.toml declaration, never on anything
+    the tool inferred: domain count in particular is not evidence of a
+    partial install, because a small custom pack is a complete pack. The
+    relay ask is embedded in the notice itself, the same structural choice
+    as _config_page_instruction above: whether the user learns the full
+    pack exists must not depend on the agent deciding a metadata field was
+    worth mentioning.
+    """
+    if not meta.rules_pack_edition:
+        return None
+    notice = (
+        f"This run uses the '{meta.rules_pack_edition}' rules pack, as declared "
+        "by the pack itself."
+    )
+    if meta.rules_pack_full_pack_url:
+        notice += (
+            " The full pack is available on request: "
+            f"{meta.rules_pack_full_pack_url}"
+        )
+    return (
+        f"{notice} Mention this to the user once, when telling them the run has "
+        "started; do not repeat it on later calls."
+    )
 
 
 def _config_page_instruction(url: str, opened_in_browser: bool | None) -> str:
