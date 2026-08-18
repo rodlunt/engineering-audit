@@ -46,6 +46,15 @@ If the MCP tools are unavailable, locate the configured rules pack from project 
 triage and the full domain file when activated. If no source exists, explain what is missing and
 stop the framework-specific interview. Never claim framework coverage from model memory.
 
+When you stop for a missing framework on a host with a `claude mcp` CLI, name the most likely
+cause before asking how to proceed: the server registered without `--scope user`, which ties it
+to the one directory it was added from and makes it silently invisible everywhere else (issue
+#245). Give the user the concrete check and fix, not just the symptom: run `claude mcp list` in
+this project; if `engineering-audit` is absent here but the server works in another directory,
+re-register it with `claude mcp remove engineering-audit` then the documented add command with
+`--scope user`. On other hosts, name the equivalent: the server's registration is not visible
+from this project's configuration.
+
 Read the live list every time. Allow added, removed, renamed, and updated domains to flow from
 the rules pack instead of maintaining a domain list in this skill.
 

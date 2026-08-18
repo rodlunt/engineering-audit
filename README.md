@@ -96,7 +96,12 @@ claude mcp add engineering-audit --scope user -- uvx --from git+https://github.c
 
 `--scope user` registers it for every repository. Without it `claude mcp add` defaults to
 local scope, which registers the server for the current directory alone and leaves it
-unavailable everywhere else.
+unavailable everywhere else. That failure is silent and lands later (issue #245): a skill
+run in any other project reports `list_domains` unavailable with nothing pointing at scope
+as the cause. If that happens, run `claude mcp list` in the project where it failed; if
+`engineering-audit` is missing there but present in the directory you installed from, it
+was registered without `--scope user`. Fix it with `claude mcp remove engineering-audit`
+followed by the add command above.
 
 **To update to a newer tag**, remove first and re-add. `claude mcp add` refuses to
 overwrite an existing name (`MCP server engineering-audit already exists in user config`),
