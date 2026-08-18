@@ -125,11 +125,13 @@ Call `start_config`. It responds in one of two modes:
   `AuditConfig` JSON file, and it has already been loaded. This is the headless/CI path: no user
   interaction is needed. Proceed straight to step 4 with the domain ids from the response.
 - **`"interactive"`**: no preset config was found. The response includes a `url` for a localhost
-  configuration page, and an `opened_in_browser` field saying whether the server managed to open
-  it in the user's browser itself. If `opened_in_browser` is true, tell the user a configuration
-  page has opened in their browser, and still show the URL in case the tab is buried. If it is
-  false (a remote or display-less session), **show the URL to the user as a clickable line** and
-  ask them to open it. Either way: choose which domains to audit, decide where the report should
+  configuration page, an `opened_in_browser` field saying whether the server managed to open
+  it in the user's browser itself, and an `instruction` field; follow the instruction. Telling
+  the user about the page is the first thing to do, before any other output: the whole run
+  blocks on that form, and a user who does not know it opened sees only a hung audit. If
+  `opened_in_browser` is true, say a configuration page has opened in their browser **and show
+  the URL on its own line as a clickable link** in case the tab is buried. If it is false (a
+  remote or display-less session), **show the URL the same way** and ask them to open it. Either way: choose which domains to audit, decide where the report should
   land (the page shows the default in-repo path and warns when it is not gitignored, or a custom
   path), and submit the form.
 

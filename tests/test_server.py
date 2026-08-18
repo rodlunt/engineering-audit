@@ -1382,6 +1382,28 @@ def test_start_config_interactive_path_opens_the_browser_and_says_so(
     result = _call(mcp, "start_config", {})
     assert result["opened_in_browser"] is True
     assert _no_real_browser == [result["url"]]
+    # Issue #246: whether the user hears about the page must not depend on
+    # the agent choosing to say something, so the response instructs. The
+    # instruction must carry the URL itself (a clickable line is the ask)
+    # and must say the page opened, since it did.
+    assert result["url"] in result["instruction"]
+    assert "opened in a tab" in result["instruction"]
+
+
+def test_start_config_called_again_still_instructs_with_the_same_url(
+    tmp_path: Path, _no_real_browser: list[str]
+) -> None:
+    # The already-started path returns the existing URL rather than a second
+    # server; issue #246's instruction has to ride on that response too, or
+    # an agent that lost the first response has nothing telling it to
+    # resurface the page.
+    mcp, _state = build_server(FIXTURE_PACK)
+    _begin_run(mcp, tmp_path / "audit-output")
+
+    first = _call(mcp, "start_config", {})
+    again = _call(mcp, "start_config", {})
+    assert again["url"] == first["url"]
+    assert again["url"] in again["instruction"]
 
 
 def test_start_config_interactive_path_survives_a_browserless_environment(
@@ -1401,6 +1423,10 @@ def test_start_config_interactive_path_survives_a_browserless_environment(
     assert result["mode"] == "interactive"
     assert result["url"].startswith("http://127.0.0.1:")
     assert result["opened_in_browser"] is False
+    # Issue #246: with no tab opened, the instruction must carry the URL and
+    # ask for the user to open it, not claim a tab opened.
+    assert result["url"] in result["instruction"]
+    assert "No browser tab" in result["instruction"]
 
 
 def test_get_config_interactive_path_blocks_then_returns_after_form_post(
