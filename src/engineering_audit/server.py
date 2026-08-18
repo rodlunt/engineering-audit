@@ -1753,10 +1753,14 @@ def _register_config_tools(mcp: MCPServer, state: AppState) -> None:
         if run.config_server is not None:
             # Already started in interactive mode: return the existing URL
             # rather than starting a second server on a different port.
+            existing_url = run.config_url
+            # Set in the same block as config_server below; one without the
+            # other would be a bug in this function, not a reachable state.
+            assert existing_url is not None
             return {
                 "mode": "interactive",
-                "url": run.config_url,
-                "instruction": _config_page_instruction(run.config_url, None),
+                "url": existing_url,
+                "instruction": _config_page_instruction(existing_url, None),
             }
 
         preset_path = os.environ.get("ENGINEERING_AUDIT_CONFIG")
