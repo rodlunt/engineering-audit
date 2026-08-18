@@ -1696,6 +1696,42 @@ def _register_run_tools(mcp: MCPServer, state: AppState) -> None:
         return _with_warnings(run, response)
 
 
+def _config_page_instruction(url: str, opened_in_browser: bool | None) -> str:
+    """The instruction accompanying every interactive start_config response
+    (issue #246).
+
+    The whole run blocks on the configuration page, so a user who does not
+    know it opened sees only a hung audit until the get_config wait times
+    out. Whether they hear about the page used to depend entirely on the
+    driving agent choosing to relay it; in a real run it chose not to, and
+    the user found the page by accident. Carrying the instruction in the
+    response makes the signal structural, the same way _issue_preview and
+    get_config already instruct rather than hope.
+
+    ``opened_in_browser`` is None on the already-started path, where whether
+    a tab opened on the earlier call is no longer known.
+    """
+    if opened_in_browser is True:
+        situation = (
+            "A configuration page has just opened in a tab in the user's browser. "
+            "Before doing anything else, tell the user that"
+        )
+    elif opened_in_browser is False:
+        situation = (
+            "No browser tab could be opened from here. Before doing anything else, "
+            "ask the user to open the configuration page themselves"
+        )
+    else:
+        situation = (
+            "The configuration page for this run is already up. Remind the user"
+        )
+    return (
+        f"{situation}, and show this URL on its own line so it renders as a "
+        f"clickable link: {url} . The audit now waits on that form; a user who "
+        "does not know the page exists sees only a hung run."
+    )
+
+
 def _register_config_tools(mcp: MCPServer, state: AppState) -> None:
     """Resolving the run's configuration, interactively or from a preset."""
 
@@ -1719,7 +1755,11 @@ def _register_config_tools(mcp: MCPServer, state: AppState) -> None:
         if run.config_server is not None:
             # Already started in interactive mode: return the existing URL
             # rather than starting a second server on a different port.
-            return {"mode": "interactive", "url": run.config_url}
+            return {
+                "mode": "interactive",
+                "url": run.config_url,
+                "instruction": _config_page_instruction(run.config_url, None),
+            }
 
         preset_path = os.environ.get("ENGINEERING_AUDIT_CONFIG")
         if preset_path:
@@ -1800,7 +1840,19 @@ def _register_config_tools(mcp: MCPServer, state: AppState) -> None:
             opened = webbrowser.open(url)
         except webbrowser.Error:
             opened = False
-        return {"mode": "interactive", "url": url, "opened_in_browser": opened}
+        # A log trace that exists independent of the agent (issue #246):
+        # stderr, never stdout, which carries the MCP protocol.
+        print(
+            f"engineering-audit: configuration page at {url} "
+            f"(browser tab opened: {'yes' if opened else 'no'})",
+            file=sys.stderr,
+        )
+        return {
+            "mode": "interactive",
+            "url": url,
+            "opened_in_browser": opened,
+            "instruction": _config_page_instruction(url, opened),
+        }
 
     @mcp.tool()
     def get_config(timeout_s: float = 300) -> dict[str, Any]:
