@@ -1740,6 +1740,11 @@ def _pack_edition_notice(meta: RunMeta) -> str | None:
     if meta.rules_pack_full_pack_url:
         notice += (
             f" The full pack is available on request: {meta.rules_pack_full_pack_url}"
+            " If the user already has the full pack on disk, this registration "
+            "still points at the subset: re-register with --rules-dir aimed at "
+            "the full pack's domains/ directory (the README's Rules access "
+            "section has the command). The tool never searches the disk for a "
+            "fuller pack itself, so re-pointing is the only way to switch."
         )
     return (
         f"{notice} Mention this to the user once, when telling them the run has "
