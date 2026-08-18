@@ -1722,9 +1722,7 @@ def _config_page_instruction(url: str, opened_in_browser: bool | None) -> str:
             "ask the user to open the configuration page themselves"
         )
     else:
-        situation = (
-            "The configuration page for this run is already up. Remind the user"
-        )
+        situation = "The configuration page for this run is already up. Remind the user"
     return (
         f"{situation}, and show this URL on its own line so it renders as a "
         f"clickable link: {url} . The audit now waits on that form; a user who "
