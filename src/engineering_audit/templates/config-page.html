@@ -54,6 +54,7 @@
   .domain-trigger { display: block; color: var(--muted); font-size: 0.85rem; margin-left: 1.6rem; }
   .radio-row, .consent-row { display: block; padding: 0.3rem 0; }
   .consent-row.locked { color: var(--muted); }
+  .consent-row.select-all-row { border-bottom: 1px solid var(--border); padding-bottom: 0.5rem; margin-bottom: 0.3rem; }
   .form-error { color: #b3261e; font-weight: 600; margin: 0 0 0.75rem; }
   .draft-notice, .section-hint { color: var(--muted); font-size: 0.9rem; margin: 0 0 0.75rem; }
   .gitignore-warning, .output-location-warning {
@@ -185,6 +186,13 @@
 
 <section>
   <h2>What to include if you send feedback</h2>
+  <!-- No name attribute, on purpose: this control must never be submitted,
+       persisted or restored. It is a live convenience over the nine real
+       consent boxes below, and its state is always derived from theirs. -->
+  <label class="consent-row select-all-row">
+    <input type="checkbox" id="consent-select-all">
+    <strong>Select all</strong>
+  </label>
   <label class="consent-row">
     <input type="checkbox" name="consent_coverage" $consent_coverage_checked>
     Coverage statistics (files inspected, files skipped)
@@ -370,6 +378,48 @@
   });
 
   updateFieldState();
+})();
+</script>
+
+<script nonce="$csp_nonce">
+// Select all for the consent section (issue #251). Its own <script> tag for
+// the same reason the output-location block above is separate from the
+// heartbeat: a syntax error here must not take either of those down.
+//
+// Consent discipline, same as _DRAFT_COOKIE_NAME's in config_page.py: the
+// control has no name so it never submits, nothing ever persists or restores
+// it, and its state is always derived live from the real consent boxes. The
+// only way it ticks anything is the user clicking it in the moment. The
+// selector matches on name so the locked, nameless run-metadata box (already
+// always included) is never touched.
+(function () {
+  var selectAll = document.getElementById("consent-select-all");
+  var boxes = document.querySelectorAll('#audit-config-form input[name^="consent_"]');
+
+  function syncFromBoxes() {
+    var all = boxes.length > 0;
+    for (var i = 0; i < boxes.length; i++) {
+      if (!boxes[i].checked) {
+        all = false;
+        break;
+      }
+    }
+    selectAll.checked = all;
+  }
+
+  selectAll.addEventListener("change", function () {
+    for (var i = 0; i < boxes.length; i++) {
+      boxes[i].checked = selectAll.checked;
+    }
+  });
+  for (var i = 0; i < boxes.length; i++) {
+    boxes[i].addEventListener("change", syncFromBoxes);
+  }
+
+  // Derived, not restored: a re-rendered form (a validation error round trip)
+  // can legitimately come back with every box ticked, and the control should
+  // reflect that. This reads the boxes as they are; it never ticks one.
+  syncFromBoxes();
 })();
 </script>
 </body>
