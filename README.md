@@ -54,6 +54,12 @@ no sign-up; the full sixteen-domain, 260-rule pack is available on request
 From nothing to a first audit in five steps. The taster rules ship in this repository, so
 none of this needs access to the full pack.
 
+Never touched a terminal? There is a [free interactive
+walkthrough](https://rod.lunt.au/tools/engineering-audit-training/) that takes a
+non-technical founder from a bare Windows PC to a finished audit of their own repository:
+it rehearses these same steps in a simulated PowerShell, with the wrong turns coached,
+before you do them for real.
+
 ### Step 1: pick your assistant
 
 The tool works through the assistant you already drive: **Claude Code** (proven end to
