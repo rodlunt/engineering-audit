@@ -222,11 +222,24 @@ Two ways to avoid that trap, in order of preference:
 - MCP server registration (`codex mcp add`, `--env`, `codex mcp list`) and
   `codex exec`'s stdin behaviour: **VERIFIED** on `codex-cli 0.114.0`, this
   machine.
-- The full audit flow described above (an actual Codex session reading `AUDIT.md`
-  and driving the MCP tools through to a rendered report): **DOCUMENTED,
-  UNTESTED**. The commands match Codex's documented syntax and this tool's actual
-  MCP surface, but no end-to-end run against a live Codex session has happened yet.
-  Confirm `list_domains` and `get_domain` respond as expected before relying on
-  this for a real audit.
+- The full audit flow described above (a Codex session reading `AUDIT.md` and
+  driving the MCP tools through to a rendered report): **PROVEN**, twice.
+  2026-08-10: all 16 domains, `codex-cli 0.147.0` / `gpt-5.6-sol`, macOS, recorded
+  in [docs/example-audit-cost.md](../../docs/example-audit-cost.md). 2026-08-19:
+  taster pack (3 domains), `codex-cli 0.147.0` / `gpt-5.5`, Ubuntu 24.04, driven
+  non-interactively via `codex exec` with the interactive configuration page
+  submitted from a browser; `get_config`'s 25-second waiting slices polled cleanly
+  (the issue #85 failure class did not reproduce), all three domains recorded,
+  report rendered. Tool 0.15.0.
+- **Sandbox cancellations look like MCP failures (found 2026-08-19).** On Ubuntu
+  24.04 (which restricts unprivileged user namespaces) under `codex exec`, a
+  failing Codex sandbox wrapper caused **every** MCP call to fail instantly with
+  `user cancelled MCP tool call`, with nobody cancelling anything, alongside
+  failing shell commands. Neither `approval_policy="never"` nor a raised
+  `tool_timeout_sec` helps, because it is not an approval or timeout problem. In
+  an externally sandboxed or userns-restricted environment, run with
+  `--dangerously-bypass-approvals-and-sandbox` (the flag's documented purpose) or
+  fix the sandbox environment. If every MCP call dies instantly with that
+  message, suspect the sandbox wrapper before this server.
 - Inline mode's `AGENTS.md` merge behaviour and the 32 KiB cap: sourced from
   Codex's own docs, not re-verified against a live merge on this machine.

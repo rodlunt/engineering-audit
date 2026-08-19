@@ -62,9 +62,11 @@ before you do them for real.
 
 ### Step 1: pick your assistant
 
-The tool works through the assistant you already drive: **Claude Code** (proven end to
-end), **OpenAI Codex CLI** or **Gemini CLI** (both documented, not yet exercised end to
-end; see the [support matrix](#support-matrix)). GitHub Copilot is not supported.
+The tool works through the assistant you already drive: **Claude Code** or **OpenAI
+Codex CLI** (both proven end to end; standalone audits recorded 2026-08-09 and
+2026-08-10, with a further Codex run on Linux 2026-08-19), or **Gemini CLI**
+(documented, not yet exercised end to end; see the [support matrix](#support-matrix)).
+GitHub Copilot is not supported.
 
 ### Step 2: dependencies
 
