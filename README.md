@@ -508,7 +508,22 @@ anything.
 
 The full pack lives in a private repository with access granted per user (the maintained
 originals, their revision history and proving records). Ask via the
-[rules pack access request form](https://github.com/rodlunt/engineering-audit/issues/new?template=rules-access.yml). The
+[rules pack access request form](https://github.com/rodlunt/engineering-audit/issues/new?template=rules-access.yml).
+
+**Once granted**, the pack arrives the same way the taster did: a repository you clone.
+
+```sh
+git clone https://github.com/rodlunt/engineering-framework
+```
+
+Then swap the rules path in your Step 4 registration for the clone's `domains/` directory
+(`claude mcp remove` then re-add for Claude Code; `codex mcp add` overwrites in place).
+Updating the rules afterwards is `git pull` in that clone. Keep it a real clone rather
+than a downloaded archive: the clone keeps its `origin` remote, so the run's rules-pack
+staleness check stays attached, exactly as described under "What keeps the staleness
+checks working".
+
+The
 tooling works with any rules directory in the expected format (`**Trigger:**` header,
 `### N. Title` rules, `Rule id:` footers with `Source:` fragments), so you can also write
 your own pack.
