@@ -29,6 +29,11 @@ testing strategy and presenting data, 54 rules with their full source citations,
 no sign-up; the full sixteen-domain, 260-rule pack is available on request
 ([Rules access](#rules-access)).
 
+**Need a walk through?** There is a [free interactive walkthrough →](https://rod.lunt.au/tools/engineering-audit-training/) that takes you from a bare
+Windows, Mac or Linux PC to a finished audit of your own repository. It rehearses every step
+below in a simulated terminal, with the wrong turns coached, before you do them for real. No
+terminal experience assumed.
+
 **[Save me the chit chat: show me how to install it →](#how-to-use)**
 
 <p align="center">
@@ -54,11 +59,10 @@ no sign-up; the full sixteen-domain, 260-rule pack is available on request
 From nothing to a first audit in five steps. The taster rules ship in this repository, so
 none of this needs access to the full pack.
 
-Never touched a terminal? There is a [free interactive
-walkthrough](https://rod.lunt.au/tools/engineering-audit-training/) that takes a
-non-technical founder from a bare Windows, Mac or Linux PC to a finished audit of their own repository:
-it rehearses these same steps in a simulated terminal, with the wrong turns coached,
-before you do them for real.
+Never touched a terminal? Rehearse these five steps first in the [free interactive
+walkthrough](https://rod.lunt.au/tools/engineering-audit-training/) linked at the top: it takes a
+non-technical founder from a bare Windows, Mac or Linux PC to a finished audit, in a simulated
+terminal with the wrong turns coached.
 
 ### Step 1: pick your assistant
 
