@@ -3199,6 +3199,17 @@ def test_nested_markdown_emphasis_in_a_citation_is_stripped_from_the_reference_l
     assert "An Overview of a Method" in reference_match.group(1)
 
 
+def _finding_body_html(rendered: str) -> str:
+    """The first finding's rendered body, without its reference line."""
+    match = re.search(
+        r'<div class="finding-body">(.*?)</div>\s*<div class="finding-reference">',
+        rendered,
+        re.DOTALL,
+    )
+    assert match is not None
+    return match.group(1)
+
+
 def test_finding_body_markdown_emphasis_renders_as_clean_prose() -> None:
     # A real tester run's finding bodies looked exactly like this: an
     # assistant defaulting to markdown even though the report never renders
@@ -3222,6 +3233,116 @@ def test_finding_body_markdown_emphasis_renders_as_clean_prose() -> None:
     assert "*" not in body_html
     assert "The issue: bed-14 holds two gnomes." in body_html
     assert "Suggested fix: set the shared-bed flag." in body_html
+
+
+def test_finding_body_inline_code_renders_as_code_not_literal_backticks() -> None:
+    # The other half of issue #128. Its fix stripped emphasis and pinned it
+    # with a test asserting no literal "*" survives; backticks were never
+    # decided either way, and survived because strip_markdown_emphasis
+    # protects code spans outright (so an asterisk inside `a * b` cannot be
+    # paired as emphasis), which doubles as a bypass of the strip. Every real
+    # tester report on disk carries the result: 238 literal backticks in one
+    # rodney-sites run, 136 in a grademap-app one.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.domain_results["d01"].findings[0].body_md = (
+        "`orders.customer_email` is the lookup key, set in `api/checkout.py:88`."
+    )
+    rendered = render_report(run_state, pack)
+
+    body_html = _finding_body_html(rendered)
+    assert "<code>orders.customer_email</code>" in body_html
+    assert "<code>api/checkout.py:88</code>" in body_html
+    # The point of the change: not one backtick reaches the reader.
+    assert "`" not in body_html
+
+
+def test_inline_code_content_is_escaped_before_it_is_wrapped() -> None:
+    # The safety property the whole change rests on, and the one issue #128
+    # required of the render option: escape first, so the captured content
+    # cannot contain markup and wrapping it in a tag cannot introduce any.
+    # A code span is the likeliest place for an assistant to put a raw tag.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.domain_results["d01"].findings[
+        0
+    ].body_md = "Never write `<script>alert(1)</script>` into the template."
+    rendered = render_report(run_state, pack)
+
+    body_html = _finding_body_html(rendered)
+    assert "<code>&lt;script&gt;alert(1)&lt;/script&gt;</code>" in body_html
+    assert "<script>" not in body_html
+
+
+def test_a_lone_backtick_with_no_partner_stays_literal() -> None:
+    # It has nothing to pair with, so it must stay the character it already
+    # was rather than opening a span that never closes.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.domain_results["d01"].findings[
+        0
+    ].body_md = "A lone backtick ` and nothing else."
+    rendered = render_report(run_state, pack)
+
+    body_html = _finding_body_html(rendered)
+    assert "<code>" not in body_html
+    assert body_html.count("`") == 1
+
+
+def test_a_code_span_may_not_cross_a_newline() -> None:
+    # A deliberate deviation from CommonMark, which does let a span run over
+    # a line ending. No report on disk contains a fenced block or a
+    # multi-line span (198 spans across three real tester runs, all on one
+    # line), so allowing it would buy nothing and would let a stray backtick
+    # swallow the rest of a paragraph.
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.domain_results["d01"].findings[0].body_md = "A `span\nacross` lines."
+    rendered = render_report(run_state, pack)
+
+    body_html = _finding_body_html(rendered)
+    assert "<code>" not in body_html
+    assert body_html.count("`") == 2
+
+
+def test_backtick_pairing_and_space_trimming_match_commonmark() -> None:
+    # An unpaired backtick pairs with the NEXT one on the line, which can
+    # mangle prose. That is accepted rather than worked around, because
+    # CommonMark does exactly the same thing and so does GitHub, and the
+    # entire reason for rendering these spans is that the report and the
+    # filed issue should say the same thing. A cleverer local rule would
+    # reintroduce the disagreement #128 was opened about.
+    #
+    # Checked against a CommonMark implementation, which renders this input
+    # as: <p>Use <code>carefully with</code>code` here.</p>
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.domain_results["d01"].findings[
+        0
+    ].body_md = "Use ` carefully with `code` here."
+    rendered = render_report(run_state, pack)
+
+    body_html = _finding_body_html(rendered)
+    # Pairing: first backtick closes on the second, not the third.
+    assert "<code>carefully with</code>" in body_html
+    # And the single leading/trailing space inside the span is trimmed, as
+    # CommonMark specifies, so the two renderings agree character for
+    # character rather than only structurally.
+    assert "<code> carefully with </code>" not in body_html
+
+
+def test_issue_body_keeps_its_backticks_for_github() -> None:
+    # issue_body is markdown bound for a GitHub issue, which renders it
+    # properly. Putting it through the report's renderer would break the
+    # thing that already worked, so the asymmetry is deliberate: the report
+    # renders inline code, the filed issue keeps the markdown that produces
+    # it, and the two artefacts now agree instead of disagreeing (#128).
+    pack = _pack()
+    run_state = _base_run_state(pack)
+    run_state.domain_results["d01"].findings[0].issue_body = "See `api/checkout.py:88`."
+    rendered = render_report(run_state, pack)
+
+    assert "See `api/checkout.py:88`." in rendered
 
 
 def test_finding_title_markdown_emphasis_is_stripped() -> None:
