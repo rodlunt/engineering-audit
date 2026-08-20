@@ -133,6 +133,13 @@ the same path; put the raw capture at that `unframed-` name first, run the scrip
 delete the `unframed-` intermediate (it is a build input, not a tracked asset, same as
 `report-light.png` copied into this directory below).
 
+**Recapturing a subset is expected.** A change that only affects the report body leaves the
+config-page and domain-verdicts captures untouched, so the script treats a missing
+`unframed-` input as "not recaptured this round", leaves the committed file alone, and
+prints a `SKIPPED` line naming it. It exits non-zero if it framed nothing at all, since
+that means the inputs or the working directory are wrong rather than that there was
+nothing to do.
+
 ## Keeping the social card current
 
 The card embeds the now-framed `docs/images/report-light.png`, so **regenerate the social

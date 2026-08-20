@@ -101,5 +101,31 @@ SHOTS = [
     ("domain-verdicts-dark.png", CANVAS_DARK, BORDER_DARK),
 ]
 
+# Recapturing a subset is the normal case: a change that only affects the
+# report body leaves the config-page and domain-verdicts captures untouched.
+# A missing unframed- input therefore means "not recaptured this round", not
+# an error, and the existing framed file is left exactly as it was. It is
+# announced rather than passed over in silence, because a skipped step that
+# looks identical to a completed one is the failure mode this project keeps
+# writing rules about; and if nothing at all was framed, that is a mistake
+# (wrong directory, inputs deleted early) and exits non-zero rather than
+# printing a clean-looking nothing.
+framed = 0
+skipped = []
 for name, canvas_colour, border_colour in SHOTS:
-    frame(IMAGES / f"unframed-{name}", IMAGES / name, canvas_colour, border_colour)
+    src = IMAGES / f"unframed-{name}"
+    if not src.is_file():
+        skipped.append(name)
+        continue
+    frame(src, IMAGES / name, canvas_colour, border_colour)
+    framed += 1
+
+for name in skipped:
+    print(f"SKIPPED {name}: no unframed-{name} found; left as committed")
+
+if framed == 0:
+    raise SystemExit(
+        f"framed nothing: none of the {len(SHOTS)} unframed- inputs were found in "
+        f"{IMAGES}. Capture first, or check the working directory."
+    )
+print(f"framed {framed} of {len(SHOTS)}, skipped {len(skipped)}")

@@ -332,6 +332,21 @@
   .finding-domain { color: var(--muted); font-size: 0.85rem; }
   .quiet-domains { font-size: 0.95rem; }
   .quiet-domains li { margin-bottom: 0.3rem; }
+  /* Inline code spans rendered out of assistant-written finding text
+     (issue #128's other half; see _markdownish in report.py). Monospace and
+     nothing more: .finding-location and .finding-reference below already
+     establish monospace as "this is machine text" throughout this report, so
+     a tinted background would be a second convention for the same idea, and
+     would need a new colour variable in all three :root blocks including the
+     print override. 0.9em because ui-monospace renders visually larger than
+     the body face at the same nominal size. overflow-wrap for the same
+     reason the two rules below have it: these spans are mostly identifiers
+     and paths, and must not force a horizontal scroll. */
+  code {
+    font-family: ui-monospace, monospace;
+    font-size: 0.9em;
+    overflow-wrap: anywhere;
+  }
   /* Both lines carry an unbroken token (a path:line-range or a long URL)
      with no spaces to wrap at. overflow-wrap: anywhere lets the browser
      break inside the token itself, rather than word-break: break-all,
