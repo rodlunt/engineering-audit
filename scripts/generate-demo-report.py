@@ -123,25 +123,25 @@ def _data_modelling_result(pack: RulesPack) -> DomainResult:
                 title="orders.customer_email carries no uniqueness constraint",
                 location="migrations/0004_orders.sql:31",
                 body_md=(
-                    "orders.customer_email is the column the checkout flow looks a "
+                    "`orders.customer_email` is the column the checkout flow looks a "
                     "returning customer up by, but the table declares no unique index "
                     "on it and no other column identifies the customer.\n\n"
                     "Nothing stops two rows claiming the same address, and the lookup "
-                    "in api/checkout.py:88 takes the first row it gets back. Once a "
+                    "in `api/checkout.py:88` takes the first row it gets back. Once a "
                     "duplicate exists, a returning customer is silently served another "
                     "customer's saved address and order history, and no error is "
                     "raised at any layer.\n\n"
-                    "Add UNIQUE (customer_email) in a migration, after resolving the "
+                    "Add `UNIQUE (customer_email)` in a migration, after resolving the "
                     "existing duplicates that migration will refuse to run over, and "
                     "make the checkout lookup fetch exactly one row rather than the "
                     "first of many."
                 ),
                 issue_title="Add a uniqueness constraint to orders.customer_email",
                 issue_body=(
-                    "orders.customer_email is used as the customer lookup key in "
-                    "api/checkout.py:88 but has no unique index. Two rows can claim "
+                    "`orders.customer_email` is used as the customer lookup key in "
+                    "`api/checkout.py:88` but has no unique index. Two rows can claim "
                     "the same address, and the lookup returns the first match. See "
-                    "migrations/0004_orders.sql:31."
+                    "`migrations/0004_orders.sql:31`."
                 ),
                 precondition=(
                     "the rule presumes a fact type identified by a column, present as "
@@ -154,7 +154,7 @@ def _data_modelling_result(pack: RulesPack) -> DomainResult:
                 title="Deleting a customer cascades into their completed orders",
                 location="models/customer.py:24",
                 body_md=(
-                    "Customer.orders is declared with SQLAlchemy's "
+                    "`Customer.orders` is declared with SQLAlchemy's "
                     'cascade="all, delete-orphan", which the ORM\'s own examples '
                     "use for parent-owned child rows.\n\n"
                     "An order is not owned by the customer in that sense: it is a "
@@ -169,7 +169,7 @@ def _data_modelling_result(pack: RulesPack) -> DomainResult:
                 issue_title="Stop customer deletion cascading into completed orders",
                 issue_body=(
                     'Customer.orders uses cascade="all, delete-orphan" '
-                    "(models/customer.py:24), so deleting a customer deletes their "
+                    "(`models/customer.py:24`), so deleting a customer deletes their "
                     "completed orders and line items. Orders are records the business "
                     "must retain; the cascade should restrict, and erasure should "
                     "anonymise instead."
@@ -185,12 +185,12 @@ def _data_modelling_result(pack: RulesPack) -> DomainResult:
                 title="orders.total_cents is stored alongside the line items it duplicates",
                 location="migrations/0004_orders.sql:44",
                 body_md=(
-                    "orders.total_cents is written at checkout and never "
-                    "recomputed, while order_items holds the quantities and unit "
+                    "`orders.total_cents` is written at checkout and never "
+                    "recomputed, while `order_items` holds the quantities and unit "
                     "prices it was derived from.\n\n"
                     "The decision log records the denormalisation as a reporting "
                     "optimisation, but nothing recomputes the column when a line item "
-                    "is amended, and the refunds path in api/refunds.py:52 amends "
+                    "is amended, and the refunds path in `api/refunds.py:52` amends "
                     "line items. A partially refunded order therefore reports its "
                     "pre-refund total on every screen that reads the stored column.\n\n"
                     "Either recompute the total in the same transaction that amends "
@@ -199,10 +199,10 @@ def _data_modelling_result(pack: RulesPack) -> DomainResult:
                 ),
                 issue_title="Recompute or drop the stored orders.total_cents",
                 issue_body=(
-                    "orders.total_cents is derived from order_items but is not "
-                    "recomputed when refunds amend line items (api/refunds.py:52), so "
+                    "`orders.total_cents` is derived from `order_items` but is not "
+                    "recomputed when refunds amend line items (`api/refunds.py:52`), so "
                     "partially refunded orders report a stale total. See "
-                    "migrations/0004_orders.sql:44."
+                    "`migrations/0004_orders.sql:44`."
                 ),
                 precondition=(
                     "the rule presumes stored data derivable from other stored data, "
@@ -215,24 +215,24 @@ def _data_modelling_result(pack: RulesPack) -> DomainResult:
                 title="Six columns on order_items are nullable by default, not by decision",
                 location="migrations/0004_orders.sql:58",
                 body_md=(
-                    "Every column added to order_items after the first migration is "
+                    "Every column added to `order_items` after the first migration is "
                     "nullable, and the migrations carry no note explaining any of "
                     "them.\n\n"
-                    "unit_price_cents and quantity are mandatory in every code "
+                    "`unit_price_cents` and quantity are mandatory in every code "
                     "path that writes the table, so the nullability is not a modelled "
                     "optional role; it is the default that was never overridden. The "
                     "cost is that every reader has to handle a null the writer never "
                     "produces, and a genuinely optional column becomes "
                     "indistinguishable from these.\n\n"
-                    "Set NOT NULL on the columns the application already treats as "
+                    "Set `NOT NULL` on the columns the application already treats as "
                     "mandatory, and leave a one-line reason on the ones that stay "
                     "optional."
                 ),
                 issue_title="Set NOT NULL on the order_items columns that are mandatory in code",
                 issue_body=(
-                    "order_items.unit_price_cents and quantity are nullable in the "
+                    "`order_items`.unit_price_cents and quantity are nullable in the "
                     "schema but mandatory in every write path. Nullability was "
-                    "defaulted rather than decided. See migrations/0004_orders.sql:58."
+                    "defaulted rather than decided. See `migrations/0004_orders.sql:58`."
                 ),
                 precondition=(
                     "the rule presumes columns whose optionality can be compared "
@@ -336,7 +336,7 @@ def _testing_result(pack: RulesPack) -> DomainResult:
                 ),
                 issue_title="Gate the load test on p95/p99, not the mean",
                 issue_body=(
-                    "perf/locustfile.py:71 fails the run on mean response time under "
+                    "`perf/locustfile.py:71` fails the run on mean response time under "
                     "400 ms. A mean hides the tail. Set a user-facing objective and "
                     "assert on p95 and p99 instead."
                 ),
@@ -352,8 +352,8 @@ def _testing_result(pack: RulesPack) -> DomainResult:
                 location="tests/",
                 body_md=(
                     "Coverage sits between 78% and 84% in every module, including "
-                    "api/pricing.py and api/refunds.py, which carry the money "
-                    "arithmetic, and util/slugify.py, which does not.\n\n"
+                    "`api/pricing.py` and `api/refunds.py`, which carry the money "
+                    "arithmetic, and `util/slugify.py`, which does not.\n\n"
                     "Uniform coverage is a decision not to weight by risk. The "
                     "modules where a defect costs a refund dispute are being tested "
                     "to the same depth as a string helper, which means the budget is "
@@ -365,7 +365,7 @@ def _testing_result(pack: RulesPack) -> DomainResult:
                 issue_title="Weight test effort by risk instead of spreading it evenly",
                 issue_body=(
                     "Coverage is 78-84% across every module, so pricing and refunds "
-                    "are tested to the same depth as util/slugify.py. Weight effort "
+                    "are tested to the same depth as `util/slugify.py`. Weight effort "
                     "toward the modules whose failure is most expensive."
                 ),
                 precondition=(
@@ -438,7 +438,7 @@ def _presenting_data_result(pack: RulesPack) -> DomainResult:
                 ),
                 issue_title="Start the revenue bar chart at zero",
                 issue_body=(
-                    "admin/templates/dashboard.html:112 draws weekly revenue bars on "
+                    "`admin/templates/dashboard.html:112` draws weekly revenue bars on "
                     "a 40,000-52,000 axis with no break marked, tripling the apparent "
                     "size of a 6% move. Bars must start at zero, or become a "
                     "change-over-time line."
@@ -467,7 +467,7 @@ def _presenting_data_result(pack: RulesPack) -> DomainResult:
                 ),
                 issue_title="Add a text status column to the orders table",
                 issue_body=(
-                    "admin/static/orders.css:44 encodes order status only as a row "
+                    "`admin/static/orders.css:44` encodes order status only as a row "
                     "background colour. Green (pending) and amber (refunded) are "
                     "indistinguishable to most colour-blind readers, and colour is "
                     "stripped when the table is pasted into email."
