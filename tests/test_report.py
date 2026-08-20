@@ -3245,7 +3245,9 @@ def test_finding_body_inline_code_renders_as_code_not_literal_backticks() -> Non
     # rodney-sites run, 136 in a grademap-app one.
     pack = _pack()
     run_state = _base_run_state(pack)
-    run_state.domain_results["d01"].findings[0].body_md = (
+    run_state.domain_results["d01"].findings[
+        0
+    ].body_md = (
         "`orders.customer_email` is the lookup key, set in `api/checkout.py:88`."
     )
     rendered = render_report(run_state, pack)
