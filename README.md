@@ -39,18 +39,28 @@ terminal experience assumed.
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/report-dark.png">
-    <img src="docs/images/report-light.png" alt="Report: computed headline naming what needs attention first, then findings sorted worst first" width="720">
+    <img src="docs/images/report-light.png" alt="Report header: a computed headline saying 2 high findings need attention first out of 9 across 54 rules in 3 domains, then the worst finding, a missing uniqueness constraint, with the rule it breaks, where it is, why it matters, how to fix it, and the cited source behind the rule" width="100%">
+  </picture>
+</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/domain-verdicts-dark.png">
+    <img src="docs/images/domain-verdicts-light.png" alt="Per-domain table: one row per audited domain giving its pass, finding, not-applicable and could-not-evaluate counts as a bar and as written-out numbers, plus files inspected, self-assessed confidence, and whether the rules were fetched" width="100%">
+  </picture>
+</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/issues-feedback-dark.png">
+    <img src="docs/images/issues-feedback-light.png" alt="Issues section: each finding rendered as ready-to-file issue text with a tick box, one already filed and linked, and buttons to file the selected ones straight to GitHub or copy them out" width="100%">
   </picture>
 </p>
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/config-page-dark.png">
-    <img src="docs/images/config-page-light.png" alt="Configuration page: domain tick boxes, issue delivery, feedback consent" width="48%">
-  </picture>
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/images/issues-feedback-dark.png">
-    <img src="docs/images/issues-feedback-light.png" alt="Issues with selection tick boxes and GitHub filing, and the per-domain table of rule verdicts" width="48%">
+    <img src="docs/images/config-page-light.png" alt="Configuration page served on localhost: tick boxes for the three domains with their trigger text, where the report should be written, and how findings should be delivered" width="100%">
   </picture>
 </p>
 

@@ -97,6 +97,8 @@ SHOTS = [
     ("report-dark.png", CANVAS_DARK, BORDER_DARK),
     ("issues-feedback-light.png", CANVAS_LIGHT, BORDER_LIGHT),
     ("issues-feedback-dark.png", CANVAS_DARK, BORDER_DARK),
+    ("domain-verdicts-light.png", CANVAS_LIGHT, BORDER_LIGHT),
+    ("domain-verdicts-dark.png", CANVAS_DARK, BORDER_DARK),
 ]
 
 for name, canvas_colour, border_colour in SHOTS:
