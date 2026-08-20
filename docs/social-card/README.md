@@ -44,17 +44,35 @@ uv run python scripts/generate-demo-report.py
 python3 -m http.server 8931 --bind 127.0.0.1   # from docs/demo/
 ```
 
-Then, for each of the four report images, in an **isolated browser context** (a draft
+Then, for each of the six report images, in an **isolated browser context** (a draft
 cookie otherwise renders a returning-visitor view as the first-run experience):
 
-| image | viewport | scrolled to |
+| image | viewport | crop, in CSS px from the document top |
 |---|---|---|
-| `report-light.png`, `report-dark.png` | 1157x1672 | top |
-| `issues-feedback-light.png`, `issues-feedback-dark.png` | 1157x1222 | the Issues heading, minus 40px |
+| `report-light.png`, `report-dark.png` | 900 wide | 0 to 904: the headline and the first high finding, ending in the gap before the second |
+| `issues-feedback-light.png`, `issues-feedback-dark.png` | 900 wide | 5470 to 6212: the Issues heading and the first two issue blocks |
+| `domain-verdicts-light.png`, `domain-verdicts-dark.png` | 900 wide | 8395 to 9048: "Every domain, side by side" and its table |
+
+The crop offsets are the demo report's current geometry, not fixed constants: re-measure
+them (`getBoundingClientRect().top + scrollY` on the relevant heading or card) after any
+change to the demo content or the renderer, rather than trusting the numbers above.
 
 Emulate the colour scheme explicitly for each, capture at **device pixel ratio 2**, then
 downscale by half with Lanczos. The extra pixels are for text crispness; the committed
 files are device pixel ratio 1 at the sizes above.
+
+**900, not the full container width.** The report's container is 56rem (896px). Capturing
+wider than the content and then rendering the result into GitHub's ~880px README column is
+what made the previous round unreadable: a 1253px capture shown at `width="720"` put body
+text on screen at about 7px, and the two images shown at `width="48%"` at about 4px. Every
+capture here is now close to 1:1 with the width it is displayed at, and each README image
+spans the column rather than sharing it.
+
+**Do not use a full-page screenshot for the deeper crops.** The demo report is ~12,500 CSS
+px tall, which at device pixel ratio 2 exceeds Chrome's ~16,384px texture limit, and the
+region past that limit comes back showing the top of the page again rather than failing.
+`domain-verdicts` sits past it. Scroll to the region and capture the viewport instead, which
+is why that pair's viewport height is set to the crop height.
 
 **Suppress the page scrollbar before capturing**, or it appears down the right edge and
 steals 15px of content width:
@@ -73,9 +91,9 @@ reaches the same layout in one step.
 
 `config-page-light.png` and `config-page-dark.png` are the interactive configuration page,
 served from a `ConfigServer` running against the taster rules pack (the same three domains
-a first-time user sees, not the full pack), with `output_dir=None` so the page shows the
-generic "this run's output directory" placeholder rather than a real machine's filesystem
-path:
+a first-time user sees, not the full pack), with an **invented** `output_dir` matching the
+demo repository, so the page shows a concrete path a reader can understand rather than the
+generic placeholder, and still never a real machine's filesystem path:
 
 ```python
 from pathlib import Path
@@ -83,24 +101,44 @@ from engineering_audit.config_page import ConfigServer
 from engineering_audit.rules import load_pack
 
 pack = load_pack(Path("examples/taster-rules"))
-server = ConfigServer(pack.domains, output_dir=None)
+server = ConfigServer(
+    list(pack.domains),
+    output_dir=Path("/home/you/code/orders-api/audit-output"),  # invented, matches the demo repo
+)
 print(server.start())  # prints the localhost URL to capture
 ```
 
-Run with `uv run python`, capture the page at 1157x1483 following the same isolated
-context, colour scheme, device pixel ratio and scrollbar-suppression steps as the report
-images above, then shut the server down (`server.shutdown()`, or just kill the process).
+Run with `uv run python`, capture at 760 wide (the config page's container is 44rem) and
+crop 0 to 953, ending after "How should findings be delivered?", following the same
+isolated context, colour scheme, device pixel ratio and scrollbar-suppression steps as the
+report images above, then shut the server down (`server.shutdown()`, or just kill the
+process).
+
+**The server has to still be running when you capture.** Rendering the form to a static
+HTML file and serving that instead puts a red "The audit process is no longer running"
+banner across the top of the shot, because the page polls the server that opened it.
+
+**A genuinely fresh isolated context per capture round.** Reusing one that has already
+loaded the page carries the draft cookie forward, and the shot then shows the
+returning-visitor "Your previous domain selection" view instead of the first-run one.
 
 ## Framing the raw captures
 
-All six `docs/images/{config-page,report,issues-feedback}-{light,dark}.png` files are
-raw captures composited onto a padded canvas with rounded corners, a hairline border and
-a soft drop shadow: `docs/images/frame_screenshots.py`, run with
+All eight `docs/images/{config-page,report,issues-feedback,domain-verdicts}-{light,dark}.png`
+files are raw captures composited onto a padded canvas with rounded corners, a hairline
+border and a soft drop shadow: `docs/images/frame_screenshots.py`, run with
 `uv run --with pillow python3 docs/images/frame_screenshots.py`. It reads
-`unframed-<name>.png` for each of the six and writes the framed, committed version over
+`unframed-<name>.png` for each of the eight and writes the framed, committed version over
 the same path; put the raw capture at that `unframed-` name first, run the script, then
 delete the `unframed-` intermediate (it is a build input, not a tracked asset, same as
 `report-light.png` copied into this directory below).
+
+**Recapturing a subset is expected.** A change that only affects the report body leaves the
+config-page and domain-verdicts captures untouched, so the script treats a missing
+`unframed-` input as "not recaptured this round", leaves the committed file alone, and
+prints a `SKIPPED` line naming it. It exits non-zero if it framed nothing at all, since
+that means the inputs or the working directory are wrong rather than that there was
+nothing to do.
 
 ## Keeping the social card current
 

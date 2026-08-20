@@ -3,8 +3,19 @@ name: ci
 on:
   push:
     branches: [main]
+  # Deliberately unfiltered: every pull request is checked, whatever it
+  # targets. With `branches: [main]` here, a PR stacked on another branch
+  # ran no checks at all, and GitHub reported it as mergeable with
+  # mergeStateStatus CLEAN and statusCheckRollup empty. That is not a
+  # missing check that looks missing, it is a missing check that looks like
+  # a passing one, which is the failure this repository's own hardening
+  # notes keep describing. Observed on PR #279, stacked on #278.
+  #
+  # The push trigger stays main-only on purpose: this only needs to widen
+  # for pull requests, and unfiltering push as well would run the whole
+  # suite on every branch push, including the ones a PR is about to check
+  # anyway.
   pull_request:
-    branches: [main]
 
 # Read-only by default: this workflow only checks out code, installs
 # dependencies and runs lint/type/test steps, so it never needs to write
