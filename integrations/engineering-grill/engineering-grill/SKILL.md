@@ -1,6 +1,6 @@
 ---
 name: engineering-grill
-description: Run a project-start interview against the live engineering rules pack, decide which engineering domains apply, and record terminology, decisions, risks, and build gates. Use when a user explicitly asks for an Engineering Grill before building or substantially redesigning a project.
+description: Run a project-start interview against the live engineering rules pack, decide which engineering domains apply, put the highest-consequence questions first, and record terminology, decisions, risks, and build gates. Use when a user explicitly asks for an Engineering Grill before building or substantially redesigning a project, or asks for their intent or a drafted plan to be questioned before the code exists.
 ---
 
 # Engineering Grill
@@ -11,55 +11,62 @@ Run a structured project-start interview grounded in the engineering framework. 
 understanding of what must be designed, built, and verified. Leave project implementation for a
 separate request after the interview.
 
-Run only in a fresh, non-audit session with no audit run active or starting. Do not begin or
-continue a Grill from inside an audit session. If an audit is active, finish it and open a new
-session before starting the Grill. `list_domains` and `get_domain` are side-effect-free for this
-Grill only when no run is active; do not treat them as safe to call from an audit.
-
 Treat the framework as decision support. The intended system determines applicability. An empty
 or new repository is evidence about project stage, not evidence that a domain is irrelevant.
+
+**Say this once, early, in your own words.** This flow has never been run end to end
+with a real person answering. Question derivation has been exercised against a single
+brief on a few domains; the cross-domain triage and the deep dive have not been run at
+all. The user should know that before they invest an hour in it, and should be asked to
+report anything that reads like a generic quiz rather than a question about their actual
+work, because that is the failure mode this design is most likely to have.
+
+Two modes, and the difference is only what evidence you start from. `before` questions intent
+when no plan exists, and is the primary mode. `review` questions a drafted plan, naming the
+decisions it made silently or did not make at all. Take the mode from the invocation if given.
+With no argument, pick the obvious one (a plan file with real content in it means `review`) and
+confirm in one question. Never assume silently.
 
 ## Load the live framework
 
 Use the engineering-audit MCP's read-only tools as the canonical source:
 
-1. Call `list_domains` at the start of every session. Check the returned domains, triggers, rule
-   counts, and `skipped_files`. State the number of domains returned. Report skipped files because
-   they make the visible coverage incomplete. This call must happen before any framework-derived
-   claim or question.
-2. After the user approves the provisional scope, call `get_domain("dNN")` for each
-   `active-now` domain. Read the full returned document before deriving questions from it.
-3. Use only `list_domains` and `get_domain` for framework access. This interview is not an audit
-   run and produces no audit verdict or report.
+1. Call `list_domains` at the start of every session. Check the returned domain triggers, rule
+   counts, and `skipped_files`. State how many domains were loaded. Report skipped files because
+   they make the visible coverage incomplete.
+2. Call `get_domain("dNN")` when a domain becomes `active-now`. Read the full returned document
+   before deriving questions from it.
+3. Use only `list_domains` and `get_domain`. **Never call `begin_run`,
+   `record_domain_result`, `file_issues` or `render_report`.** Those belong to the `audit`
+   skill. They demand a repository name and a commit, and work that has not started yet has
+   neither. This interview is not an audit run and produces no audit verdict or report.
 
-Never call audit lifecycle tools, including `begin_run`, `start_config`, `get_config`,
-`record_domain_result`, `file_issues`, or `render_report`. The Grill must not start, resume,
-record, or render an audit.
+If the MCP tools are unavailable, locate the configured rules pack from project instructions,
+`ENGINEERING_AUDIT_RULES_DIR`, or a nearby rules checkout. Read domain `Trigger` metadata for
+triage and the full domain file when activated. If no source exists, explain what is missing.
+Before stopping the framework-specific interview, offer to preserve the user's work: save their
+brief and any facts established so far to a file, so a later run can pick it up without
+repeating context-setting. Give the path where it is written. Never claim framework coverage
+from model memory.
 
-### Full-result and unavailable states
-
-A large `get_domain` response may be reported as spooled to a file, for example with an error that
-says the result exceeded the output limit and was saved to `<path>`. A spool is a successful fetch,
-not an unavailable MCP. Read that file from start to finish before asking anything from the domain.
-Do not derive questions from the part that fitted, ask partial questions, or silently replace the
-spooled result with another source. If the spool cannot be read in full, record that domain's
-availability as `partially-loaded`, keep its classification in the four-state triage set, and stop
-the framework-specific interview rather than guessing.
-
-Only a genuine MCP-unavailable state (for example, the tool is missing or the connection fails)
-permits considering a local rules directory. A nearby checkout, `ENGINEERING_AUDIT_RULES_DIR`, or
-another local source is not the live MCP result and must never be described as canonical live
-coverage. Prefer stopping with a clear `framework unavailable` status. If the user explicitly
-authorises a local fallback, label every resulting question and document as `local, non-framework
-scaffolding`; do not claim that the framework was loaded or covered, and do not use that fallback
-for a spooled response.
-
-If no live source is available, explain what is missing and stop the framework-specific interview.
-Persist `framework_state: unavailable` with an incomplete, early-exit checkpoint and do not claim
-framework coverage. Never claim framework coverage from model memory.
+When you stop for a missing framework on a host with a `claude mcp` CLI, name the most likely
+cause before asking how to proceed: the server registered without `--scope user`, which ties it
+to the one directory it was added from and makes it silently invisible everywhere else (issue
+#245). Give the user the concrete check and fix, not just the symptom: run `claude mcp list` in
+this project; if `engineering-audit` is absent here but the server works in another directory,
+re-register it with `claude mcp remove engineering-audit` then the documented add command with
+`--scope user`. On other hosts, name the equivalent: the server's registration is not visible
+from this project's configuration.
 
 Read the live list every time. Allow added, removed, renamed, and updated domains to flow from
 the rules pack instead of maintaining a domain list in this skill.
+
+**A large domain will exceed the tool-result limit and be spooled to a file.** The full documents
+carry verification trails that the generated skill files strip, so they run far larger than those
+files suggest: one domain measured 155,706 characters. That is not a failure and not an empty
+fetch. Read the spooled file in full and carry on. Never treat it as a reason to fall back to the
+pack directory, and never derive questions from the part that fitted: a domain half-read produces
+a question set that looks complete and is not.
 
 ## Establish project facts
 
@@ -76,9 +83,18 @@ Build a fact map covering:
 - deployment, availability, recovery, delivery machinery, and expected scale;
 - cost, estimates, regulation, safety, privacy, and public impact.
 
-Find repository, environment, and current external facts yourself. Gather user intent,
-constraints, trade-offs, and facts that cannot be discovered through the one-question pacing
-below.
+Find repository, environment, and current external facts yourself. Ask the user for intent,
+constraints, trade-offs, and facts that cannot be discovered.
+
+**When establishing audience, distinguish between the first shipped version and the eventual
+vision.** Briefs naturally state aspiration first; triage must key off the near-term shape
+as it will actually ship initially. Ask separately for the audience *now* (solo, small team,
+early adopters, public) and the *aspirational* audience (scale later to what shape). The
+aspirational answer sets revisit triggers for `required-later` domains; the near-term answer
+drives which domains are `active-now`.
+
+State the work back in two or three lines and show it to the user before going further.
+Everything downstream keys off this, so a misreading is cheapest to fix here.
 
 ## Triage every returned domain
 
@@ -90,13 +106,8 @@ Classify every domain returned by `list_domains` before deep questioning:
 - **not-applicable**: the intended system lacks its precondition; record the absent precondition;
 - **unknown**: one missing fact or decision prevents classification; turn it into a question.
 
-If the returned live domain list contains a requirements domain, activate the returned domain whose
-trigger covers requirements for every new system or substantial feature. Claim framework
-requirements coverage only when that live returned domain was loaded and read. If the pack has no
-requirements domain, baseline questions about the problem, users, outcome, and scope may still
-provide project scaffolding, but label them explicitly `non-framework`; never invent a domain or
-rule id and never claim requirements coverage from memory or a local fallback. Decide every other
-domain from its live trigger and the intended system. Distinguish "not represented in the
+Activate requirements elicitation for every new system or substantial feature. Decide every
+other domain from its live trigger and the intended system. Distinguish "not represented in the
 repository yet" from "not part of the intended system."
 
 Match the trigger's subject, not a nearby keyword. Generic operational risk does not activate
@@ -105,52 +116,175 @@ decision. A commercial product does not activate estimating and pricing until a 
 estimate, price, or business-case decision is current. Ordinary command output does not activate
 presenting data unless someone must interpret it to make a decision.
 
-Present the initial coverage map before reading any active-domain document. Give a short reason
-and revisit trigger for each classification. Recompute the map after every answer and whenever the
-project changes shape.
+**There is no cap on how many domains are active.** Every domain whose trigger genuinely fires is
+in, whether that is two or twelve. Do not trim to a number, and do not include a domain because
+the pack would look better covered: a domain that does not fire produces questions with no grip,
+which is the failure this skill is most likely to have.
 
-Before any active-domain `get_domain` call, show a provisional scope preview from the
-`list_domains` metadata and the fact map. State:
+Present the initial coverage map before the deep interview. Give a short reason and revisit
+trigger for each classification, and invite corrections. **Name the scope-expanding events up
+front:** list which domains are held at `required-later`, what will reactivate each one (e.g.
+"moving to team implementation" for code structure, "planning deployment" for repo/CI), and
+call out explicitly that saying "let's build a working prototype" or asking for code is itself
+a scope-expanding event that will reactivate the build-side domains and add questions before
+the conversation ends. This costs nothing in a turn and saves asking about it after the user
+is deep in Hot Seat questions. Recompute the map after every answer and whenever the project
+changes shape.
 
-- `Active-now domains: <N>`.
-- `Full documents/rule inputs to read: <domain ids or slugs and their rule counts>`.
-- `Provisional question turns: <low>-<high>`. Base the low end on named, known decision areas in
-  the fact map. Add each named uncertainty that could open a distinct decision to form the high
-  end. State the assumptions. Do not imply an exact count before full derivation, and do not use
-  a target or minimum.
+## Derive the questions
 
-Ask exactly one scope decision: whether to continue with this coverage and provisional estimate or
-adjust the scope. Wait for the answer. If the scope changes, recompute the map, active-domain
-count, rule inputs, and provisional range before asking again.
+**The invariant: no full domain document enters the conversation with the user.** A domain
+document is far larger than its generated skill file suggests, and reading several into the
+conversation you are trying to have with a person is the failure this step exists to avoid.
 
-After approval, read every active-domain document in full and derive the design tree. Reject
-generic candidates before they enter the question ledger. Before the first deep question, state
-the retained derived total, or an updated range when named unresolved branches still change it.
-For an updated range, define the low end as retained items ready on the current frontier and the
-high end as those items plus every named reachable branch. Explain any change from the provisional
-preview.
+**Never load a domain's own generated skill file inline either.** Those run 300 to 800
+lines each, and pulling one into the conversation defeats the same budget the invariant
+protects, while giving you a stripped text rather than the full document.
 
-## Interview through a design tree
+The invariant is normative. The mechanism is per-host packaging:
+
+- Where the host has constrained parallel sub-agents, fan out one read-only sub-agent per
+  `active-now` domain. Tell each plainly: you may call `get_domain` and read; you may not write,
+  edit or create any file including scratch files, run any mutating command, or call any other
+  engineering-audit tool.
+- Where the host has no sub-agents, read one domain at a time and discard it before the next.
+  This trades wall-clock for context and satisfies the same invariant.
+
+**Show the cost before spending it.** Say how many domains are active and what that means in
+sub-agents or serial reads, then ask one question: go, or adjust. The user may add or drop any
+domain. This is the only point where the cost is knowable in advance, so it is the only fair
+place to ask.
+
+Each derivation returns:
+
+    {
+      "domain_id": "d02",
+      "domain_slug": "requirements-elicitation",
+      "source": "mcp",
+      "rules_total": 16,
+      "questions": [
+        {
+          "rank": 1,
+          "rule_id": "D02-R01",
+          "question": "Who is the one user this fails for, and what do they lose?",
+          "why": "A problem statement with no named user cannot be tested against anything.",
+          "cost_if_unanswered": "You build it well for nobody and find out at the demo.",
+          "reversibility": "irreversible-once-shipped",
+          "blast_radius": "every screen, the data model, and what 'done' means"
+        }
+      ]
+    }
+
+`source` is required and is one of:
+
+- `mcp`: `get_domain` returned the document, including the spooled-to-file case above, which is a
+  successful read and not a fallback.
+- `fallback`: the tool was unreachable and the documented fallback was used. Name the path read in
+  a `source_detail` field. The questions are real but derived from a smaller text than the full
+  domain document, so they must not be presented as equivalent.
+- `none`: no source was reached at all.
+
+The whole payload for a domain that reached nothing is this shape, and nothing more:
+
+    {
+      "domain_id": "d15",
+      "domain_slug": "interface-design",
+      "source": "none",
+      "source_detail": "get_domain unavailable; rules directory not present",
+      "rules_total": null,
+      "questions": []
+    }
+
+**A derivation returning `source: "none"` returns no questions.** It must never substitute a
+smaller source silently. Without this the parent cannot tell a fallback read from a real one: the
+run completes, the counts look right, and a smaller question set is presented as a full
+interrogation.
+
+`reversibility` is one of `irreversible-once-shipped`, `expensive-to-change` or
+`cheap-to-change`, and `blast_radius` names in a few words what else has to move if the answer
+turns out wrong. These two exist so questions can be compared **across** domains, which a
+within-domain rank cannot support: d01's third-best question may matter far more than d15's
+first, and nothing in either ranking says so. Judge reversibility against this work as described,
+not in the abstract.
+
+Rank by cost of getting it wrong, never by rule order. Rule order teaches; it does not weigh
+risk. **Ranks run 1 to N with no gaps and no ties.** Return five to ten questions per domain, eight is a good target. Fold several rules into one
+question where they ask the same thing of this work, and cite the strongest rule id. Drop rules
+this work does not touch.
+
+**A question that could be asked of any project is not a question, it is filler.** Never pad to
+reach a number. This is the failure mode that kills the skill: rules restated without grip on the
+actual work, producing a quiz instead of an interrogation.
+
+## The Hot Seat
+
+The highest-consequence questions, asked first, one at a time.
+
+**State the arithmetic before the first question.** How many questions were derived, from how many
+domains, and how many are being put now with the rest held. Questions presented without that
+sentence read as the whole interview, and the user calibrates their trust accordingly.
+
+The arithmetic must separate domains that were read from domains that were not. Any domain
+returning `source: "none"` is named and excluded from the derived total, because counting it as
+zero questions makes an unreadable domain look like a domain with nothing to ask. Any domain
+returning `source: "fallback"` is named too, with the caveat that its questions came from a
+smaller text. Say it plainly: "47 questions from 5 of 6 active domains. d15 interface-design could
+not be read and is not in that total."
+
+Triage across the whole pool, not within each domain. Collect every question, then pick the most
+impactful in the entire set, in this order: everything `irreversible-once-shipped`, widest
+`blast_radius` first; then `expensive-to-change`; then the rest. Two of the three may come from
+one domain and none from another; that is the point of triaging globally. **Do not take one
+from each domain for the sake of a tidy spread.** Three questions from one domain is the
+correct answer when that is where the irreversible decisions are, and forcing variety buries
+a real question to make room for a cosmetic one.
+
+**Merged questions count as asked and answered against every domain they subsume.** The Hot Seat
+merges near-duplicate questions across domains (e.g. "who is the user" appears in both d02 and
+d15, "what is the system architecture" in both d02 and d11). One merged question answered by
+the user satisfies both domains' derived questions and counts as asked and answered for each.
+Note the merge explicitly in the record (e.g. "Q1 merged from d02/d15") so the per-domain counts
+remain readable. Domain totals may sum to more than the total questions actually asked; the
+coverage table's total row must report the distinct question count, not the sum of the per-domain
+columns, so the arithmetic is transparent.
+
+**Ask these one per turn. Never batch. Never join two with "and".** The reason is mechanical
+rather than stylistic: ask two in one turn and you reliably get one answer, the second is dropped,
+and it is recorded as answered because a reply arrived. That is a silent gap, and silent gaps are
+the thing this skill exists to prevent.
+
+Record each answer as ANSWERED, or DEFERRED with the user's reason. "Not decided yet" is a
+deferral, not an answer; if no reason is offered, ask once, then record `none given`.
+
+**Bail-out is unconditional.** On stop, enough, or that will do: write the record immediately,
+mark the session ended early, and give the unasked count. A short session must never read as a
+complete one. After the record is written, offer two concrete ways forward: (a) **handoff** — the
+record is complete enough for a later session to resume from; name the file; or (b) **MVP
+assessment** — work out whether the idea can ship as version 1 with the remaining unanswered
+questions explicitly deferred to future versions. These are continuations, never conditions of
+stopping; the record stands as-is regardless.
+
+## The deep dive
+
+After the Hot Seat, offer the rest with the real number attached: "that is the top three of 47,
+work through the rest?" If they decline, the remainder is NOT ASKED and is counted. Nothing here
+was judged unimportant; it was simply never put.
+
+Ask in the same turn as that offer how they want the running totals shown: a table, a plain list,
+or not shown in conversation at all. The record keeps its table regardless, because it is a
+durable artefact that other people read and compare between runs. This costs no extra turn, which
+is why it belongs here and not in a question of its own.
+
+The deep dive is where **rounds** are permitted, and this is the one place the two halves of this
+skill genuinely differed. Rounds are safe here because these questions are not the
+irreversible-once-shipped ones; those were put one at a time in the Hot Seat.
 
 Map the work as a design tree: each settled decision unlocks the decisions that depend on it.
-The **frontier** is every decision whose prerequisites are settled. Keep blocked branches in open
-questions with their unresolved prerequisite, not in the frontier. In persisted checkpoints, record
-the settled prerequisites that make each `next_frontier` item ready as
-`prerequisites_satisfied`.
+The **frontier** is every decision whose prerequisites are settled. Ask the whole frontier in a
+round, then wait for the user's answers before continuing.
 
-Use dependency readiness as the first ordering rule. Keep a decision behind its named
-prerequisite until that prerequisite is settled. Among decisions on the current frontier, rank
-first by reversibility, then by blast radius:
-
-- `irreversible-once-shipped`: changing it later needs migration, compatibility work, or cannot
-  fully restore the old behaviour;
-- `expensive-to-change`: changing it later needs substantial rework, coordination, or disruption;
-- `cheap-to-change`: changing it later is local and low-risk.
-
-Treat **blast radius** as the parts of the product, data, users, operations, or delivery process
-that must change or may be harmed if the decision is wrong. Within one reversibility value, put
-the widest project-specific blast radius first. Use the domain wave below only as tie guidance
-after readiness and risk:
+Work in dependency waves so later questions do not assume unsettled earlier choices. Prefer this
+order when the project supports it:
 
 1. requirements and success conditions;
 2. ethical, regulatory, commercial, and estimation constraints;
@@ -161,10 +295,10 @@ after readiness and risk:
 7. repository, delivery, production readiness, and incident response;
 8. fault diagnosis when the work concerns an existing or running system.
 
-Derive only decisions with a project fact, design choice, dependency, user, artefact, or failure
-scenario. Reject a candidate that could be asked unchanged of any project before assigning it an
-item id. Keep generic filler out of `Derived` and `Not asked` counts. Never pad a count to reach a
-target.
+**A round is bounded by the next real dependency seam, not by a fixed number.** Where a frontier
+runs long, split it at the seam and make that prerequisite explicit. Never take an arbitrary first
+seven. Offer a checkpoint at each domain boundary so the user can stop without abandoning the
+record.
 
 Format each question like this:
 
@@ -173,51 +307,8 @@ Format each question like this:
 
 <Why this matters and the failure it prevents.>
 
-⚠️ **Risk:** **Reversibility:** <allowed value>. **Blast radius:** <plain-language scope>.
-**Cost if wrong:** <project-specific consequence>.
-
 ➡️ <Recommended answer for this project and the trade-off behind it.>
 ```
-
-Ask exactly one decision question per user-facing turn. Do not batch a frontier or join separate
-decisions with "and". After the user answers, update the fact map, design tree, domain
-classifications, deferred triggers, and next frontier before asking the next question.
-
-### Question ledger
-
-Track every retained, project-specific question or decision item with a stable item id, domain and
-rule ids, prerequisite, risk data, and its ledger state:
-
-- `DERIVED`: item retained in the cumulative derived set. This is an inclusion marker, not a
-  persisted current status.
-- `ASKED`: transient marker while the question is shown and its answer is pending. Never persist
-  this state at a checkpoint.
-- `ANSWERED`: question was shown, answered, and the decision was captured.
-- `DEFERRED`: question was shown but not answered. Record the reason and a revisit trigger.
-- `NOT ASKED`: retained item has not been shown at this checkpoint or will not be shown in this
-  session. A question held behind a prerequisite remains `NOT ASKED` until it is shown, then it
-  may become transient `ASKED`.
-
-Generic candidates are rejected before this ledger, so they have no item id and never enter any
-count. Use `DERIVED` when an item enters the set, then transient `ASKED`, then `ANSWERED` or
-`DEFERRED` after the user turn. Persist an unshown retained item as `NOT ASKED` at each checkpoint
-until it is shown. If a later answer reopens a decision, derive a new item rather than overwriting
-an existing item.
-
-At every persisted checkpoint, completion, and early exit, show a compact human-readable summary by
-domain and for the whole interview. Count distinct retained items, not repeated turns:
-
-- `Derived` is cumulative retained items.
-- `Asked` is cumulative retained items shown at least once.
-- `Answered` and `Deferred` are current outcomes for asked items.
-- `Not asked` is retained items not yet shown at that checkpoint.
-
-The totals must satisfy `Asked = Answered + Deferred` and `Derived = Asked + Not asked`. Persist
-one current state per retained item at each checkpoint: `NOT ASKED`, `ANSWERED`, or `DEFERRED`.
-Keep `ASKED` transient. At completion or early exit, make those current states final for the
-session. If an in-flight `ASKED` item is interrupted, convert it to `DEFERRED` with reason
-`interrupted before answer` and record a resume trigger. Keep this arithmetic visible without
-making the user read raw JSON. Do not invent a target count.
 
 For every rule in a loaded domain, choose one treatment:
 
@@ -233,43 +324,16 @@ verbatim checklist. Add stable rule identifiers to framework-derived questions, 
 failure being prevented in plain language, and recommend an answer grounded in both the rule and
 the project. Preserve uncertainty where the framework has a gap or credible sources conflict.
 
-Load a newly active domain before deriving or asking questions from it. Do not derive questions
-from a partial domain document.
-
-## Checkpoints and recovery
-
-After each user response that changes facts, scope, or an item status, checkpoint before asking the
-next question. The checkpoint includes the round number or timestamp, fact map, design-tree
-frontier, every returned domain's current classification and separate availability, domains whose
-full documents were read, deferred triggers, the question ledger and its status totals, open
-questions, and the ready next frontier. Persist the current item states and cumulative totals with
-the confirmed project records when a project location exists; otherwise keep the same checkpoint in
-the conversation draft. The draft is a checkpoint even though it is not yet on disk. Show its full
-compact accounting summary, including `Derived`, `Asked`, `Answered`, `Deferred`, and `Not asked`,
-before any save-location question and before any next deep question. After the first confirmed
-decision, ask exactly one location question in that turn. Do not combine the location question with
-a deep decision question. Once the user supplies a location, write or update the checkpoint there
-and continue.
-
-If the user stops, the MCP becomes unavailable, a tool result cannot be read in full, or the
-session is interrupted, write an explicit incomplete marker at the checkpoint boundary:
-`Status: incomplete: checkpoint after round <N>; resume from <next frontier>`. Include what was
-confirmed, what was only scaffolding, which domains were unavailable or only partially loaded,
-the questions still open, and the visible status totals. An incomplete marker is not a completion
-or coverage claim. On interruption, convert any in-flight `ASKED` item to `DEFERRED` with reason
-`interrupted before answer` and a resume trigger. On an early exit, mark every remaining unshown
-retained item `NOT ASKED` with the early exit reason. A question is `DEFERRED` only after it was
-shown and not answered, and only when its reason and revisit trigger are recorded.
-
-On recovery, read the checkpoint and incomplete marker first, start a fresh non-audit session,
-reload `list_domains`, and reconcile changed or renamed domains before continuing from the saved
-frontier. Never present a recovered incomplete interview as complete until all completion criteria
-below and the user's confirmation are satisfied.
+After each round, update the fact map, design tree, domain classifications, deferred triggers,
+and next frontier. Load a newly active domain before asking questions from it.
 
 ## Capture confirmed decisions
 
 Document only confirmed material. If no project location exists yet, keep a conversation draft
-until the first decision is confirmed, then ask where to save it.
+and ask where to save it after the first decision is confirmed.
+
+**Write the record as you go**, after the Hot Seat and after each domain in the deep dive, not
+only at the end, so an interrupted session still leaves an honest record rather than none.
 
 Read [the documentation formats](references/documentation-formats.md) before writing. Maintain:
 
@@ -277,6 +341,14 @@ Read [the documentation formats](references/documentation-formats.md) before wri
 - `docs/engineering-coverage.md` as the domain map, decision ledger, build gates, and risks;
 - an ADR under `docs/adr/` only for a hard-to-reverse, surprising decision made through a real
   trade-off.
+
+**A later grill reads and updates existing documents, checks them against the conversation, and
+continues ADR numbering. It does not replace them blindly.** A second run appends rather than
+overwriting; never destroy an earlier session's record to write this one.
+
+`docs/engineering-coverage.md` carries the per-domain counts: how many questions were derived,
+asked, answered, deferred and never put, plus the `source` each domain was read from. A run that
+asked four of forty-seven and a run that asked all forty-seven must not look the same afterwards.
 
 Cross-check confirmed statements against existing code and documents. Surface contradictions
 instead of silently choosing one version. Capturing design documents is part of the interview;
@@ -287,18 +359,37 @@ leave product code, configuration, infrastructure, and delivery systems unchange
 Finish only when:
 
 - every returned domain has an explicit, reasoned classification;
-- every `active-now` domain's full rules were read;
+- every `active-now` domain's full rules were read, or its failure to be read is recorded;
 - every applicable rule became inspected evidence, a confirmed decision, a build or verification
   gate, or an explicitly open item;
 - no `unknown` domain or reachable design-tree branch remains silent;
-- every retained question item has a terminal outcome: `ANSWERED`, `DEFERRED` with a named reason
-  and trigger, or `NOT ASKED` with a reason; no in-flight `ASKED` marker remains;
-- the cumulative status totals are shown and satisfy `Asked = Answered + Deferred` and
-  `Derived = Asked + Not asked`;
 - the glossary, qualifying ADRs, and engineering coverage document match the conversation;
 - the user confirms the shared understanding.
 
+A session ended early satisfies none of these and must say so. Report what was asked, what was
+held, and what was never reached.
+
 End with a compact handoff: project intent, active and deferred domains, important decisions,
-build gates, residual risks, open items, and the final question status totals. Recommend a
-post-build engineering audit as the verification stage. Start that audit only after a separate
-user request.
+build gates, residual risks, and open items. Recommend a post-build engineering audit as the
+verification stage. Start that audit only after a separate user request.
+
+## Host notes
+
+- **The MCP tools may be deferred.** Load both before starting, and tell any sub-agent to do the
+  same for `get_domain`. A sub-agent that cannot see the tool will otherwise improvise from the
+  rules directory on disk, which is not the same thing. The required `source` field is what makes
+  that difference visible rather than leaving it to be inferred from a payload that looks
+  identical either way.
+- **Where the host offers a fixed-option prompt**, use it for the coverage-map confirmation, the
+  cost confirmation, and the deep-dive offer, where the options are few and known. Use plain prose
+  for the interview questions themselves, which are open by design and must not be reduced to a
+  multiple choice.
+- **Where the host has a plan file**, write the record into the one the host named. If there is
+  none, ask for the location before writing. Never open a second file for work that already has
+  one.
+- **If the user chose to run this AFTER planning, nothing enforces that but you.** On Claude
+  Code the offer comes from a hook that fires once on entry to plan mode, and there is no
+  second hook on `ExitPlanMode`. So a choice of "afterwards" is a commitment held only inside
+  this conversation: run the review pass before you present the plan, and if you reach the end
+  and realise it was missed, say so plainly rather than quietly presenting an uninterviewed
+  plan.
