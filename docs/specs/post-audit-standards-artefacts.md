@@ -8,9 +8,9 @@
 
 After an engineering audit run, and also at engineering-grill time (before code exists), the tooling generates three standing documents for the audited project:
 
-1. **Agent coding standard** — written for a coding agent to obey. Short, concise, imperative, low ceremony. Consumed by Claude Code or other agents when they write or review code.
-2. **Human coding standard** — the same rules, verbose and well-written, for engineers to read and discuss. Kept in the repository and maintained alongside the codebase.
-3. **Engineering policy** — company-facing and grounded in audit evidence. States what the organisation actually enforces, what gates it uses, and what the audit verified.
+1. **Agent coding standard**: written for a coding agent to obey. Short, concise, imperative, low ceremony. Consumed by Claude Code or other agents when they write or review code.
+2. **Human coding standard**: the same rules, verbose and well-written, for engineers to read and discuss. Kept in the repository and maintained alongside the codebase.
+3. **Engineering policy**: company-facing and grounded in audit evidence. States what the organisation actually enforces, what gates it uses, and what the audit verified.
 
 These three documents are currently generated manually or with ad-hoc scripts, or do not exist at all. A single source of truth allows them to drift only by accident, not by design. At grill time (when no code exists yet), all three are marked provisional; at audit time (when code exists), the audit updates them with verified facts. The merge preserves decisions from the grill, marks them as verified or updated when evidence arrives, and does not silently swap the stack profile.
 
@@ -452,7 +452,7 @@ After the grill completes and the user confirms the shared understanding:
 - Call the same rendering tools as the audit side, but pass `provisional: true` so all rules are marked with `[provisional]`.
 - Generate rule set and write to `audit-output/rule-set.json` (or the project's existing audit output location if known).
 - Write the three documents to their configured paths with managed-block markers.
-- Mark the top of each document with **[Provisional — intent only, not yet audited]** so readers know no code has been verified yet.
+- Mark the top of each document with **[Provisional: intent only, not yet audited]** so readers know no code has been verified yet.
 
 **New step. Offer to link standards in project documents**
 
@@ -585,7 +585,7 @@ The rule set should record `status: "verified-not-applicable"` with today's date
 
 **Consequence:** The engineering policy will grow even when no findings are discovered, because every not-applicable rule is a kept commitment ("we are not required to follow this because it does not apply here").
 
-This is intentional — it shows what was checked and explicitly ruled out, which is transparency.
+This is intentional. It shows what was checked and explicitly ruled out, which is transparency.
 
 ## Explicit non-goals
 
@@ -595,7 +595,7 @@ This is intentional — it shows what was checked and explicitly ruled out, whic
 4. **Support for multiple rule sets or branching.** A project has one rule set at a time. Branching strategies (e.g. "this branch has different rules") are out of scope.
 5. **Rollback or versioning of rule sets.** The rule set is immutable once written; it is not versioned within the tool. If the user wants to undo a change, they git revert the file.
 6. **Live web lookup of stack profiles or current best practice.** All rules and profiles are baked into the pack. No runtime web requests are made.
-7. **Merging of hand-edited content within managed blocks.** If the user edits content inside a managed block, it is overwritten on the next run. This is by design — the block is owned by the tool, and edits there are temporary.
+7. **Merging of hand-edited content within managed blocks.** If the user edits content inside a managed block, it is overwritten on the next run. This is by design. The block is owned by the tool, and edits there are temporary.
 
 ---
 
