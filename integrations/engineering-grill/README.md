@@ -51,6 +51,24 @@ documents, checks them against the conversation, and continues ADR numbering. It
 them blindly. The grill does not write project code, start an audit, make pass/fail claims, or
 file GitHub issues.
 
+## Progress and stopping
+
+During a grill session, the assistant records five counts at every checkpoint, on completion, and
+on early exit:
+
+- **derived:** retained project-specific questions after filtering out filler;
+- **asked:** questions shown to you;
+- **answered:** questions answered well enough to settle the decision;
+- **deferred:** questions shown but unanswered, including those interrupted with a reason to
+  resume;
+- **not asked:** every retained question not shown yet, including dependency-held items and those
+  held on early exit.
+
+These counts always satisfy two invariants: `asked = answered + deferred` and
+`derived = asked + not_asked`. At completion, the record explains any non-zero deferred or
+not-asked count. On early exit, it keeps all counts, marks the session incomplete, and names the
+next frontier so a later session can resume without losing progress.
+
 ## Support and requirements
 
 Engineering Grill currently has installation instructions for **OpenAI Codex and Claude Code**.
@@ -59,7 +77,7 @@ Gemini. The commands below are for macOS and Linux; Windows installation is not 
 
 The interview workflow has been forward-tested in Codex with example projects. Installation from
 a clean machine and the Claude Code flow are documented but have not yet been exercised end to
-end, so follow the verification step below before relying on a new setup.
+end, so follow the connection and skill-discovery checks below before relying on a new setup.
 
 You need:
 
@@ -149,7 +167,7 @@ The taster pack returns three domains. The full pack returns its current complet
 rules-folder path in the MCP registration before continuing.
 
 Return to the terminal when the check is finished. You can close the temporary assistant session;
-you will start a fresh one in the project you actually want to plan in step 5.
+you will start a fresh one in the project you actually want to plan in step 6.
 
 To correct a registration, first remove the old entry:
 
@@ -195,7 +213,36 @@ If you find a skill folder you did not install, leave it unchanged until you kno
 Advanced shared-skill setups may use `~/.agents/skills`, but use that location only when your
 assistant is already configured to discover it.
 
-### 5. Open the project you want to plan
+### 5. Run the post-install skill discovery smoke test
+
+Before starting a grill, verify that your assistant can find the skill.
+
+First check that the installed skill file resolves by running the appropriate command:
+
+```sh
+test -f ~/.codex/skills/engineering-grill/SKILL.md && echo "Codex skill file resolves"
+```
+
+For Claude Code, use `.claude` instead of `.codex`:
+
+```sh
+test -f ~/.claude/skills/engineering-grill/SKILL.md && echo "Claude skill file resolves"
+```
+
+Then start a fresh `codex` or `claude` session and ask: **"Without invoking it, confirm that the
+`engineering-grill` skill is available."** The assistant should name the skill and its purpose
+without starting an interview. If it cannot see the skill, close that session and inspect the
+installation with:
+
+```sh
+ls -ld ~/.codex/skills/engineering-grill
+```
+
+(or `~/.claude/skills/engineering-grill` for Claude Code). If the displayed path does not point
+to `integrations/engineering-grill/engineering-grill` in this checkout, correct the installation
+and try again. This is a discovery smoke test, not a grill and not an audit.
+
+### 6. Open the project you want to plan
 
 Leave the engineering-audit checkout and enter the project being planned:
 
