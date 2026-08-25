@@ -43,8 +43,11 @@ Use the engineering-audit MCP's read-only tools as the canonical source:
 
 If the MCP tools are unavailable, locate the configured rules pack from project instructions,
 `ENGINEERING_AUDIT_RULES_DIR`, or a nearby rules checkout. Read domain `Trigger` metadata for
-triage and the full domain file when activated. If no source exists, explain what is missing and
-stop the framework-specific interview. Never claim framework coverage from model memory.
+triage and the full domain file when activated. If no source exists, explain what is missing.
+Before stopping the framework-specific interview, offer to preserve the user's work: save their
+brief and any facts established so far to a file, so a later run can pick it up without
+repeating context-setting. Give the path where it is written. Never claim framework coverage
+from model memory.
 
 When you stop for a missing framework on a host with a `claude mcp` CLI, name the most likely
 cause before asking how to proceed: the server registered without `--scope user`, which ties it
@@ -83,6 +86,13 @@ Build a fact map covering:
 Find repository, environment, and current external facts yourself. Ask the user for intent,
 constraints, trade-offs, and facts that cannot be discovered.
 
+**When establishing audience, distinguish between the first shipped version and the eventual
+vision.** Briefs naturally state aspiration first; triage must key off the near-term shape as it
+will actually ship initially. Ask separately for the audience *now* (solo, small team, early
+adopters, public) and the *aspirational* audience (scale later to what shape). The aspirational
+answer sets revisit triggers for `required-later` domains; the near-term answer drives which
+domains are `active-now`.
+
 State the work back in two or three lines and show it to the user before going further.
 Everything downstream keys off this, so a misreading is cheapest to fix here.
 
@@ -112,8 +122,14 @@ the pack would look better covered: a domain that does not fire produces questio
 which is the failure this skill is most likely to have.
 
 Present the initial coverage map before the deep interview. Give a short reason and revisit
-trigger for each classification, and invite corrections. Recompute the map after every answer
-and whenever the project changes shape.
+trigger for each classification, and invite corrections. **Name the scope-expanding events up
+front:** list which domains are held at `required-later`, what will reactivate each one (e.g.
+"moving to team implementation" for code structure, "planning deployment" for repo/CI), and
+call out explicitly that saying "let's build a working prototype" or asking for code is itself
+a scope-expanding event that will reactivate the build-side domains and add questions before
+the conversation ends. This costs nothing in a turn and saves asking about it after the user
+is deep in Hot Seat questions. Recompute the map after every answer and whenever the project
+changes shape.
 
 ## Derive the questions
 
@@ -223,6 +239,15 @@ from each domain for the sake of a tidy spread.** Three questions from one domai
 correct answer when that is where the irreversible decisions are, and forcing variety buries
 a real question to make room for a cosmetic one.
 
+**Merged questions count as asked and answered against every domain they subsume.** The Hot Seat
+merges near-duplicate questions across domains (e.g. "who is the user" appears in both d02 and
+d15, "what is the system architecture" in both d02 and d11). One merged question answered by
+the user satisfies both domains' derived questions and counts as asked and answered for each.
+Note the merge explicitly in the record (e.g. "Q1 merged from d02/d15") so the per-domain counts
+remain readable. Domain totals may sum to more than the total questions actually asked; the
+coverage table's total row must report the distinct question count, not the sum of the per-domain
+columns, so the arithmetic is transparent.
+
 **Ask these one per turn. Never batch. Never join two with "and".** The reason is mechanical
 rather than stylistic: ask two in one turn and you reliably get one answer, the second is dropped,
 and it is recorded as answered because a reply arrived. That is a silent gap, and silent gaps are
@@ -233,7 +258,11 @@ deferral, not an answer; if no reason is offered, ask once, then record `none gi
 
 **Bail-out is unconditional.** On stop, enough, or that will do: write the record immediately,
 mark the session ended early, and give the unasked count. A short session must never read as a
-complete one.
+complete one. After the record is written, offer two concrete ways forward: (a) **handoff** — the
+record is complete enough for a later session to resume from; name the file; or (b) **MVP
+assessment** — work out whether the idea can ship as version 1 with the remaining unanswered
+questions explicitly deferred to future versions. These are continuations, never conditions of
+stopping; the record stands as-is regardless.
 
 ## The deep dive
 

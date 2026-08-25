@@ -36,6 +36,12 @@ Write `docs/engineering-coverage.md` as a design ledger, not an audit report or 
 | D16 Presenting Data | not-applicable | The product has no decision-support output. | | | | | | | Reporting enters scope |
 | **Total** | | | | **24** | **3** | **2** | **1** | **21** | |
 
+When the Hot Seat collapses near-duplicate questions from multiple domains into a single merged
+question, the answer counts as asked and answered for every domain whose derived question it
+subsumes. Merged questions are noted explicitly in the record (e.g., "Q1 merged from d02/d15");
+per-domain row totals may therefore exceed the distinct questions actually put to the user, so
+the `**Total**` row reports distinct question count, not the sum of per-domain columns.
+
 The count columns are what make a short session legible afterwards. A run that asked
 three of twenty-four and a run that asked all twenty-four are the same document
 without them, and the second is the only one that earned its conclusions.
