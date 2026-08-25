@@ -21,7 +21,7 @@ These three documents are currently generated manually or with ad-hoc scripts, o
 | **Agent coding standard** | A machine-readable and human-readable document written for an LLM-based coding agent to follow. Short, imperative, low ceremony. Consumed during code generation and review. | A styleguide only for humans. |
 | **Human coding standard** | The same rules as the agent standard, written in prose for engineers to read, debate, and decide to follow or challenge. | A distinct second ruleset. Hand-authored separately. |
 | **Engineering policy** | A commitment statement from the organisation: what we enforce, what gates block a release, what this audit verified. Grounded in audit evidence (findings, passes). | An aspirational list of best practices. A compliance checklist. |
-| **Stack profile** | A bundle of rules that apply to a particular technology stack (e.g. Python, React, FastAPI). Versioned in the rules pack and chosen at grill time based on the project's tech stack. Baked into the pack, not fetched live from the web. | A live web lookup. A generic checklist. Current industry practice outside the pack. |
+| **Stack profile** | A bundle of rules that apply to a particular technology stack (e.g. Python, React, FastAPI), including stack-specific commenting and documentation conventions. Versioned in the rules pack and chosen at grill time based on the project's tech stack. Baked into the pack, not fetched live from the web. | A live web lookup. A generic checklist. Current industry practice outside the pack. |
 | **Rule set** | The machine-readable source of truth for all three documents. Contains rule IDs, text, source (rules pack or stack profile), status, dates, and conflict records. Rendered to produce all three artefacts. | Individual hand-authored documents. Separate databases for each artefact. |
 | **Provisional** | Status assigned at grill time, when intent is recorded but no code exists to verify against. Marked as such in the artefact. | A draft that will be deleted. A temporary file. |
 | **Verified-pass** | Status assigned at audit time: the audit checked this rule and the codebase satisfies it. The date of verification is recorded. | Assumed to pass. Hand-checked without audit evidence. |
@@ -156,6 +156,8 @@ This policy states what we commit to enforce in all API services and data handli
 ## The single source rule set
 
 The machine-readable rule set is the canonical source from which all three documents are rendered. It is persisted in its own file (not merged into run-state.json) so it survives across audits and can be loaded independently.
+
+Commenting standards are captured as normal rules in this same rule set: baseline expectations come from the rules pack, and stack-specific conventions (for example Python docstrings or JSDoc usage) come from the selected stack profile. No runtime web lookup is used for these standards.
 
 ### Name and location
 
