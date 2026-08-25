@@ -63,9 +63,7 @@ def test_skill_has_nine_section_headings_in_order() -> None:
         "Host notes",
     ]
 
-    found_sections = re.findall(
-        r"^##\s+([^#\n]+?)\s*$", SKILL, flags=re.MULTILINE
-    )
+    found_sections = re.findall(r"^##\s+([^#\n]+?)\s*$", SKILL, flags=re.MULTILINE)
     assert found_sections == expected_sections, (
         f"SKILL.md must have exactly nine sections in this order: {expected_sections}; "
         f"found {found_sections}"
@@ -101,16 +99,19 @@ def test_framework_forbids_lifecycle_tools() -> None:
     """Guard that begin_run, record_domain_result, file_issues, render_report are forbidden."""
     load_framework = _section(SKILL, "Load the live framework")
 
-    forbidden_tools = ["begin_run", "record_domain_result", "file_issues", "render_report"]
+    forbidden_tools = [
+        "begin_run",
+        "record_domain_result",
+        "file_issues",
+        "render_report",
+    ]
 
     for tool in forbidden_tools:
         assert re.search(
             rf"(?:never|must\s+not|do\s+not).*?`{re.escape(tool)}`",
             load_framework,
             flags=re.IGNORECASE | re.DOTALL,
-        ), (
-            f"Load the live framework section must explicitly forbid {tool}"
-        )
+        ), f"Load the live framework section must explicitly forbid {tool}"
 
 
 def test_first_shipped_version_vs_aspirational_audience() -> None:
@@ -122,25 +123,19 @@ def test_first_shipped_version_vs_aspirational_audience() -> None:
         r"(?:audience|shape)",
         establish_facts,
         flags=re.IGNORECASE | re.DOTALL,
-    ), (
-        "Establish project facts must distinguish the first-shipped-version audience"
-    )
+    ), "Establish project facts must distinguish the first-shipped-version audience"
 
     assert re.search(
         r"(?:aspirational|eventual|later|vision).{0,80}(?:audience|scale)",
         establish_facts,
         flags=re.IGNORECASE | re.DOTALL,
-    ), (
-        "Establish project facts must distinguish the aspirational/eventual audience"
-    )
+    ), "Establish project facts must distinguish the aspirational/eventual audience"
 
     assert re.search(
         r"(?:active-now|active).{0,40}(?:near-term|now|initial|first)",
         establish_facts,
         flags=re.IGNORECASE | re.DOTALL,
-    ), (
-        "Establish project facts must state that triage keys off the near-term audience"
-    )
+    ), "Establish project facts must state that triage keys off the near-term audience"
 
     assert re.search(
         r"(?:aspirational|eventual).{0,60}(?:revisit\s+triggers).{0,40}required-later",
@@ -180,9 +175,7 @@ def test_merged_questions_counted_per_domain_distinct_in_total() -> None:
         r"merged\s+(?:question|questions)",
         FORMATS,
         flags=re.IGNORECASE,
-    ), (
-        "documentation-formats.md must discuss merged questions"
-    )
+    ), "documentation-formats.md must discuss merged questions"
 
     assert re.search(
         r"per-domain.{0,80}(?:may\s+)?exceed.{0,80}distinct",
@@ -196,9 +189,7 @@ def test_merged_questions_counted_per_domain_distinct_in_total() -> None:
         r"(?:Total.*?)?row\s+reports\s+distinct",
         FORMATS,
         flags=re.IGNORECASE | re.DOTALL,
-    ), (
-        "documentation-formats.md must state that Total row reports distinct count"
-    )
+    ), "documentation-formats.md must state that Total row reports distinct count"
 
 
 def test_scope_expanding_events_named_including_prototype_reactivation() -> None:
@@ -209,9 +200,7 @@ def test_scope_expanding_events_named_including_prototype_reactivation() -> None
         r"(?:scope[- ]expanding|expand\s+(?:the\s+)?scope).{0,20}events",
         triage,
         flags=re.IGNORECASE | re.DOTALL,
-    ), (
-        "Triage section must name scope-expanding events up front"
-    )
+    ), "Triage section must name scope-expanding events up front"
 
     assert re.search(
         r"(?:prototype|build[- ]side|let'?s\s+build).{0,80}(?:reactivate|activate)",
@@ -231,17 +220,13 @@ def test_framework_unavailable_offers_save_brief() -> None:
         r"(?:save|preserve).{0,80}(?:brief|work|facts|session)",
         load_framework,
         flags=re.IGNORECASE | re.DOTALL,
-    ), (
-        "Load the live framework must offer to save the brief/facts before stopping"
-    )
+    ), "Load the live framework must offer to save the brief/facts before stopping"
 
     assert re.search(
         r"(?:save|preserve).{0,80}(?:file|path|location)",
         load_framework,
         flags=re.IGNORECASE | re.DOTALL,
-    ), (
-        "Load the live framework must name where work is saved"
-    )
+    ), "Load the live framework must name where work is saved"
 
 
 def test_framework_unavailable_diagnoses_scope_user_issue_245() -> None:
@@ -252,25 +237,19 @@ def test_framework_unavailable_diagnoses_scope_user_issue_245() -> None:
         r"(?:--scope\s+user|scope.{0,40}user)",
         load_framework,
         flags=re.IGNORECASE,
-    ), (
-        "Load the live framework must mention --scope user registration issue"
-    )
+    ), "Load the live framework must mention --scope user registration issue"
 
     assert re.search(
         r"(?:245|issue\s+#?\s*245)",
         load_framework,
         flags=re.IGNORECASE,
-    ), (
-        "Load the live framework must reference issue #245"
-    )
+    ), "Load the live framework must reference issue #245"
 
     assert re.search(
         r"(?:claude\s+mcp\s+(?:list|remove))",
         load_framework,
         flags=re.IGNORECASE,
-    ), (
-        "Load the live framework must give concrete diagnosis steps: claude mcp commands"
-    )
+    ), "Load the live framework must give concrete diagnosis steps: claude mcp commands"
 
 
 def test_bail_out_is_unconditional() -> None:
@@ -281,9 +260,7 @@ def test_bail_out_is_unconditional() -> None:
         r"(?:bail[- ]out|stop|enough|that\s+will\s+do).*?(?:is\s+)?unconditional",
         hot_seat,
         flags=re.IGNORECASE | re.DOTALL,
-    ), (
-        "The Hot Seat must state that bail-out is unconditional"
-    )
+    ), "The Hot Seat must state that bail-out is unconditional"
 
 
 def test_bail_out_offers_handoff_or_mvp_split() -> None:
@@ -294,23 +271,17 @@ def test_bail_out_offers_handoff_or_mvp_split() -> None:
         r"(?:handoff|hand[- ]off)",
         hot_seat,
         flags=re.IGNORECASE,
-    ), (
-        "The Hot Seat must offer handoff as a continuation after bail-out"
-    )
+    ), "The Hot Seat must offer handoff as a continuation after bail-out"
 
     assert re.search(
         r"(?:(?:v1|version\s+1|MVP|minimum\s+viable).{0,80}(?:split|assess))",
         hot_seat,
         flags=re.IGNORECASE | re.DOTALL,
-    ), (
-        "The Hot Seat must offer MVP/v1 assessment as a continuation after bail-out"
-    )
+    ), "The Hot Seat must offer MVP/v1 assessment as a continuation after bail-out"
 
     assert re.search(
         r"(?:after\s+the\s+record\s+is\s+written).{0,200}"
         r"(?:handoff|offering.*?(?:continue|way\s+forward))",
         hot_seat,
         flags=re.IGNORECASE | re.DOTALL,
-    ), (
-        "The Hot Seat must offer these after the record is written"
-    )
+    ), "The Hot Seat must offer these after the record is written"
