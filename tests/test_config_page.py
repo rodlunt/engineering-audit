@@ -145,6 +145,29 @@ def test_get_page_telemetry_consent_defaults_are_all_unticked(domains) -> None:
         srv.shutdown()
 
 
+def test_get_page_select_all_control_never_submits_and_never_arrives_ticked(
+    domains,
+) -> None:
+    # Issue #251: Select all is a live convenience over the nine consent
+    # boxes, and the consent boundary is that only the user's own in-the-
+    # moment click may tick anything. So the control must carry no name
+    # (a nameless input can never reach a submission, so it can never be
+    # persisted or restored through one) and must never be served ticked;
+    # its state is derived client-side from the real boxes, which the test
+    # above proves all start unticked.
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            page = resp.read().decode("utf-8")
+        idx = page.index('id="consent-select-all"')
+        tag = page[page.rindex("<input", 0, idx) : page.index(">", idx)]
+        assert "name" not in tag, "select-all must not be a submittable field"
+        assert "checked" not in tag, "select-all must never be served ticked"
+    finally:
+        srv.shutdown()
+
+
 def test_get_page_verdict_distribution_consent_label_names_its_contents(
     domains,
 ) -> None:
@@ -1088,6 +1111,112 @@ def test_the_page_script_leaves_the_form_alone_while_the_heartbeat_answers(
     assert observed["cookie"] == ""
 
 
+# A stand-in for the bits of the DOM the select-all script touches (issue
+# #251), in the same run-it-for-real style as _DOM_STUB_JS above. Three boxes
+# stand in for the nine consent boxes: the script never depends on the count.
+_SELECT_ALL_STUB_JS = """
+function stubBox(name) {
+  return {
+    name: name,
+    checked: false,
+    handlers: {},
+    addEventListener: function (ev, fn) { this.handlers[ev] = fn; }
+  };
+}
+var consentBoxes = [
+  stubBox("consent_coverage"),
+  stubBox("consent_rollup"),
+  stubBox("consent_duration")
+];
+var selectAll = {
+  checked: false,
+  handlers: {},
+  addEventListener: function (ev, fn) { this.handlers[ev] = fn; }
+};
+globalThis.document = {
+  getElementById: function (id) {
+    if (id === "consent-select-all") { return selectAll; }
+    throw new Error("unexpected getElementById: " + id);
+  },
+  querySelectorAll: function () { return consentBoxes; }
+};
+"""
+
+_SELECT_ALL_REPORT_JS = """
+var observed = {};
+observed.arrivesUnticked = selectAll.checked === false;
+
+selectAll.checked = true;
+selectAll.handlers.change();
+observed.tickAllTicksEveryBox = consentBoxes.every(function (b) { return b.checked; });
+observed.syncAfterTickAll = selectAll.checked === true;
+
+consentBoxes[1].checked = false;
+consentBoxes[1].handlers.change();
+observed.untickingOneBoxUnticksSelectAll = selectAll.checked === false;
+
+consentBoxes[1].checked = true;
+consentBoxes[1].handlers.change();
+observed.handTickingEveryBoxTicksSelectAll = selectAll.checked === true;
+
+selectAll.checked = false;
+selectAll.handlers.change();
+observed.untickAllClearsEveryBox = consentBoxes.every(function (b) { return !b.checked; });
+
+console.log(JSON.stringify(observed));
+"""
+
+
+def _nonced_scripts(page: str) -> list[str]:
+    scripts = []
+    for match in re.finditer(r'<script nonce="', page):
+        open_end = page.index(">", match.start()) + 1
+        scripts.append(page[open_end : page.index("</script>", open_end)])
+    return scripts
+
+
+def test_the_select_all_script_toggles_and_derives_but_never_arrives_ticked(
+    domains,
+) -> None:
+    # Issue #251, exercised for real rather than only parsed: ticking the
+    # control ticks every consent box and unticking it clears them; unticking
+    # any single box unticks the control; hand-ticking the last remaining box
+    # ticks it; and on load its state is derived from the boxes (all
+    # unticked), never served ticked.
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip(
+            "node is not installed on this machine, so the configuration page's "
+            "select-all behaviour was not exercised. Node is present on CI "
+            "runners; install node to run this check locally."
+        )
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            page = resp.read().decode("utf-8")
+    finally:
+        srv.shutdown()
+    scripts = [s for s in _nonced_scripts(page) if "consent-select-all" in s]
+    assert len(scripts) == 1, "expected exactly one script touching consent-select-all"
+
+    result = subprocess.run(
+        [node, "--input-type=commonjs", "-"],
+        input=_SELECT_ALL_STUB_JS + scripts[0] + _SELECT_ALL_REPORT_JS,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, f"the select-all script threw:\n{result.stderr}"
+    observed = json.loads(result.stdout)
+
+    assert observed["arrivesUnticked"] is True
+    assert observed["tickAllTicksEveryBox"] is True
+    assert observed["syncAfterTickAll"] is True
+    assert observed["untickingOneBoxUnticksSelectAll"] is True
+    assert observed["handTickingEveryBoxTicksSelectAll"] is True
+    assert observed["untickAllClearsEveryBox"] is True
+
+
 # ---------------------------------------------------------------------------
 # Output location choice (issue #109)
 # ---------------------------------------------------------------------------
@@ -1462,17 +1591,20 @@ def test_no_existing_deliverables_warning_when_output_dir_is_none(domains) -> No
         srv.shutdown()
 
 
-def test_the_second_inline_script_parses(domains) -> None:
-    # The output-location preview lives in its own <script> tag (see
-    # config-page.html) precisely so it cannot take the heartbeat down with
-    # it on a syntax error; this is that second tag's own parse check, the
-    # sibling of test_the_pages_inline_script_parses.
+def test_every_inline_script_parses(domains) -> None:
+    # Each concern lives in its own <script> tag (see config-page.html)
+    # precisely so a syntax error in one cannot take the others down; the
+    # flip side is that every tag needs its own parse check, because a
+    # broken tag fails silently on its own. This checks all of them rather
+    # than pinning a count: the pinned-count version of this test broke the
+    # moment a third tag was added (issue #251), which is exactly the kind
+    # of change it was never meant to police.
     node = shutil.which("node")
     if node is None:
         pytest.skip(
-            "node is not installed on this machine, so the configuration page's second "
-            "inline script was not parse-checked. Node is present on CI runners; install "
-            "node to run this check locally."
+            "node is not installed on this machine, so the configuration page's "
+            "inline scripts were not parse-checked. Node is present on CI runners; "
+            "install node to run this check locally."
         )
     srv = ConfigServer(domains)
     try:
@@ -1482,18 +1614,19 @@ def test_the_second_inline_script_parses(domains) -> None:
     finally:
         srv.shutdown()
     starts = [m.start() for m in re.finditer(r'<script nonce="', page)]
-    assert len(starts) == 2, (
-        "expected exactly two <script> tags on the configuration page"
-    )
-    second_open = page.index(">", starts[1]) + 1
-    second_close = page.index("</script>", second_open)
-    script = page[second_open:second_close]
-    result = subprocess.run(
-        [node, "--check", "-"], input=script, capture_output=True, text=True
-    )
-    assert result.returncode == 0, (
-        f"the configuration page's second inline script does not parse:\n{result.stderr}"
-    )
+    # A control that must appear (hardening rule 12): zero tags found would
+    # make the loop below vacuously green.
+    assert len(starts) >= 2, "expected the page's inline <script> tags"
+    for position, start in enumerate(starts, 1):
+        open_end = page.index(">", start) + 1
+        script = page[open_end : page.index("</script>", open_end)]
+        result = subprocess.run(
+            [node, "--check", "-"], input=script, capture_output=True, text=True
+        )
+        assert result.returncode == 0, (
+            f"inline script {position} of {len(starts)} on the configuration "
+            f"page does not parse:\n{result.stderr}"
+        )
 
 
 def test_parse_draft_cookie_rejects_a_bad_issue_mode_without_dropping_the_domains() -> (

@@ -7,8 +7,7 @@
 ![Checked with ruff and mypy](https://img.shields.io/badge/checked%20with-ruff%20%2B%20mypy-4b8bbe)
 
 **TL;DR:** engineering-audit turns the AI coding assistant you already use (Claude Code,
-Codex CLI, Gemini CLI) into an engineering-practice auditor, with a full repository audit and
-lightweight inline decision-time rule lookup. Optional planning skills help before code exists:
+Codex CLI, Gemini CLI) into an engineering-practice auditor. It has **two audit modes**:
 
 1. **Full repository audit**: your assistant sweeps a whole repository against a pack of
    sourced engineering rules and produces a self-contained HTML report. Every finding says
@@ -21,33 +20,67 @@ lightweight inline decision-time rule lookup. Optional planning skills help befo
 
 Starting a new project? The optional [Engineering Grill](integrations/engineering-grill/)
 uses the same rules before you build. Your assistant interviews you, works out which domains
-matter, and records the decisions and checks the project will need—without expecting you to
+matter, and records the decisions and checks the project will need, without expecting you to
 understand the framework first.
 
 **Three complete rule domains ship in this repository**, ready to run: data modelling,
 testing strategy and presenting data, 54 rules with their full source citations, in
 [examples/taster-rules/](examples/taster-rules/). You can run a real audit right now with
-no sign-up; the full framework pack is available on request
+no sign-up; the full sixteen-domain, 260-rule pack is available on request
 ([Rules access](#rules-access)).
+
+**Need a walk through?** There is a [free interactive walkthrough →](https://rod.lunt.au/tools/engineering-audit-training/) that takes you from a bare
+Windows, Mac or Linux PC to a finished audit of your own repository. It rehearses every step
+below in a simulated terminal, with the wrong turns coached, before you do them for real. No
+terminal experience assumed.
 
 **[Save me the chit chat: show me how to install it →](#how-to-use)**
 
-| Configure a run | Report |
-|---|---|
-| <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/config-page-dark.png"><img alt="Configuration page: domain tick boxes, issue delivery, feedback consent" src="docs/images/config-page-light.png"></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/report-dark.png"><img alt="Report: computed headline naming what needs attention first, then findings sorted worst first" src="docs/images/report-light.png"></picture> |
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/report-dark.png">
+    <img src="docs/images/report-light.png" alt="Report header: a computed headline saying 2 high findings need attention first out of 9 across 54 rules in 3 domains, then the worst finding, a missing uniqueness constraint, with the rule it breaks, where it is, why it matters, how to fix it, and the cited source behind the rule" width="100%">
+  </picture>
+</p>
 
-<picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/issues-feedback-dark.png"><img alt="Issues with selection tick boxes and GitHub filing, and the per-domain table of rule verdicts" src="docs/images/issues-feedback-light.png"></picture>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/domain-verdicts-dark.png">
+    <img src="docs/images/domain-verdicts-light.png" alt="Per-domain table: one row per audited domain giving its pass, finding, not-applicable and could-not-evaluate counts as a bar and as written-out numbers, plus files inspected, self-assessed confidence, and whether the rules were fetched" width="100%">
+  </picture>
+</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/issues-feedback-dark.png">
+    <img src="docs/images/issues-feedback-light.png" alt="Issues section: each finding rendered as ready-to-file issue text with a tick box, one already filed and linked, and buttons to file the selected ones straight to GitHub or copy them out" width="100%">
+  </picture>
+</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/config-page-dark.png">
+    <img src="docs/images/config-page-light.png" alt="Configuration page served on localhost: tick boxes for the three domains with their trigger text, where the report should be written, and how findings should be delivered" width="100%">
+  </picture>
+</p>
 
 ## How to use
 
 From nothing to a first audit in five steps. The taster rules ship in this repository, so
 none of this needs access to the full pack.
 
+Never touched a terminal? Rehearse these five steps first in the [free interactive
+walkthrough](https://rod.lunt.au/tools/engineering-audit-training/) linked at the top: it takes a
+non-technical founder from a bare Windows, Mac or Linux PC to a finished audit, in a simulated
+terminal with the wrong turns coached.
+
 ### Step 1: pick your assistant
 
-The tool works through the assistant you already drive: **Claude Code** (proven end to
-end), **OpenAI Codex CLI** or **Gemini CLI** (both documented, not yet exercised end to
-end; see the [support matrix](#support-matrix)). GitHub Copilot is not supported.
+The tool works through the assistant you already drive: **Claude Code** or **OpenAI
+Codex CLI** (both proven end to end; standalone audits recorded 2026-08-09 and
+2026-08-10, with a further Codex run on Linux 2026-08-19), or **Gemini CLI**
+(documented, not yet exercised end to end; see the [support matrix](#support-matrix)).
+GitHub Copilot is not supported.
 
 ### Step 2: dependencies
 
@@ -76,7 +109,7 @@ that clone's `domains/` directory. See [Rules access](#rules-access) for how to 
 
 ### Step 4: register the tool with your assistant
 
-Every command below is pinned to the current release tag (`@v0.14.0`) rather than the
+Every command below is pinned to the current release tag (`@v0.15.0`) rather than the
 moving `main` branch: an unpinned git dependency resolves to whatever `main` holds at
 install time and silently moves on later cache refreshes. Find the latest tag on [the
 Releases page](https://github.com/rodlunt/engineering-audit/releases). Updating to a newer
@@ -91,13 +124,18 @@ on your computer; run `pwd` inside a folder when you need to see its absolute pa
 Register the server (swap in the taster path from Step 3, or your full-pack path):
 
 ```sh
-claude mcp add engineering-audit --scope user -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.14.0 \
+claude mcp add engineering-audit --scope user -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.15.0 \
     engineering-audit-mcp --rules-dir /path/to/engineering-audit/examples/taster-rules
 ```
 
 `--scope user` registers it for every repository. Without it `claude mcp add` defaults to
 local scope, which registers the server for the current directory alone and leaves it
-unavailable everywhere else.
+unavailable everywhere else. That failure is silent and lands later (issue #245): a skill
+run in any other project reports `list_domains` unavailable with nothing pointing at scope
+as the cause. If that happens, run `claude mcp list` in the project where it failed; if
+`engineering-audit` is missing there but present in the directory you installed from, it
+was registered without `--scope user`. Fix it with `claude mcp remove engineering-audit`
+followed by the add command above.
 
 **To update to a newer tag**, remove first and re-add. `claude mcp add` refuses to
 overwrite an existing name (`MCP server engineering-audit already exists in user config`),
@@ -105,7 +143,7 @@ so changing the tag on its own is not enough:
 
 ```sh
 claude mcp remove engineering-audit
-claude mcp add engineering-audit --scope user -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.14.0 \
+claude mcp add engineering-audit --scope user -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.15.0 \
     engineering-audit-mcp --rules-dir /path/to/engineering-audit/examples/taster-rules
 ```
 
@@ -122,8 +160,12 @@ predates the re-registration and the run is not exercising the build you think i
 Install the audit skill (gives you a natural-language entry point: "audit this repo"):
 
 ```sh
-ln -s /path/to/engineering-audit/integrations/claude-code/audit ~/.claude/skills/audit
+cd /path/to/engineering-audit
+scripts/install-skills.sh audit
 ```
+
+It copies rather than symlinks, so the installed skill does not change under you when this
+checkout switches branch. `scripts/install-skills.sh --check` reports when a copy is stale.
 
 Full details: [integrations/claude-code/](integrations/claude-code/).
 
@@ -134,14 +176,14 @@ Register the server (verified against codex-cli 0.114.0):
 ```sh
 codex mcp add engineering-audit \
     --env ENGINEERING_AUDIT_RULES_DIR=/path/to/engineering-audit/examples/taster-rules \
-    -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.14.0 engineering-audit-mcp
+    -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.15.0 engineering-audit-mcp
 ```
 
-Inline decision-time checks: generate the trigger fragment and append it to your repo's `AGENTS.md` (or
+Inline mode: generate the trigger fragment and append it to your repo's `AGENTS.md` (or
 `~/.codex/AGENTS.md` for all repos):
 
 ```sh
-uvx --from git+https://github.com/rodlunt/engineering-audit@v0.14.0 engineering-audit-fragments \
+uvx --from git+https://github.com/rodlunt/engineering-audit@v0.15.0 engineering-audit-fragments \
     --rules-dir /path/to/engineering-audit/examples/taster-rules --out-dir .
 cat AGENTS-fragment.md >> AGENTS.md
 ```
@@ -166,7 +208,7 @@ swapping in the taster path from Step 3:
       "command": "uvx",
       "args": [
         "--from",
-        "git+https://github.com/rodlunt/engineering-audit@v0.14.0",
+        "git+https://github.com/rodlunt/engineering-audit@v0.15.0",
         "engineering-audit-mcp"
       ],
       "env": {
@@ -189,7 +231,7 @@ Inline triggers work too, and need no extension: generate the fragment and merge
 whichever `GEMINI.md` tier you want it to apply to.
 
 ```sh
-uvx --from git+https://github.com/rodlunt/engineering-audit@v0.14.0 engineering-audit-fragments \
+uvx --from git+https://github.com/rodlunt/engineering-audit@v0.15.0 engineering-audit-fragments \
     --rules-dir /path/to/engineering-audit/examples/taster-rules --out-dir .
 cat GEMINI-fragment.md >> GEMINI.md
 ```
@@ -203,9 +245,7 @@ it. Check `gemini --help` before an unattended run. Details and caveats:
 Install [Engineering Grill](integrations/engineering-grill/) after registering the MCP server
 if you want a guided, plain-English planning conversation before code is written. It reads the
 domains from the connected rules pack, so the taster pack gives a three-domain grill and the full
-rules pack gives the complete framework. Claude Code also has the beta `interrogate` workflow;
-choose one planning entry path rather than running both for the same project. See the Grill and
-Claude Code guides for the difference.
+rules pack gives the complete framework.
 
 #### Headless / CI
 
@@ -253,16 +293,16 @@ sweep, then open `audit-output/report.html`. What to expect while it runs is in
 [What a run looks like](#what-a-run-looks-like); what it costs in tokens is in
 [What a full run costs](#what-a-full-run-costs).
 
-## Interrogate, before the code exists (BETA)
+## Engineering Grill, before the code exists (BETA)
 
-**Status: beta, and the label is meant literally.** Shipped in v0.13.0, and the parts of it that
-have actually been exercised are listed below alongside the parts that have not. Expect it to
-change.
+**Status: beta, and the label is meant literally.** The interview shipped in v0.13.0 as a separate
+`interrogate` skill and was folded into Engineering Grill by issue #239: one pre-build skill, not
+two. **Nobody has yet completed a full interactive session with it.** Expect it to change.
 
-An audit sweeps the rules over a repository that already exists. `interrogate` runs them the
-other way, as questions about work that has not started. It fans out over **every domain whose
-trigger genuinely fires**, with no cap, derives the full question set from their rules, then
-triages **the three most impactful across the whole pool** and asks those one at a time. The rest
+An audit sweeps the rules over a repository that already exists. Engineering Grill runs them the
+other way, as questions about work that has not started. It classifies **every domain the pack
+returns**, derives the full question set from the rules of those whose triggers genuinely fire,
+then puts **the highest-consequence questions first**, one at a time, in the Hot Seat. The rest
 are held, not discarded: it names the total, offers a deep dive through everything remaining, and
 records what was answered, what was deferred and what was never asked.
 
@@ -270,22 +310,27 @@ Triage is global on purpose. One domain's third-best question routinely matters 
 another's first, and a per-domain ranking cannot see that. Questions carry a reversibility grade
 and a blast radius so they can be compared across domains at all.
 
-The current full pack is an example: it returns 16 domains, ten of them design-time by their own
-`Load this when:` statements. That count can change with the connected rules pack, so the skill
-always uses the domains returned by the current `list_domains` call.
+The rule that shapes the whole design is that **no full domain document enters the conversation
+with the user**. That is stated as an invariant rather than an architecture: sub-agents satisfy it
+where the host has them, serial read-and-discard satisfies it where the host does not, which is
+what keeps one skill shippable on more than one assistant.
+
+Ten of the sixteen domains are design-time by their own `Load this when:` statements, so most of
+the pack was already pointed at the moment before the code, with nothing to deliver it there.
 
 It never starts a run. It calls `list_domains` and `get_domain` only, both of which work with no
 run in progress, so it works on a directory that is not a repository yet or on nothing but a
-description. Setup, including the optional hook that offers it when plan mode starts, is in
+description. Setup is in [integrations/engineering-grill/](integrations/engineering-grill/), and
+the optional hook that offers it when plan mode starts is in
 [integrations/claude-code/README.md](integrations/claude-code/README.md).
 
-**What has been exercised:** question derivation on three returned domains (d02, d01, d15)
-against one brief, the no-run guarantee, and the hook's failure paths.
+**What has been exercised:** question derivation on three domains (d02, d01, d15) against one
+brief, the no-run guarantee, and the hook's failure paths.
 
 **What has never been run even once:** the cross-domain triage. It is the newest part and the
 part everything else now depends on, so treat its output with more suspicion than the rest.
 
-**What has not:** the other returned domains, and the interactive loop itself with a real person
+**What has not:** the other thirteen domains, and the interactive loop itself with a real person
 answering. Nobody has yet finished a full interrogation. Until they have, treat the shape of the
 session as unproven and the question quality as sampled rather than measured.
 
@@ -320,27 +365,21 @@ finding capture (a rule the agent did not check can never be recorded as a pass)
 configuration page, deterministic report rendering, source citations attached from the
 rules pack itself, and GitHub issue filing with an explicit confirmation step.
 
-The product has a standalone audit, inline decision-time lookup, and optional project-start skills:
+Two audit modes, plus an optional project-start skill:
 
 - **Engineering Grill**: before code is written, the assistant sorts the loaded domains by
   relevance, asks framework-backed questions and records the resulting plan. It uses only the
-  read-only `list_domains` and `get_domain` tools, runs only from an explicit invocation in a
-  fresh non-audit session, and does not start an audit run.
+  read-only `list_domains` and `get_domain` tools and does not start an audit run.
 - **Standalone audit**: tick the domains to audit on a local configuration page (or supply
   a saved config for headless runs), the agent sweeps the repository, and you get
   `report.html` plus optional GitHub issues.
-- **Inline decision-time lookup**: one-line triggers merged into your assistant's instruction
-  context tell it to
+- **Inline**: one-line triggers merged into your assistant's instruction context tell it to
   call `get_domain(...)` at decision moments (designing a schema, cutting a branch, shaping
-  an API), so the rules arrive exactly when they are useful. This is not an audit run.
-- **Claude Code `interrogate` (BETA)**: a separate pre-build plan workflow that derives questions
-  from every relevant returned domain, asks the top three first, and offers the rest as a deep dive.
-  Choose Engineering Grill or `interrogate` as the planning entry path; do not run both for the
-  same project.
+  an API), so the rules arrive exactly when they are useful.
 
 ## Support matrix
 
-| Assistant | Inline lookup | Standalone audit |
+| Assistant | Inline mode | Standalone audit |
 |---|---|---|
 | Claude Code | proven (in daily use via skills) | proven (recorded run 2026-08-09) |
 | OpenAI Codex CLI | documented, untested | proven (recorded run 2026-08-10) |
@@ -448,7 +487,7 @@ in `tests/fixture_pack`, not a real audit against a real repository.
 
 ## The rules
 
-The author's current full rules pack returns 16 decision domains and 260 rules in all, each rule
+The author's rules pack covers sixteen decision domains, 260 rules in all, each rule
 carrying a cited source, a volatility tier and a verification date, and each domain proven
 against a real system before it is trusted:
 
@@ -483,7 +522,22 @@ anything.
 
 The full pack lives in a private repository with access granted per user (the maintained
 originals, their revision history and proving records). Ask via the
-[rules pack access request form](https://github.com/rodlunt/engineering-audit/issues/new?template=rules-access.yml). The
+[rules pack access request form](https://github.com/rodlunt/engineering-audit/issues/new?template=rules-access.yml).
+
+**Once granted**, the pack arrives the same way the taster did: a repository you clone.
+
+```sh
+git clone https://github.com/rodlunt/engineering-framework
+```
+
+Then swap the rules path in your Step 4 registration for the clone's `domains/` directory
+(`claude mcp remove` then re-add for Claude Code; `codex mcp add` overwrites in place).
+Updating the rules afterwards is `git pull` in that clone. Keep it a real clone rather
+than a downloaded archive: the clone keeps its `origin` remote, so the run's rules-pack
+staleness check stays attached, exactly as described under "What keeps the staleness
+checks working".
+
+The
 tooling works with any rules directory in the expected format (`**Trigger:**` header,
 `### N. Title` rules, `Rule id:` footers with `Source:` fragments), so you can also write
 your own pack.
@@ -536,3 +590,7 @@ The tooling in this repository (the MCP server, the deterministic report rendere
 configuration page, and every supporting script) is licensed under [Apache-2.0](LICENSE).
 Rules packs are licensed separately and are not covered by this repository's licence; see
 [Rules access](#rules-access).
+
+---
+
+<sub>Built by [Rodney Lunt](https://rod.lunt.au). If this saved you some time, you can [buy me a coffee](https://buymeacoffee.com/rodlunt).</sub>

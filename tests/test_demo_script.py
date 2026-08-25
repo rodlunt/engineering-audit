@@ -60,11 +60,11 @@ def test_demo_run_state_shows_the_disabled_filed_rendering_and_could_not_evaluat
     # demonstrate: a pre-filed issue, a could-not-evaluate verdict and a
     # not-applicable one.
     module = _load_demo_module()
-    pack = module.load_pack(module.FIXTURE_PACK)
+    pack = module.load_pack(module.TASTER_PACK)
     run_state = module.build_demo_run_state(pack)
 
     assert run_state.filed_issue_urls == {
-        "D01-R02#1": "https://github.com/rodlunt/engineering-audit/issues/3"
+        "D01-R05#1": "https://github.com/rodlunt/engineering-audit/issues/3"
     }
     d01 = run_state.domain_results["d01"]
     finding = d01.findings[0]

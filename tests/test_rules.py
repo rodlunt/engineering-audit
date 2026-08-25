@@ -478,6 +478,50 @@ def test_read_pack_metadata_parses_the_real_framework_pack_shape(
     assert metadata == PackMetadata(format=2, requires_tool="0.6.0")
 
 
+def test_read_pack_metadata_parses_edition_and_full_pack_url(tmp_path: Path) -> None:
+    # Issue #255: a pack that is a deliberate subset declares what it is and
+    # where the full pack can be requested. Self-declared only; the parser
+    # must not fabricate either from anything else.
+    (tmp_path / "pack.toml").write_text(
+        "format = 1\n"
+        'edition = "taster (3 of 16 domains)"\n'
+        'full_pack_url = "https://example.test/request"\n',
+        encoding="utf-8",
+    )
+    metadata = read_pack_metadata(tmp_path)
+    assert metadata == PackMetadata(
+        format=1,
+        requires_tool=None,
+        edition="taster (3 of 16 domains)",
+        full_pack_url="https://example.test/request",
+    )
+
+
+def test_read_pack_metadata_treats_empty_edition_as_absent(tmp_path: Path) -> None:
+    # An empty-string declaration is not a claim: rendering "the '' rules
+    # pack" would be a notice about nothing.
+    (tmp_path / "pack.toml").write_text(
+        'edition = ""\nfull_pack_url = ""\n', encoding="utf-8"
+    )
+    metadata = read_pack_metadata(tmp_path)
+    assert metadata is not None
+    assert metadata.edition is None
+    assert metadata.full_pack_url is None
+
+
+def test_the_shipped_taster_pack_toml_declares_its_edition() -> None:
+    # The real file this feature ships for, parsed by the real parser: if
+    # the taster's pack.toml drifts out of the shape read_pack_metadata
+    # reads, the begin_run notice silently stops firing, which is exactly
+    # the class of quiet death this repo exists to catch.
+    taster = Path(__file__).parent.parent / "examples" / "taster-rules"
+    metadata = read_pack_metadata(taster)
+    assert metadata is not None
+    assert metadata.edition == "taster (3 of 16 domains)"
+    assert metadata.full_pack_url is not None
+    assert metadata.full_pack_url.startswith("https://github.com/rodlunt/")
+
+
 def test_read_pack_metadata_ignores_unknown_keys(tmp_path: Path) -> None:
     (tmp_path / "pack.toml").write_text(
         "format = 2\n"

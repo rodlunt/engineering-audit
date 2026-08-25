@@ -199,12 +199,17 @@ _PACK_TOML_FORMAT_RE = re.compile(r"^format\s*=\s*(?P<value>\d+)\s*(?:#.*)?$")
 _PACK_TOML_REQUIRES_TOOL_RE = re.compile(
     r'^requires_tool\s*=\s*"(?P<value>[^"]*)"\s*(?:#.*)?$'
 )
+_PACK_TOML_EDITION_RE = re.compile(r'^edition\s*=\s*"(?P<value>[^"]*)"\s*(?:#.*)?$')
+_PACK_TOML_FULL_PACK_URL_RE = re.compile(
+    r'^full_pack_url\s*=\s*"(?P<value>[^"]*)"\s*(?:#.*)?$'
+)
 
 
 @dataclass(frozen=True)
 class PackMetadata:
-    """The two facts an optional pack.toml may declare about the loaded
-    rules pack (issue #170).
+    """The facts an optional pack.toml may declare about the loaded
+    rules pack (issues #170 and #255): only things its authors know and
+    git cannot derive.
 
     ``format``: the rule-file format the pack is written in, compared
     against :data:`PACK_FORMAT_MIN`/:data:`PACK_FORMAT_MAX`.
@@ -216,30 +221,42 @@ class PackMetadata:
     git-derived one this tool already computes (see server.py's
     ``_git_release_version``). A requirement is a different claim git
     cannot derive and only the pack's authors know, which is why this file
-    carries it and nothing more.
+    carries it.
 
-    Either field is None when pack.toml omits that key, or declares it in a
+    ``edition`` and ``full_pack_url`` (issue #255): a pack that is a
+    deliberate subset of a larger one names what it is ("taster (3 of 16
+    domains)") and where the full pack can be requested. The pack declares
+    this about itself; the tool never infers it, and in particular never
+    keys anything on domain count, because a small custom pack is a
+    complete pack, not a partial install. Both absent means the pack made
+    no such claim, which is the normal case for every pack that is not a
+    shipped subset.
+
+    Any field is None when pack.toml omits that key, or declares it in a
     shape :func:`read_pack_metadata` does not recognise: an unreadable
     value is reported as absent, never guessed at.
     """
 
     format: int | None
     requires_tool: str | None
+    edition: str | None = None
+    full_pack_url: str | None = None
 
 
 def read_pack_metadata(rules_dir: Path) -> PackMetadata | None:
-    """Read ``rules_dir/pack.toml``'s ``format`` and ``requires_tool`` keys,
-    or None if the file is absent or could not be read at all.
+    """Read ``rules_dir/pack.toml``'s known keys (``format``,
+    ``requires_tool``, ``edition``, ``full_pack_url``), or None if the file
+    is absent or could not be read at all.
 
     A narrow line-based parser, not a TOML library: this project's floor is
     Python 3.10 and tomllib is 3.11+ (see requires-python in
     pyproject.toml), the project deliberately declares exactly two
     dependencies and ships an SBOM against them, and pack.toml only ever
-    needs two flat, known keys. Mirrors scripts/version_pins.py's
+    needs a handful of flat, known keys. Mirrors scripts/version_pins.py's
     ``read_pyproject_version``, which regex-extracts pyproject.toml's own
     version field for the identical reason.
 
-    Only the two known keys are recognised; any other line, including a key
+    Only the known keys are recognised; any other line, including a key
     this parser does not know about, is silently ignored rather than
     treated as a parse failure, because a pack.toml is allowed to grow keys
     a given build predates. A key present but not in the exact shape this
@@ -262,6 +279,8 @@ def read_pack_metadata(rules_dir: Path) -> PackMetadata | None:
 
     format_value: int | None = None
     requires_tool_value: str | None = None
+    edition_value: str | None = None
+    full_pack_url_value: str | None = None
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#"):
@@ -274,9 +293,22 @@ def read_pack_metadata(rules_dir: Path) -> PackMetadata | None:
         if requires_match is not None:
             requires_tool_value = requires_match.group("value")
             continue
+        edition_match = _PACK_TOML_EDITION_RE.match(line)
+        if edition_match is not None:
+            edition_value = edition_match.group("value") or None
+            continue
+        full_pack_url_match = _PACK_TOML_FULL_PACK_URL_RE.match(line)
+        if full_pack_url_match is not None:
+            full_pack_url_value = full_pack_url_match.group("value") or None
+            continue
         # Unknown key, or a known key in a shape this parser does not
         # recognise: ignored, per the docstring above.
-    return PackMetadata(format=format_value, requires_tool=requires_tool_value)
+    return PackMetadata(
+        format=format_value,
+        requires_tool=requires_tool_value,
+        edition=edition_value,
+        full_pack_url=full_pack_url_value,
+    )
 
 
 def _slug_from_filename(path: Path) -> str:

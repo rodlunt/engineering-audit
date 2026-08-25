@@ -638,6 +638,52 @@ def test_begin_run_update_checks_run_by_default(
     assert seen == {"tool": True, "pack": True}
 
 
+def test_begin_run_instructs_when_a_check_confirms_a_stale_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Issue #254: a confirmed-stale status used to land only in the meta
+    # rows, discoverable after a full run on the old build. The response now
+    # instructs the agent to relay it up front, quoting the status verbatim,
+    # which carries the per-host remedy (#219) with it.
+    monkeypatch.delenv("ENGINEERING_AUDIT_NO_UPDATE_CHECK", raising=False)
+    stale = (
+        "stale: latest release is v9.9.9 (abcabcabcabc), installed build is "
+        "0.1.0 @ deadbeefdead; to update: re-register with v9.9.9"
+    )
+    monkeypatch.setattr(server_module, "check_for_update", lambda *a, **k: stale)
+    monkeypatch.setattr(
+        server_module, "check_pack_for_update", lambda *a, **k: "current (v1.0.0)"
+    )
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    result = _begin_run(mcp, tmp_path / "audit-output")
+
+    assert stale in result["instruction"]
+    assert "tell the user" in result["instruction"]
+
+
+def test_begin_run_never_nags_on_could_not_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The control, and the discipline update_check.py already keeps: a check
+    # that could not run established nothing, so it must not produce the
+    # stale instruction. Same for "current", checked here via the pack.
+    monkeypatch.delenv("ENGINEERING_AUDIT_NO_UPDATE_CHECK", raising=False)
+    monkeypatch.setattr(
+        server_module,
+        "check_for_update",
+        lambda *a, **k: "could-not-check: network unreachable",
+    )
+    monkeypatch.setattr(
+        server_module, "check_pack_for_update", lambda *a, **k: "current (v1.0.0)"
+    )
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    result = _begin_run(mcp, tmp_path / "audit-output")
+
+    assert "instruction" not in result
+
+
 def test_begin_run_update_checks_disabled_via_env_var(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1382,6 +1428,28 @@ def test_start_config_interactive_path_opens_the_browser_and_says_so(
     result = _call(mcp, "start_config", {})
     assert result["opened_in_browser"] is True
     assert _no_real_browser == [result["url"]]
+    # Issue #246: whether the user hears about the page must not depend on
+    # the agent choosing to say something, so the response instructs. The
+    # instruction must carry the URL itself (a clickable line is the ask)
+    # and must say the page opened, since it did.
+    assert result["url"] in result["instruction"]
+    assert "opened in a tab" in result["instruction"]
+
+
+def test_start_config_called_again_still_instructs_with_the_same_url(
+    tmp_path: Path, _no_real_browser: list[str]
+) -> None:
+    # The already-started path returns the existing URL rather than a second
+    # server; issue #246's instruction has to ride on that response too, or
+    # an agent that lost the first response has nothing telling it to
+    # resurface the page.
+    mcp, _state = build_server(FIXTURE_PACK)
+    _begin_run(mcp, tmp_path / "audit-output")
+
+    first = _call(mcp, "start_config", {})
+    again = _call(mcp, "start_config", {})
+    assert again["url"] == first["url"]
+    assert again["url"] in again["instruction"]
 
 
 def test_start_config_interactive_path_survives_a_browserless_environment(
@@ -1401,6 +1469,10 @@ def test_start_config_interactive_path_survives_a_browserless_environment(
     assert result["mode"] == "interactive"
     assert result["url"].startswith("http://127.0.0.1:")
     assert result["opened_in_browser"] is False
+    # Issue #246: with no tab opened, the instruction must carry the URL and
+    # ask for the user to open it, not claim a tab opened.
+    assert result["url"] in result["instruction"]
+    assert "No browser tab" in result["instruction"]
 
 
 def test_get_config_interactive_path_blocks_then_returns_after_form_post(
@@ -2034,6 +2106,46 @@ def test_begin_run_leaves_pack_format_and_requires_tool_none_without_pack_toml(
 
     assert result["meta"]["rules_pack_format"] is None
     assert result["meta"]["rules_pack_requires_tool"] is None
+
+
+def test_begin_run_relays_a_self_declared_pack_edition(tmp_path: Path) -> None:
+    # Issue #255: a pack that declares itself a subset gets one notice in
+    # the begin_run response, carrying the edition and the request URL, so
+    # whether the user learns the full pack exists does not depend on the
+    # agent noticing a metadata field.
+    rules_dir = tmp_path / "rules-pack"
+    shutil.copytree(FIXTURE_PACK, rules_dir)
+    (rules_dir / "pack.toml").write_text(
+        'edition = "taster (3 of 16 domains)"\n'
+        'full_pack_url = "https://example.test/request"\n',
+        encoding="utf-8",
+    )
+
+    mcp, _state = build_server(rules_dir)
+    result = _begin_run(mcp, tmp_path / "audit-output")
+
+    assert result["meta"]["rules_pack_edition"] == "taster (3 of 16 domains)"
+    assert result["meta"]["rules_pack_full_pack_url"] == "https://example.test/request"
+    assert "taster (3 of 16 domains)" in result["rules_pack_notice"]
+    assert "https://example.test/request" in result["rules_pack_notice"]
+    # A user whose access was already granted has the opposite problem to the
+    # one the URL solves: the pack is on disk and the registration still
+    # points at the subset. The notice must carry the re-point remedy too,
+    # because the tool never searches the disk for a fuller pack itself.
+    assert "re-register with --rules-dir" in result["rules_pack_notice"]
+
+
+def test_begin_run_makes_no_edition_claim_for_a_pack_that_makes_none(
+    tmp_path: Path,
+) -> None:
+    # The control: a pack with no edition key, which is every custom pack,
+    # must produce no notice at all. A small pack is a complete pack; the
+    # tool must never infer partiality from domain count.
+    mcp, _state = build_server(FIXTURE_PACK)
+    result = _begin_run(mcp, tmp_path / "audit-output")
+
+    assert result["meta"]["rules_pack_edition"] is None
+    assert "rules_pack_notice" not in result
 
 
 # ---------------------------------------------------------------------------

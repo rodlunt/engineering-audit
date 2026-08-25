@@ -1558,6 +1558,13 @@ def _register_run_tools(mcp: MCPServer, state: AppState) -> None:
         environment variable, in which case both fields read "not-checked",
         which is not something to warn the user about, since turning it off
         was their own choice.
+
+        When the loaded rules pack declares itself a subset of a larger
+        pack (its pack.toml carries an 'edition' key; issue #255), the
+        response carries a rules_pack_notice naming the edition and, when
+        declared, where the full pack can be requested. Relay it to the
+        user once, when telling them the run has started, and never again.
+        Absent means the pack made no such claim.
         """
         # First, before any branch can return early: an environment the tool
         # will not accept is a bad call, and the caller has to hear that
@@ -1643,6 +1650,10 @@ def _register_run_tools(mcp: MCPServer, state: AppState) -> None:
             rules_pack_requires_tool=(
                 pack_metadata.requires_tool if pack_metadata else None
             ),
+            rules_pack_edition=pack_metadata.edition if pack_metadata else None,
+            rules_pack_full_pack_url=(
+                pack_metadata.full_pack_url if pack_metadata else None
+            ),
             update_check=check_for_update(
                 tool_commit_value,
                 tool_version_value,
@@ -1685,6 +1696,17 @@ def _register_run_tools(mcp: MCPServer, state: AppState) -> None:
             "output_dir": str(output_dir_path),
             "repo_dir": str(repo_dir_path) if repo_dir_path else None,
         }
+        pack_edition_notice = _pack_edition_notice(meta)
+        if pack_edition_notice is not None:
+            response["rules_pack_notice"] = pack_edition_notice
+        staleness_instruction = _staleness_instruction(meta)
+        if staleness_instruction is not None:
+            response["instruction"] = staleness_instruction
+            # A trace independent of the agent (issue #254, same reasoning
+            # as start_config's line for #246): stderr, never stdout, which
+            # carries the MCP protocol.
+            for line in _stale_statuses(meta):
+                print(f"engineering-audit: {line}", file=sys.stderr)
         if prior is not None:
             # Saying what was thrown away is the difference between a discard
             # the user chose and one they will only find out about later.
@@ -1694,6 +1716,112 @@ def _register_run_tools(mcp: MCPServer, state: AppState) -> None:
                 else {"path": str(prior.path), "readable": False, "error": prior.error}
             )
         return _with_warnings(run, response)
+
+
+def _pack_edition_notice(meta: RunMeta) -> str | None:
+    """One factual line for the agent to relay when the loaded pack declares
+    itself a subset of a larger one (issue #255), or None when it makes no
+    such claim.
+
+    Fires only on the pack's own pack.toml declaration, never on anything
+    the tool inferred: domain count in particular is not evidence of a
+    partial install, because a small custom pack is a complete pack. The
+    relay ask is embedded in the notice itself, the same structural choice
+    as _config_page_instruction above: whether the user learns the full
+    pack exists must not depend on the agent deciding a metadata field was
+    worth mentioning.
+    """
+    if not meta.rules_pack_edition:
+        return None
+    notice = (
+        f"This run uses the '{meta.rules_pack_edition}' rules pack, as declared "
+        "by the pack itself."
+    )
+    if meta.rules_pack_full_pack_url:
+        notice += (
+            f" The full pack is available on request: {meta.rules_pack_full_pack_url}"
+            " If the user already has the full pack on disk, this registration "
+            "still points at the subset: re-register with --rules-dir aimed at "
+            "the full pack's domains/ directory (the README's Rules access "
+            "section has the command). The tool never searches the disk for a "
+            "fuller pack itself, so re-pointing is the only way to switch."
+        )
+    return (
+        f"{notice} Mention this to the user once, when telling them the run has "
+        "started; do not repeat it on later calls."
+    )
+
+
+def _stale_statuses(meta: RunMeta) -> list[str]:
+    """The labelled status line for each staleness check that positively
+    confirmed a newer release (issue #254). Empty for everything else:
+    "could-not-check" and "not-checked" must never nag as if stale, because
+    nothing was established (see update_check.py's own discipline), and
+    "current" needs no line at all.
+    """
+    lines = []
+    if (meta.update_check or "").startswith("stale"):
+        lines.append(f"Tool: {meta.update_check}")
+    if (meta.pack_update_check or "").startswith("stale"):
+        lines.append(f"Rules pack: {meta.pack_update_check}")
+    return lines
+
+
+def _staleness_instruction(meta: RunMeta) -> str | None:
+    """The instruction accompanying begin_run's response when a staleness
+    check confirmed a newer release (issue #254), or None when none did.
+
+    The status strings already carry the per-host remedy command (issue
+    #219), so quoting them verbatim puts the fix one paste away. Until now
+    the ask to relay them lived only in begin_run's docstring, which is the
+    agent-goodwill channel #246 replaced for the config page URL; this is
+    the same replacement for staleness. The tool never updates itself: the
+    user chose the pin, and the remedy is theirs to run or ignore.
+    """
+    lines = _stale_statuses(meta)
+    if not lines:
+        return None
+    return (
+        "Before doing anything else, tell the user their install is behind the "
+        "latest release, quoting the following verbatim, remedy included: "
+        + " ".join(lines)
+        + " Then carry on with the run: a stale build still audits; what it "
+        "cannot do is claim its findings came from the current release."
+    )
+
+
+def _config_page_instruction(url: str, opened_in_browser: bool | None) -> str:
+    """The instruction accompanying every interactive start_config response
+    (issue #246).
+
+    The whole run blocks on the configuration page, so a user who does not
+    know it opened sees only a hung audit until the get_config wait times
+    out. Whether they hear about the page used to depend entirely on the
+    driving agent choosing to relay it; in a real run it chose not to, and
+    the user found the page by accident. Carrying the instruction in the
+    response makes the signal structural, the same way _issue_preview and
+    get_config already instruct rather than hope.
+
+    ``opened_in_browser`` is None on the already-started path, where whether
+    a tab opened on the earlier call is no longer known.
+    """
+    if opened_in_browser is True:
+        situation = (
+            "A configuration page has just opened in a tab in the user's browser. "
+            "Before doing anything else, tell the user that"
+        )
+    elif opened_in_browser is False:
+        situation = (
+            "No browser tab could be opened from here. Before doing anything else, "
+            "ask the user to open the configuration page themselves"
+        )
+    else:
+        situation = "The configuration page for this run is already up. Remind the user"
+    return (
+        f"{situation}, and show this URL on its own line so it renders as a "
+        f"clickable link: {url} . The audit now waits on that form; a user who "
+        "does not know the page exists sees only a hung run."
+    )
 
 
 def _register_config_tools(mcp: MCPServer, state: AppState) -> None:
@@ -1719,7 +1847,15 @@ def _register_config_tools(mcp: MCPServer, state: AppState) -> None:
         if run.config_server is not None:
             # Already started in interactive mode: return the existing URL
             # rather than starting a second server on a different port.
-            return {"mode": "interactive", "url": run.config_url}
+            existing_url = run.config_url
+            # Set in the same block as config_server below; one without the
+            # other would be a bug in this function, not a reachable state.
+            assert existing_url is not None
+            return {
+                "mode": "interactive",
+                "url": existing_url,
+                "instruction": _config_page_instruction(existing_url, None),
+            }
 
         preset_path = os.environ.get("ENGINEERING_AUDIT_CONFIG")
         if preset_path:
@@ -1800,7 +1936,19 @@ def _register_config_tools(mcp: MCPServer, state: AppState) -> None:
             opened = webbrowser.open(url)
         except webbrowser.Error:
             opened = False
-        return {"mode": "interactive", "url": url, "opened_in_browser": opened}
+        # A log trace that exists independent of the agent (issue #246):
+        # stderr, never stdout, which carries the MCP protocol.
+        print(
+            f"engineering-audit: configuration page at {url} "
+            f"(browser tab opened: {'yes' if opened else 'no'})",
+            file=sys.stderr,
+        )
+        return {
+            "mode": "interactive",
+            "url": url,
+            "opened_in_browser": opened,
+            "instruction": _config_page_instruction(url, opened),
+        }
 
     @mcp.tool()
     def get_config(timeout_s: float = 300) -> dict[str, Any]:

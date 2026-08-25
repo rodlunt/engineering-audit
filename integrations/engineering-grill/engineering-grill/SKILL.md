@@ -87,11 +87,11 @@ Find repository, environment, and current external facts yourself. Ask the user 
 constraints, trade-offs, and facts that cannot be discovered.
 
 **When establishing audience, distinguish between the first shipped version and the eventual
-vision.** Briefs naturally state aspiration first; triage must key off the near-term shape
-as it will actually ship initially. Ask separately for the audience *now* (solo, small team,
-early adopters, public) and the *aspirational* audience (scale later to what shape). The
-aspirational answer sets revisit triggers for `required-later` domains; the near-term answer
-drives which domains are `active-now`.
+vision.** Briefs naturally state aspiration first; triage must key off the near-term shape as it
+will actually ship initially. Ask separately for the audience *now* (solo, small team, early
+adopters, public) and the *aspirational* audience (scale later to what shape). The aspirational
+answer sets revisit triggers for `required-later` domains; the near-term answer drives which
+domains are `active-now`.
 
 State the work back in two or three lines and show it to the user before going further.
 Everything downstream keys off this, so a misreading is cheapest to fix here.

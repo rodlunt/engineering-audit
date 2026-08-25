@@ -330,9 +330,50 @@ def _require_href_scheme(url: str, allowed: tuple[str, ...], context: str) -> No
         )
 
 
+# One inline code span, matched on already-escaped text: a run of backticks,
+# the shortest run of same-line content that reaches a closing run of the same
+# length, and nothing crossing a newline. Run-length pairing mirrors
+# strip_markdown_emphasis's rule for asterisks, so ``a`` closes only on ``
+# and never on a lone `. An unpaired backtick matches nothing and stays the
+# literal character it already was.
+#
+# Deliberately same-line only. Across every real tester report on disk
+# (rodney-sites, grademap-app, bugpilot: 198 spans between them) there is not
+# one fenced block and not one multi-line span, so matching across newlines
+# would buy nothing and would let a stray backtick swallow a paragraph.
+_CODE_SPAN_RE = re.compile(r"(`+)([^\n]+?)\1")
+
+
+def _render_code_spans(escaped: str) -> str:
+    """Turn `code` into <code>code</code> in text that is ALREADY escaped.
+
+    The ordering is the safety property, and it is the one issue #128 named
+    when it allowed rendering "a small safe subset (emphasis and inline
+    code)": because html.escape has already run, the captured content cannot
+    contain markup, so wrapping it in a tag cannot introduce any. html.escape
+    does not touch backticks, so they survive escaping intact and are still
+    here to match on. Never call this on unescaped text.
+    """
+
+    def _one(match: re.Match[str]) -> str:
+        content = match.group(2)
+        # CommonMark: "if the resulting string both begins and ends with a
+        # space character, but does not consist entirely of space characters,
+        # a single space character is removed from the front and back."
+        # Matched here so the report renders a span exactly as GitHub renders
+        # the same string in the filed issue. Agreement between the two
+        # artefacts is the reason for this whole function; differing by a
+        # leading space would be a smaller version of the same defect.
+        if content.startswith(" ") and content.endswith(" ") and content.strip():
+            content = content[1:-1]
+        return f"<code>{content}</code>"
+
+    return _CODE_SPAN_RE.sub(_one, escaped)
+
+
 def _markdownish(text: str) -> str:
-    """Strip markdown emphasis, escape, then apply the barest
-    paragraph/line-break formatting.
+    """Strip markdown emphasis, escape, render inline code, then apply the
+    barest paragraph/line-break formatting.
 
     No markdown library is a dependency here (mcp + pydantic only), so this
     is deliberately not a markdown renderer: it escapes first, then turns
@@ -341,12 +382,31 @@ def _markdownish(text: str) -> str:
     assistants write markdown by default (issue #128); the recorded
     decision is to strip it rather than render it, so this is the boundary
     that turns "**The issue**: ..." into plain "The issue: ...".
+
+    Inline code is the one exception, and it is not a reversal of that
+    decision so much as the other half of the issue it came from. #128 was
+    titled "Unrendered markdown leaks into reference lines and finding
+    bodies"; its fix stripped emphasis and pinned it with a test asserting no
+    literal '*' survives. Backticks were never decided either way. They
+    survived because strip_markdown_emphasis protects code spans outright so
+    that an asterisk inside `a * b` cannot be paired as emphasis, and that
+    protection doubles as a bypass of the strip. The result was the exact
+    complaint #128 opened with, still true in every real report: 238 literal
+    backticks in one rodney-sites run.
+
+    Rendering rather than stripping, because #128 also named the reason:
+    "GitHub would render the finding-body markdown, so the filed issue looks
+    fine while the report the user read does not, which means the two
+    artefacts disagree about the same text." Stripping would leave that
+    disagreement standing, just quieter. issue_body is deliberately NOT put
+    through this: it is markdown bound for GitHub, which renders it properly.
     """
     # Normalise CRLF (and lone CR) to LF first: a paragraph split on a literal
     # '\n\n' would otherwise miss every blank line in CRLF-sourced text.
     normalised = text.replace("\r\n", "\n").replace("\r", "\n")
     normalised = strip_markdown_emphasis(normalised)
     escaped = html.escape(normalised)
+    escaped = _render_code_spans(escaped)
     paragraphs = [p for p in escaped.split("\n\n") if p.strip()]
     if not paragraphs:
         return ""
@@ -387,6 +447,27 @@ def _render_meta_block(run_state: RunState) -> str:
         ("Repository", meta.repo_name, False),
         ("Commit", meta.repo_commit, False),
         ("Rules pack", rules_pack_label(meta), False),
+        # Only when the pack's own pack.toml declares it a subset of a larger
+        # pack (issue #255): self-declared, never inferred from domain count,
+        # so an ordinary custom pack renders no row here at all.
+        *(
+            [
+                (
+                    "Rules pack edition",
+                    meta.rules_pack_edition
+                    + (
+                        f"; full pack available on request: {meta.rules_pack_full_pack_url}"
+                        " (already have it? re-register with --rules-dir aimed at its"
+                        " domains/ directory; this run used the subset)"
+                        if meta.rules_pack_full_pack_url
+                        else ""
+                    ),
+                    False,
+                )
+            ]
+            if meta.rules_pack_edition
+            else []
+        ),
         ("Rules commit", meta.rules_pack_commit or "unknown", False),
         ("Assistant", meta.assistant, True),
         ("Model", meta.model, True),
@@ -1434,6 +1515,40 @@ def _provenance_blind_notice(meta: RunMeta) -> str:
         'no mechanism in this report can detect if either has drifted. See "What keeps '
         'the staleness checks working" in the project README for the install shapes '
         "that keep both checks attached.</p>"
+        "</div>"
+    )
+
+
+def _stale_build_notice(meta: RunMeta) -> str:
+    """A loud line when either staleness check positively confirmed a newer
+    release than the one this run used (issue #254).
+
+    The check's result already sat in the Tool update / Rules pack update
+    meta rows, but a meta row inside a collapsed details block is where a
+    caveat goes to be technically-disclosed: a report produced by an
+    outdated build is itself a caveat on the findings, and gets the same
+    prominent treatment as a modified build (_modified_tool_notice) for the
+    same reason. Fires on a "stale" prefix only: "could-not-check" has its
+    own notice above when both checks are blind, and neither it nor
+    "not-checked" is evidence of staleness (nothing was established), so
+    neither may borrow this one. Matches the register of its siblings: a
+    stale build is not evidence the findings are wrong, only that they
+    cannot claim to have come from the current release.
+    """
+    lines = []
+    if (meta.update_check or "").startswith("stale"):
+        lines.append(f"<p>Tool: <code>{_esc(meta.update_check)}</code></p>")
+    if (meta.pack_update_check or "").startswith("stale"):
+        lines.append(f"<p>Rules pack: <code>{_esc(meta.pack_update_check)}</code></p>")
+    if not lines:
+        return ""
+    return (
+        '<div class="perf-block prominent">'
+        "<h3>A newer release existed when this run was made</h3>"
+        + "".join(lines)
+        + "<p>That is not evidence the findings below are wrong, only that this "
+        "run cannot claim they came from the current release. The status above "
+        "carries the update command for the host that ran this audit.</p>"
         "</div>"
     )
 
@@ -2491,6 +2606,7 @@ def render_report(run_state: RunState, pack: RulesPack) -> str:
 
     performance_summary = (
         f"{_provenance_blind_notice(run_state.meta)}"
+        f"{_stale_build_notice(run_state.meta)}"
         f"{_modified_tool_notice(run_state.meta)}"
         f"{_pack_requires_tool_notice(run_state.meta)}"
         f"{_pack_format_notice(run_state.meta)}"

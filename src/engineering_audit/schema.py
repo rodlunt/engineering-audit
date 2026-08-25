@@ -612,6 +612,27 @@ class RunMeta(BaseModel):
             "derives from git instead."
         ),
     )
+    rules_pack_edition: str | None = Field(
+        default=None,
+        description=(
+            "The 'edition' key from the loaded rules pack's optional pack.toml "
+            "(issue #255): the pack's own name for what subset it is, e.g. "
+            "'taster (3 of 16 domains)'. Self-declared by the pack, never inferred "
+            "by the tool, and in particular never derived from domain count: a "
+            "small custom pack is a complete pack, not a partial install. None "
+            "means the pack made no such claim, the normal case for any pack that "
+            "is not a shipped subset."
+        ),
+    )
+    rules_pack_full_pack_url: str | None = Field(
+        default=None,
+        description=(
+            "The 'full_pack_url' key from the loaded rules pack's optional "
+            "pack.toml (issue #255): where the full pack this one is a subset of "
+            "can be requested. Rendered alongside rules_pack_edition above; None "
+            "means the pack named no such place."
+        ),
+    )
     update_check: str | None = Field(
         default=None,
         description=(

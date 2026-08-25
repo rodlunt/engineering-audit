@@ -1,6 +1,6 @@
 [project]
 name = "engineering-audit"
-version = "0.14.0"
+version = "0.15.0"
 description = "Rules-pack-agnostic engineering practice audit tool delivered as a local MCP server."
 authors = [
     { name = "rodlunt", email = "181032093+rodlunt@users.noreply.github.com" }
@@ -19,7 +19,7 @@ engineering-audit-render = "engineering_audit.render_cli:main"
 engineering-audit-eval = "engineering_audit.evals:main"
 
 [build-system]
-requires = ["uv_build>=0.11.8,<0.12.0"]
+requires = ["uv_build>=0.11.8,<0.13.0"]
 build-backend = "uv_build"
 
 [dependency-groups]

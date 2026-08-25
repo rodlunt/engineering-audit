@@ -1,0 +1,14 @@
+# Optional pack metadata, read by engineering_audit.rules.read_pack_metadata.
+# Only flat, known keys are recognised; unknown keys are ignored so this file
+# can grow keys that older builds predate.
+
+# The rule-file format these domain files are written in: 1 is the original
+# Source:-only footer shape (issue #170).
+format = 1
+
+# This pack is a deliberate subset (issue #255). The edition names what it
+# is; full_pack_url is where the full pack can be requested. The tool relays
+# these once at begin_run and shows them in the report's run details; a pack
+# without these keys makes no such claim and gets no such notice.
+edition = "taster (3 of 16 domains)"
+full_pack_url = "https://github.com/rodlunt/engineering-audit/issues/new?template=rules-access.yml"

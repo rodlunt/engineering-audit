@@ -7,14 +7,18 @@ Wires the `engineering-audit` MCP server and its `audit` skill into Claude Code.
 **From the published git repository** (no local clone needed):
 
 ```
-claude mcp add engineering-audit --scope user -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.14.0 engineering-audit-mcp --rules-dir <path-to-rules-clone>
+claude mcp add engineering-audit --scope user -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.15.0 engineering-audit-mcp --rules-dir <path-to-rules-clone>
 ```
 
 `--scope user` registers the server for every repository. Without it `claude mcp add` defaults
 to local scope, which registers it for the current directory alone and leaves it unavailable
-everywhere else.
+everywhere else. That failure is silent and lands later (issue #245): a skill run in any other
+project reports `list_domains` unavailable with nothing pointing at scope as the cause. If that
+happens, run `claude mcp list` in the project where it failed; if `engineering-audit` is missing
+there but present in the directory you installed from, it was registered without `--scope user`.
+Fix it with `claude mcp remove engineering-audit` followed by the add command above.
 
-`@v0.14.0` pins the install to the current tagged release rather than the moving `main` branch;
+`@v0.15.0` pins the install to the current tagged release rather than the moving `main` branch;
 find the latest tag on the [Releases page](https://github.com/rodlunt/engineering-audit/releases).
 
 ### Updating to a newer tag
@@ -26,7 +30,7 @@ overwrites silently, so its own README's instruction to re-add is correct for th
 
 ```
 claude mcp remove engineering-audit
-claude mcp add engineering-audit --scope user -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.14.0 engineering-audit-mcp --rules-dir <path-to-rules-clone>
+claude mcp add engineering-audit --scope user -- uvx --from git+https://github.com/rodlunt/engineering-audit@v0.15.0 engineering-audit-mcp --rules-dir <path-to-rules-clone>
 ```
 
 **The change only takes effect in a new session.** The session you are in keeps the server it
@@ -66,15 +70,19 @@ flow is actually run. Confirm the server appears in `claude mcp list` and respon
 
 ## Install the skill
 
-Symlink the skill directory into Claude Code's user-level skills folder so it is available in
-every project:
+Install the skill into Claude Code's user-level skills folder so it is available in every
+project:
 
 ```
-ln -s "$(pwd)/integrations/claude-code/audit" ~/.claude/skills/audit
+scripts/install-skills.sh audit
 ```
 
-Run this from inside a local clone of this repository (the symlink target must be an absolute
-path). Claude Code picks up skills from `~/.claude/skills/*/SKILL.md`; after linking, `audit`
+Run this from inside a local clone of this repository. It **copies** the skill; it does not
+symlink it. A symlink into a checkout means whichever branch that checkout is sitting on is what
+Claude Code executes, so checking out a branch to try something silently changes the skill in
+every session on the machine. Copying makes updating a deliberate act: re-run the script after
+pulling, and `scripts/install-skills.sh --check` reports any installed copy that has fallen
+behind. Claude Code picks up skills from `~/.claude/skills/*/SKILL.md`; after installing, `audit`
 should appear whenever you ask Claude Code to audit a repository, run the engineering audit, or
 run a practice audit (see the skill's own frontmatter for the exact trigger phrasing).
 
@@ -82,72 +90,70 @@ The symlink target and Claude Code's skill discovery convention above are correc
 see the root README's [support matrix](../../README.md#support-matrix), same as above, for
 whether this has actually been exercised against a live Claude Code session.
 
-## Install the interrogate skill (BETA)
+## The pre-build interrogation lives in Engineering Grill
 
-**Beta, and the label is literal.** New in v0.13.0, reshaped in v0.14.0 to run every relevant
-returned domain and triage globally rather than capping at three domains. Question derivation has
-been exercised on three returned domains against a single brief and the hook's failure paths have
-been tested, but **the cross-domain triage has never been run, and nobody has yet completed a full
-interactive interrogation**. The shape of the session (the relevance judgement, the triage, the
-deep-dive offer, the bail-out record) is unproven with a real person answering, and question
-quality is sampled rather than measured. Expect it to change, and please report anything that
-reads like a generic quiz rather than a question about your actual work: that is the failure mode
-this design is most likely to have.
+**Beta, and the label is literal.** `interrogate` shipped in v0.13.0 as a separate skill and was
+folded into [Engineering Grill](../engineering-grill/) by issue #239. One pre-build skill, not
+two: they were written independently in the same week against the same rules pack and the same two
+read-only tools, and shipping both would have meant two skills classifying the same domains in the
+same project.
 
-`interrogate` is the pre-build counterpart to `audit`. Where `audit` sweeps the rules over a
-repository that already exists, `interrogate` turns them into questions about work that has not
-started yet, and records the answers, the deferrals and the gaps into the host's plan file.
-
-For a comprehensive pre-build interview, use **Engineering Grill** instead. Grill is available
-for Codex and Claude Code, is explicitly invoked, walks a dependency-aware design tree, and writes
-the confirmed coverage map and decisions to project documents. `interrogate` is Claude-only and
-beta: it derives the full set but asks the top three highest-impact questions first, then offers a
-plan-file deep dive. Choose one entry path for a project; do not run both Grill and `interrogate`
-for the same planning work.
+**Nobody has completed a full interactive session with either half yet.** Question derivation has
+been exercised on a few domains against a single brief and the hook's failure paths have been
+tested, but the cross-domain triage has never run end to end with a real person answering. Expect
+it to change, and please report anything that reads like a generic quiz rather than a question
+about your actual work: that is the failure mode this design is most likely to have.
 
 ```
-ln -s "$(pwd)/integrations/claude-code/interrogate" ~/.claude/skills/interrogate
+scripts/install-skills.sh engineering-grill
 ```
 
-Same discovery convention and the same absolute-path requirement as `audit` above. After linking,
-start a fresh Claude Code session and ask it to confirm that `interrogate` is available without
-invoking it; this is a post-install discovery smoke test.
+If you installed `interrogate` before the merge, the installer removes the leftover. It will not
+silently leave a retired skill on disk being offered to the assistant.
 
-It uses `list_domains` and `get_domain` only, and never calls audit lifecycle tools. Run it only in
-a fresh, non-audit session with no audit run active or starting. In that state, the two reads are
-non-attributed and side-effect-free, which lets the skill work against a directory that is not a
-repository yet, or against nothing but a description. During an active run, `get_domain` can persist
-fetch metadata, so do not invoke Interrogate from an audit session or while an audit is starting.
-It must not begin or interact with an audit.
+Engineering Grill is the pre-build counterpart to `audit`. Where `audit` sweeps the rules over a
+repository that already exists, Grill turns them into questions about work that has not started
+yet, and records the answers, the deferrals and the gaps.
+
+It uses `list_domains` and `get_domain` only, and never calls `begin_run`. Both of those tools
+work with no run in progress, which is what lets it run against a directory that is not a
+repository yet, or against nothing but a description. Nothing it does touches run state, so an
+interview and an audit cannot interfere with each other.
 
 The two skills answer different questions and neither replaces the other:
 
-| | `audit` | `interrogate` |
+| | `audit` | `engineering-grill` |
 |---|---|---|
 | Runs against | a repository | intent, or a drafted plan |
-| Produces | `report.html` plus findings | questions, and a record of what was answered |
+| Produces | `report.html` plus findings | questions, plus `CONTEXT.md`, a coverage document and ADRs |
 | Needs a git commit | yes | no |
-| Rule coverage | every rule in every selected domain | every relevant domain, triaged to the top three questions first |
+| Rule coverage | every rule in every selected domain | every domain whose trigger fires, impact-triaged so the worst questions come first |
 
-`interrogate` is exhaustive in what it *derives* and deliberately not in what it *asks*. It runs
-every domain whose trigger fires, with no cap, and works out the full question set. It then asks
-only the three most impactful from the whole pool, because an interrogation nobody finishes
-teaches nothing, and offers the rest as a deep dive with the real number attached ("that is the
-top three of 47").
+Grill is exhaustive in what it *derives* and deliberately not in what it *asks*. It runs every
+domain whose trigger fires, with no cap, works out the full question set, then puts the
+highest-consequence ones first in the **Hot Seat**, one question per turn. The rest are offered as
+a deep dive with the real number attached ("that is the top three of 47"), where batching is
+allowed because those questions are no longer the irreversible ones.
 
-Nothing derived is thrown away. The record carries a per-domain table of derived, asked and not
-asked, and the domains judged irrelevant are named too, so a short session cannot be mistaken for
-a complete one and a skipped domain cannot be mistaken for a covered one.
+Nothing derived is thrown away. The coverage document carries a per-domain table of derived, asked
+and not asked, and names the domains judged irrelevant, so a short session cannot be mistaken for a
+complete one and a skipped domain cannot be mistaken for a covered one. A domain that could not be
+read at all says so and is excluded from the total rather than counted as zero questions.
 
-The cost lands in the fan-out: one read-only subagent per relevant domain, each reading a document
-of 300 to 800 lines. The skill tells you how many that is and asks before spending it, because
-that is the only point where the cost is knowable in advance.
+The cost lands in reading the domains: each is a document of several hundred lines, and the rule
+is that **no full domain document enters the conversation with the user**. On this host that means
+one read-only sub-agent per active domain. The skill tells you how many that is and asks before
+spending it, because that is the only point where the cost is knowable in advance.
 
 ### Optional: offer it automatically when plan mode starts
 
 The skill above is invoked deliberately. If you would rather be asked, `interrogate-offer.sh` in
 this directory injects a one-off prompt when a session enters plan mode, offering three choices:
-interrogate first, interrogate the finished draft afterwards, or skip.
+interview first, interview the finished draft afterwards, or skip.
+
+**The script keeps its old name on purpose.** Renaming it would silently break every
+`settings.json` that already registers it, and a hook that no longer resolves is a hook that
+quietly stops firing while still looking configured.
 
 ```
 "hooks": {
@@ -180,9 +186,8 @@ it works but is undocumented upstream, so treat it as a bonus rather than a guar
 
 The hook never blocks and never denies. It reports rather than fails silently: if it cannot read
 its payload, cannot find `jq`, cannot write its state directory, or finds the skill directory
-present but its `SKILL.md` unresolvable (a dangling symlink), it says so once a day and does
-nothing. If the skill is simply not installed, it stays quiet rather than offering something that
-is not there.
+present but its `SKILL.md` unresolvable, it says so once a day and does nothing. If the skill is
+simply not installed, it stays quiet rather than offering something that is not there.
 
 Turn it off without touching your settings:
 
@@ -191,7 +196,7 @@ touch "${XDG_STATE_HOME:-$HOME/.local/state}/claude-interrogate-offer/off"
 # or set CLAUDE_INTERROGATE_OFFER=0
 ```
 
-**One thing the hook cannot do:** if you choose "interrogate afterwards", nothing enforces it. The
+**One thing the hook cannot do:** if you choose "interview afterwards", nothing enforces it. The
 hook fires once on entry and there is no leg on `ExitPlanMode`, so the commitment is held only by
 the assistant for the rest of that session. The skill says so in its own instructions, but it is a
 gap, not a mechanism.
