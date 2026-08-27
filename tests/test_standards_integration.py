@@ -1001,3 +1001,206 @@ class TestEndToEnd:
         # Both should be verified-pass now
         for rule in final.rules:
             assert rule.status == "verified-pass"
+
+
+class TestResolveStackChoice:
+    """Tests for resolve_stack_choice."""
+
+    def test_choice_grill_leaves_rule_set_unchanged(self) -> None:
+        """Choice 'grill' passes through the prior rule set unchanged."""
+        from engineering_audit.standards_integration import resolve_stack_choice
+        from datetime import date
+
+        prior = RuleSet(
+            version="1.0",
+            project="test",
+            rules=[
+                Rule(
+                    rule_id="D06-R01",
+                    domain_id="d06",
+                    text_short="Type hints",
+                    text_body="Use type hints.",
+                    source="rules-pack",
+                    stack_profile=None,
+                    status="verified-pass",
+                    verified_date="2026-08-20",
+                )
+            ],
+        )
+
+        result = resolve_stack_choice(
+            prior_rule_set=prior,
+            pack_root=Path(__file__).parent / "fixture_pack",
+            grill_stack=("python",),
+            observed_stack_identifiers=("python", "fastapi"),
+            choice="grill",
+            today=date(2026, 8, 28),
+        )
+
+        # Should be identical to prior
+        assert len(result.rules) == len(prior.rules)
+        assert result.rules[0].rule_id == prior.rules[0].rule_id
+
+    def test_choice_audit_adds_new_profile_rules(self) -> None:
+        """Choice 'audit' adds new stack-profile rules with verified-pass."""
+        from engineering_audit.standards_integration import resolve_stack_choice
+        from datetime import date
+
+        prior = RuleSet(
+            version="1.0",
+            project="test",
+            rules=[
+                Rule(
+                    rule_id="D06-R01",
+                    domain_id="d06",
+                    text_short="Type hints",
+                    text_body="Use type hints.",
+                    source="rules-pack",
+                    status="verified-pass",
+                    verified_date="2026-08-20",
+                )
+            ],
+        )
+
+        result = resolve_stack_choice(
+            prior_rule_set=prior,
+            pack_root=Path(__file__).parent / "fixture_stack_profiles",
+            grill_stack=("python",),
+            observed_stack_identifiers=("python", "fastapi"),
+            choice="audit",
+            today=date(2026, 8, 28),
+        )
+
+        # Should have original rule plus new stack-profile rules
+        assert len(result.rules) > len(prior.rules)
+
+        # Check original rule is preserved
+        original = [r for r in result.rules if r.rule_id == "D06-R01"]
+        assert len(original) == 1
+
+        # Check new rules are stack-profile rules with verified-pass
+        profile_rules = [r for r in result.rules if r.source == "stack-profile"]
+        assert len(profile_rules) > 0
+        for rule in profile_rules:
+            assert rule.status == "verified-pass"
+            assert rule.verified_date == "2026-08-28"
+
+    def test_choice_audit_marks_dropped_stack_rules_not_applicable(self) -> None:
+        """Choice 'audit' marks dropped stack-profile rules as verified-not-applicable."""
+        from engineering_audit.standards_integration import resolve_stack_choice
+        from datetime import date
+
+        # Prior rule set has a FastAPI stack-profile rule
+        prior = RuleSet(
+            version="1.0",
+            project="test",
+            rules=[
+                Rule(
+                    rule_id="SPFPY-R01",
+                    domain_id=None,
+                    text_short="FastAPI rule",
+                    text_body="",
+                    source="stack-profile",
+                    stack_profile="fastapi",
+                    status="verified-pass",
+                    verified_date="2026-08-20",
+                )
+            ],
+        )
+
+        # New observed stack is Django (not FastAPI)
+        result = resolve_stack_choice(
+            prior_rule_set=prior,
+            pack_root=Path(__file__).parent / "fixture_stack_profiles",
+            grill_stack=("python", "fastapi"),
+            observed_stack_identifiers=("python", "django"),
+            choice="audit",
+            today=date(2026, 8, 28),
+        )
+
+        # The FastAPI rule should still be present but marked not-applicable
+        fastapi_rule = [r for r in result.rules if r.rule_id == "SPFPY-R01"]
+        assert len(fastapi_rule) == 1
+        assert fastapi_rule[0].status == "verified-not-applicable"
+
+    def test_rules_pack_rules_are_untouched(self) -> None:
+        """Rules from rules-pack are never modified by choice resolution."""
+        from engineering_audit.standards_integration import resolve_stack_choice
+        from datetime import date
+
+        prior = RuleSet(
+            version="1.0",
+            project="test",
+            rules=[
+                Rule(
+                    rule_id="D06-R01",
+                    domain_id="d06",
+                    text_short="Type hints",
+                    text_body="Original body",
+                    source="rules-pack",
+                    status="provisional",
+                    verified_date="2026-08-15",
+                )
+            ],
+        )
+
+        result = resolve_stack_choice(
+            prior_rule_set=prior,
+            pack_root=Path(__file__).parent / "fixture_stack_profiles",
+            grill_stack=("python",),
+            observed_stack_identifiers=("python", "fastapi"),
+            choice="audit",
+            today=date(2026, 8, 28),
+        )
+
+        # Original rule should be completely unchanged
+        original = [r for r in result.rules if r.rule_id == "D06-R01"]
+        assert len(original) == 1
+        assert original[0] == prior.rules[0]
+
+
+class TestStackChoiceDecisionRecord:
+    """Tests for the stack choice decision record."""
+
+    def test_decision_record_round_trips_to_json(self) -> None:
+        """Decision record can be serialized and deserialized as JSON."""
+        from engineering_audit.standards_integration import (
+            build_stack_choice_decision,
+        )
+        from engineering_audit.stack_detection import StackEvidence, DetectedStack
+        import json
+        from datetime import datetime
+
+        grill_stack = ("python", "fastapi")
+        observed_stack = DetectedStack(
+            identifiers=("python", "django"),
+            evidence={
+                "python": StackEvidence(
+                    file_path="pyproject.toml",
+                    dependency_or_line="[project]",
+                ),
+                "django": StackEvidence(
+                    file_path="pyproject.toml",
+                    dependency_or_line="django",
+                ),
+            },
+        )
+
+        decision = build_stack_choice_decision(
+            grill_stack=grill_stack,
+            observed_stack=observed_stack,
+            choice="audit",
+            timestamp=datetime(2026, 8, 28, 12, 30, 45),
+        )
+
+        # Should be serializable to JSON
+        json_str = json.dumps(decision)
+        assert json_str is not None
+
+        # Should be deserializable from JSON
+        restored = json.loads(json_str)
+        assert restored["grill_stack"] == list(grill_stack)
+        assert restored["choice"] == "audit"
+        assert restored["observed_stack_identifiers"] == list(
+            observed_stack.identifiers
+        )

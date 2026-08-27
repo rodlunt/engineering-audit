@@ -9,10 +9,11 @@ where explicitly documented.
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
-from datetime import datetime
+from collections.abc import Iterable, Mapping
+from copy import deepcopy
+from datetime import date as date_type, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from engineering_audit.managed_blocks import (
     get_managed_block_closing_marker,
@@ -26,6 +27,8 @@ from engineering_audit.rendering import (
 )
 from engineering_audit.rules import get_domain_text
 from engineering_audit.schema import DomainResult
+from engineering_audit.stack_detection import DetectedStack
+from engineering_audit.stack_profiles import load_stack_profile_rules
 from engineering_audit.standards import Rule, RuleSet, RuleStatus
 from engineering_audit.standards_approval import DiffModel, SummaryCount
 
@@ -44,6 +47,8 @@ __all__ = [
     "build_diffs",
     "render_all",
     "write_standards",
+    "resolve_stack_choice",
+    "build_stack_choice_decision",
 ]
 
 # Module constants for document filenames
@@ -499,3 +504,194 @@ def write_standards(
     # All documents written successfully; now write the rule set
     rule_set_path = deliverables_dir / RULE_SET_FILENAME
     rule_set.write(rule_set_path)
+
+
+# ============================================================================
+# Stack choice resolution
+# ============================================================================
+
+
+def resolve_stack_choice(
+    prior_rule_set: RuleSet | None,
+    pack_root: Path,
+    grill_stack: tuple[str, ...],
+    observed_stack_identifiers: Iterable[str],
+    choice: str,
+    today: date_type | None = None,
+) -> RuleSet:
+    """Resolve a user's choice between grill stack and audit stack.
+
+    Implements ticket 07's choice resolution logic. When the grill stack
+    (recorded at grill time) differs from the observed stack (detected at
+    audit time), the user chooses to keep the grill stack or switch to the
+    audit stack. This function updates the rule set accordingly.
+
+    Args:
+        prior_rule_set: The rule set from the grill or prior audit.
+        pack_root: Root path of the rules pack (used to load stack profiles).
+        grill_stack: Stack identifiers recorded at grill time (tuple of strings).
+        observed_stack_identifiers: Stack identifiers detected in the current
+            audit (iterable of strings).
+        choice: User's choice: "grill" or "audit".
+            - "grill": Keep the prior rule set unchanged (proceed with grill stack).
+            - "audit": Load profiles for the observed stack and update rules
+              accordingly (switch to observed stack).
+        today: Date to use for verified_date fields. Defaults to today.
+            Provided as a parameter for testing determinism.
+
+    Returns:
+        Updated RuleSet reflecting the user's choice.
+
+    Raises:
+        ValueError: If choice is not "grill" or "audit".
+    """
+    if choice not in ("grill", "audit"):
+        raise ValueError(f"choice must be 'grill' or 'audit', not {choice!r}")
+
+    if today is None:
+        today = datetime.now().date()
+
+    # If no prior rule set, create an empty one
+    if prior_rule_set is None:
+        prior_rule_set = RuleSet(version="1.0", project="engineering-audit", rules=[])
+
+    # Choice "grill": return prior rule set unchanged
+    if choice == "grill":
+        return prior_rule_set
+
+    # Choice "audit": load profiles for observed stack and update rules
+    observed_identifiers = tuple(sorted(observed_stack_identifiers))
+
+    # Load stack profile rules for the observed stack
+    new_profile_rules = load_stack_profile_rules(pack_root, observed_identifiers)
+
+    # Build maps for easier lookup
+    prior_by_id = {r.rule_id: r for r in prior_rule_set.rules}
+
+    # Identify which profile identifiers are in the observed stack
+    observed_profile_identifiers = set()
+    for rule in new_profile_rules:
+        if rule.stack_profile:
+            observed_profile_identifiers.add(rule.stack_profile)
+
+    # Process rules: keep existing, add new, mark dropped stack rules as not-applicable
+    updated_rules: list[Rule] = []
+
+    # 1. Process all prior rules
+    for prior_rule in prior_rule_set.rules:
+        if prior_rule.source == "rules-pack":
+            # Rules-pack rules are never touched
+            updated_rules.append(prior_rule)
+        elif prior_rule.source == "stack-profile":
+            # Stack-profile rules: check if still applicable
+            if prior_rule.stack_profile in observed_profile_identifiers:
+                # Stack profile is still active; keep the rule unchanged
+                updated_rules.append(prior_rule)
+            else:
+                # Stack profile is no longer in observed stack; mark not-applicable
+                # Do NOT delete; retain the rule but mark it not-applicable
+                dropped_rule = deepcopy(prior_rule)
+                object.__setattr__(
+                    dropped_rule, "status", RuleStatus.VERIFIED_NOT_APPLICABLE.value
+                )
+                updated_rules.append(dropped_rule)
+        else:
+            # Unknown source; keep unchanged (defensive)
+            updated_rules.append(prior_rule)
+
+    # 2. Add new stack-profile rules not in prior set
+    for new_rule in new_profile_rules:
+        if new_rule.rule_id not in prior_by_id:
+            # New rule; add it with verified-pass status
+            added_rule = deepcopy(new_rule)
+            object.__setattr__(added_rule, "status", RuleStatus.VERIFIED_PASS.value)
+            object.__setattr__(added_rule, "verified_date", today.isoformat())
+            updated_rules.append(added_rule)
+
+    # 3. Check for conflicts between new stack-profile rules and rules-pack rules
+    # per ADR 0003: rules-pack wins, conflict is recorded on the rules-pack rule
+    rules_pack_by_id = {r.rule_id: r for r in updated_rules if r.source == "rules-pack"}
+    for profile_rule in new_profile_rules:
+        if profile_rule.rule_id in rules_pack_by_id:
+            # Conflict detected: same rule id in both rules-pack and stack-profile
+            pack_rule = rules_pack_by_id[profile_rule.rule_id]
+            # Record conflict on the rules-pack rule
+            conflict_info = {
+                "stack_profile": profile_rule.stack_profile,
+                "conflicting_rule_id": profile_rule.rule_id,
+            }
+            conflict_rule = deepcopy(pack_rule)
+            object.__setattr__(
+                conflict_rule,
+                "conflict_with_stack_profile",
+                conflict_info,
+            )
+            object.__setattr__(
+                conflict_rule,
+                "conflict_resolution",
+                "rules-pack-precedence",
+            )
+            # Replace the original pack rule with the one with conflict info
+            updated_rules = [
+                conflict_rule if r.rule_id == pack_rule.rule_id else r
+                for r in updated_rules
+            ]
+
+    # Return updated rule set
+    return RuleSet(
+        version=prior_rule_set.version,
+        project=prior_rule_set.project,
+        rules=updated_rules,
+    )
+
+
+def build_stack_choice_decision(
+    grill_stack: tuple[str, ...],
+    observed_stack: DetectedStack,
+    choice: str,
+    timestamp: datetime | None = None,
+) -> dict[str, Any]:
+    """Build a serializable record of the stack choice decision.
+
+    Creates a decision record holding:
+    - The grill stack (tuple of identifiers recorded at grill time)
+    - The observed stack WITH its evidence
+    - The chosen option ("grill" or "audit")
+    - A timestamp
+
+    This record is meant to be serializable to JSON and included in the audit output
+    so the user can see which stack was chosen and revisit the decision if the
+    code changes later.
+
+    Args:
+        grill_stack: Stack identifiers recorded at grill time.
+        observed_stack: DetectedStack object from the current audit (with evidence).
+        choice: User's choice: "grill" or "audit".
+        timestamp: Timestamp of the decision. Defaults to now.
+
+    Returns:
+        Dictionary with keys:
+        - grill_stack: list of identifiers
+        - observed_stack_identifiers: list of identifiers
+        - observed_stack_evidence: dict mapping identifier to evidence details
+        - choice: "grill" or "audit"
+        - timestamp: ISO 8601 formatted timestamp
+    """
+    if timestamp is None:
+        timestamp = datetime.now()
+
+    # Build evidence mapping
+    evidence_dict: dict[str, dict[str, str]] = {}
+    for identifier, evidence in observed_stack.evidence.items():
+        evidence_dict[identifier] = {
+            "file_path": evidence.file_path,
+            "dependency_or_line": evidence.dependency_or_line,
+        }
+
+    return {
+        "grill_stack": list(grill_stack),
+        "observed_stack_identifiers": list(observed_stack.identifiers),
+        "observed_stack_evidence": evidence_dict,
+        "choice": choice,
+        "timestamp": timestamp.isoformat(),
+    }

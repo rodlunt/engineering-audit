@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>engineering-audit: resolve stack mismatch</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f7f7f5;
+    --fg: #1a1a1a;
+    --muted: #5b5b5b;
+    --card-bg: #ffffff;
+    --border: #d8d8d4;
+    --accent: #2f5d50;
+    --warning: #d97706;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16181a;
+      --fg: #e8e8e6;
+      --muted: #a3a3a0;
+      --card-bg: #1f2224;
+      --border: #34383a;
+      --accent: #7fbfae;
+      --warning: #f59e0b;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 1.25rem;
+    line-height: 1.5;
+  }
+  h1 { font-size: 1.4rem; margin-bottom: 0.5rem; }
+  h2 { font-size: 1.1rem; margin-top: 1.5rem; margin-bottom: 0.75rem; }
+  p { margin: 0.75rem 0; }
+  .lede { color: var(--muted); font-size: 0.95rem; }
+  .warning-box {
+    background: var(--card-bg);
+    border: 2px solid var(--warning);
+    border-radius: 8px;
+    padding: 1.25rem;
+    margin: 1.5rem 0;
+  }
+  .stacks {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.5rem;
+    margin: 1.5rem 0;
+  }
+  .stack {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem;
+  }
+  .stack h3 { margin-top: 0; }
+  .stack-type {
+    font-size: 0.85rem;
+    color: var(--muted);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .stack ul {
+    list-style: none;
+    padding: 0;
+    margin: 0.75rem 0 0;
+  }
+  .stack li {
+    padding: 0.5rem 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .stack li:last-child { border-bottom: none; }
+  .evidence {
+    display: block;
+    font-size: 0.85rem;
+    color: var(--muted);
+    margin-top: 0.25rem;
+    word-break: break-word;
+  }
+  .consequences {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem;
+    margin: 1.5rem 0;
+  }
+  .consequence {
+    margin-bottom: 1.25rem;
+  }
+  .consequence:last-child { margin-bottom: 0; }
+  .consequence h4 {
+    margin: 0 0 0.5rem;
+    font-size: 0.95rem;
+    color: var(--accent);
+  }
+  .consequence p { margin: 0.25rem 0; font-size: 0.9rem; }
+  .buttons {
+    display: flex;
+    gap: 1rem;
+    justify-content: center;
+    margin-top: 2rem;
+    padding: 1.25rem;
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  button {
+    padding: 0.75rem 1.5rem;
+    font-size: 1rem;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-weight: 600;
+    transition: all 0.2s ease;
+  }
+  button[type="submit"] {
+    background: var(--accent);
+    color: white;
+  }
+  button[type="submit"]:hover {
+    opacity: 0.9;
+    transform: scale(1.02);
+  }
+  @media (max-width: 768px) {
+    .stacks {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>
+</head>
+<body>
+<h1>Resolve Stack Mismatch</h1>
+<p class="lede">The tech stack recorded at grill time does not match the stack observed in the current code. Choose which stack is correct.</p>
+
+<div class="warning-box">
+  <p><strong>Stack mismatch detected:</strong> The engineering grill recorded one tech stack, but the current code uses a different one. This may indicate the code has changed since the grill, or the grill's intent was not reflected in the code.</p>
+</div>
+
+<div class="stacks">
+  <div class="stack">
+    <div class="stack-type">Grill Stack (Recorded at Grill Time)</div>
+    <h3>Grill Stack</h3>
+    $grill_stack_html
+  </div>
+  <div class="stack">
+    <div class="stack-type">Audit Stack (Observed in Code Now)</div>
+    <h3>Observed Stack</h3>
+    $observed_stack_html
+  </div>
+</div>
+
+<div class="consequences">
+  <h2>Consequences of Your Choice</h2>
+
+  <div class="consequence">
+    <h4>Use Grill Stack</h4>
+    <p>Proceed with the provisional rules as recorded at grill time. The audit will continue with the grill's stack selection.</p>
+    <p><strong>Warning:</strong> The code may not match the grill's original intent, since the observed stack is different.</p>
+  </div>
+
+  <div class="consequence">
+    <h4>Use Audit Stack</h4>
+    <p>Reload stack profiles for the observed stack. This will add new rules from the observed stack's profile that were not in the grill, and update the rule set accordingly.</p>
+    <p><strong>Note:</strong> Grill-time rules specific to the original stack will be retained but marked as no longer applicable if they don't apply to the new stack.</p>
+  </div>
+</div>
+
+<div class="buttons">
+  <form method="POST" action="/submit-stack-choice" style="margin: 0; display: flex; gap: 1rem;">
+    <input type="hidden" name="csrf_token" value="$csrf_token">
+    <button type="submit" name="action" value="grill">Use Grill Stack</button>
+    <button type="submit" name="action" value="audit">Use Audit Stack</button>
+  </form>
+</div>
+</body>
+</html>

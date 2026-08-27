@@ -92,12 +92,20 @@ from engineering_audit.run_state_io import (
     load_run_progress_file,
     save_run_progress,
 )
+from engineering_audit.stack_detection import (
+    describe_stack_difference,
+    detect_stack,
+    grill_stack_from_rule_set,
+    stacks_differ,
+)
 from engineering_audit.standards_integration import (
     audit_rules_from_domain_results,
     build_diffs,
+    build_stack_choice_decision,
     derive_summary_counts,
     load_prior_rule_set,
     render_all,
+    resolve_stack_choice,
     verdicts_from_domain_results,
     write_standards,
 )
@@ -878,6 +886,31 @@ def _resume_offer(prior: PriorRun, repo_name: str) -> dict[str, Any]:
             "audit work that has already been done."
         ),
     }
+
+
+def _persist_stack_choice(
+    run: RunTracker, deliverables_dir: Path, decision: dict[str, Any]
+) -> None:
+    """Write the stack choice decision to disk as a sibling to run-state.json.
+
+    The decision is persisted to stack-choice.json so the user can revisit the
+    decision later if the code changes. Never raises: failures are queued as
+    warnings but do not interrupt the run, consistent with other persistence
+    failures in this module (see _persist_run, _remove_progress_file).
+    """
+    stack_choice_path = deliverables_dir / "stack-choice.json"
+    try:
+        atomic_write_text(stack_choice_path, json.dumps(decision, indent=2))
+    except Exception as exc:
+        # Queue warning rather than print to stderr, for consistency with
+        # _persist_run and other non-fatal persistence failures. The warning
+        # travels in the render_report response and is visible to the caller.
+        _queue_persist_warning(
+            run,
+            f"Could not write stack choice decision to {stack_choice_path}: {exc}. The run "
+            "is unaffected and its results are still on disk, but the stack choice decision "
+            "record will not be available. Tell the user.",
+        )
 
 
 def _require_run(state: AppState) -> RunTracker:
@@ -2508,6 +2541,7 @@ def _register_report_tools(mcp: MCPServer, state: AppState) -> None:
 
         # Standards generation and approval (after report is written, before run teardown)
         standards_status = "skipped"
+        stack_choice_decision = None
         try:
             if run.config_server is not None:
                 # Only process standards if there's a config server (interactive mode)
@@ -2516,27 +2550,82 @@ def _register_report_tools(mcp: MCPServer, state: AppState) -> None:
                     run.domain_results, state.pack
                 )
                 prior_rule_set = load_prior_rule_set(deliverables_dir)
-                merged = merge_rule_set(prior_rule_set, verdicts, audit_rules)
-                rendered = render_all(merged, state.pack)
-                diffs = build_diffs(deliverables_dir, rendered, run.repo_dir)
-                summary_counts = derive_summary_counts(prior_rule_set, merged)
 
-                # Present for approval
-                run.config_server.set_approval_data(diffs, summary_counts)
+                # Stack mismatch stop: compare grill stack to observed stack (ticket 07)
+                # Must happen before the merge step, as per ticket 06 specification.
+                used_rule_set = prior_rule_set
+                if run.repo_dir is not None and prior_rule_set is not None:
+                    # Detect observed stack from repo_dir
+                    observed_stack = detect_stack(run.repo_dir)
 
-                # Wait for user approval with a timeout
-                approval_timeout_s = 3600  # 1 hour
-                try:
-                    action = run.config_server.wait_approval(approval_timeout_s)
-                    if action == "approve":
-                        write_standards(
-                            deliverables_dir, rendered, merged, run.repo_dir
+                    # Extract grill stack from prior_rule_set (convert frozenset to tuple)
+                    grill_stack = tuple(
+                        sorted(grill_stack_from_rule_set(prior_rule_set))
+                    )
+
+                    # Check if stacks differ AND grill stack is not empty
+                    # Empty grill stack is normal (no prior rules exist for stacks yet);
+                    # it must never halt an audit.
+                    if grill_stack and stacks_differ(grill_stack, observed_stack):
+                        # Stacks differ and grill stack is non-empty: present to user
+                        difference = describe_stack_difference(
+                            grill_stack, observed_stack
                         )
-                        standards_status = "approved"
-                    else:
-                        standards_status = "cancelled"
-                except ConfigTimeoutError:
-                    standards_status = "timeout"
+                        run.config_server.set_stack_mismatch_data(
+                            grill_stack, observed_stack, difference
+                        )
+
+                        # Wait for user choice with timeout
+                        stack_timeout_s = 3600  # 1 hour, same as approval timeout
+                        try:
+                            choice = run.config_server.wait_stack_choice(
+                                stack_timeout_s
+                            )
+                            # Apply choice to get the resolved rule set
+                            used_rule_set = resolve_stack_choice(
+                                prior_rule_set,
+                                state.pack.root,
+                                grill_stack,
+                                observed_stack.identifiers,
+                                choice,
+                            )
+                            # Record the choice for output
+                            stack_choice_decision = build_stack_choice_decision(
+                                grill_stack, observed_stack, choice
+                            )
+                        except ConfigTimeoutError:
+                            # User did not respond in time: skip standards generation
+                            standards_status = "timeout"
+                            # Leave used_rule_set as prior_rule_set (no merge happens)
+
+                # Persist stack choice decision as soon as it's made, independent of approval
+                if stack_choice_decision is not None:
+                    _persist_stack_choice(run, deliverables_dir, stack_choice_decision)
+
+                # Proceed to merge only if not already timed out
+                if standards_status != "timeout":
+                    merged = merge_rule_set(used_rule_set, verdicts, audit_rules)
+                    rendered = render_all(merged, state.pack)
+                    diffs = build_diffs(deliverables_dir, rendered, run.repo_dir)
+                    summary_counts = derive_summary_counts(prior_rule_set, merged)
+
+                    # Present for approval
+                    run.config_server.set_approval_data(diffs, summary_counts)
+
+                    # Wait for user approval with a timeout
+                    approval_timeout_s = 3600  # 1 hour
+                    try:
+                        action = run.config_server.wait_approval(approval_timeout_s)
+                        if action == "approve":
+                            write_standards(
+                                deliverables_dir, rendered, merged, run.repo_dir
+                            )
+                            standards_status = "approved"
+                        else:
+                            standards_status = "cancelled"
+                    except ConfigTimeoutError:
+                        standards_status = "timeout"
+
             else:
                 # No config server means non-interactive; skip standards
                 standards_status = "skipped"
@@ -2577,6 +2666,10 @@ def _register_report_tools(mcp: MCPServer, state: AppState) -> None:
             "rules_fetched": rules_fetch_summary,
             "standards_status": standards_status,
         }
+
+        # Include stack choice info if a choice was made
+        if stack_choice_decision is not None:
+            response["stack_choice"] = stack_choice_decision.get("choice")
         unsupported = rules_fetch_summary["verdicts_without_rules_fetched_domain_ids"]
         if unsupported:
             response["warnings"] = [
