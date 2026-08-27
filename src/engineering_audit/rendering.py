@@ -42,7 +42,7 @@ def render_agent_standard(rule_set: RuleSet) -> str:
 
     Produces concise, imperative markdown for coding agents, grouping rules by
     domain and showing rule ID, short text, status with date, and full text.
-    Provisional rules are annotated with "grill intent only, not yet audited".
+    Provisional rules are annotated with "grill intent only, not yet audited against code".
     Findings include severity. All output is wrapped in managed-block markers.
 
     Args:
@@ -89,7 +89,7 @@ def render_agent_standard(rule_set: RuleSet) -> str:
                 status_line += f", severity: {rule.severity}"
             status_line += ")"
             if rule.status == RuleStatus.PROVISIONAL.value:
-                status_line += " - grill intent only, not yet audited"
+                status_line += " - grill intent only, not yet audited against code"
             lines.append(status_line)
             lines.append("")
 
@@ -173,6 +173,8 @@ def render_human_standard(
             if rule.status == RuleStatus.VERIFIED_FINDING.value:
                 status_line += f", severity: {rule.severity}"
             status_line += ")"
+            if rule.status == RuleStatus.PROVISIONAL.value:
+                status_line += " - grill intent only, not yet audited against code"
             lines.append(status_line)
             lines.append("")
 
@@ -325,7 +327,9 @@ def render_policy(rule_set: RuleSet) -> str:
 
     # Provisional Rules section
     if provisional_rules:
-        lines.append("## Provisional Rules (grill intent only, not yet audited)")
+        lines.append(
+            "## Provisional Rules (grill intent only, not yet audited against code)"
+        )
         lines.append("")
         for rule in provisional_rules:
             lines.append(f"### {rule.text_short} ({rule.rule_id})")

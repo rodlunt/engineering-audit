@@ -98,6 +98,7 @@ from engineering_audit.stack_detection import (
     grill_stack_from_rule_set,
     stacks_differ,
 )
+from engineering_audit.standards import Rule as StandardsRule, RuleSet
 from engineering_audit.standards_integration import (
     audit_rules_from_domain_results,
     build_diffs,
@@ -2440,6 +2441,137 @@ def _register_feedback_tools(mcp: MCPServer, state: AppState) -> None:
         }
 
 
+def _register_grill_tools(mcp: MCPServer, state: AppState) -> None:
+    """Grill-side provisional standards generation.
+
+    At the end of the grill Hot Seat step, after the user confirms the shared
+    understanding, the grill skill calls write_grill_standards_artefacts to
+    generate a rule set from the grill's captured rules, marked provisional,
+    and render and write the three standards documents.
+    """
+
+    @mcp.tool()
+    def write_grill_standards_artefacts(
+        grill_rules: str,
+        output_dir: str,
+        project_dir: str | None = None,
+    ) -> dict[str, Any]:
+        """Generate provisional standards artefacts from grill-captured rules.
+
+        Called at the end of the grill Hot Seat step after the user confirms the
+        shared understanding. Generates a rule set from the grill's captured rules,
+        marks all rules as provisional with today's date, renders the three
+        standards documents with provisional annotations, and writes them to disk
+        using managed-block markers. No user approval is required; documents are
+        written immediately.
+
+        Args:
+            grill_rules: JSON array of rule objects captured from the grill, each
+                with rule_id, domain_id, text_short, text_body, source, and optionally
+                stack_profile. All rules will be marked provisional with today's date.
+            output_dir: Path to the directory where rule-set.json will be written
+                (typically the project's audit-output directory).
+            project_dir: Optional path to the project root. If provided, the three
+                standards documents are written to project_dir/docs/. If not provided,
+                they are written to output_dir.
+
+        Returns:
+            Dictionary with keys:
+            - success: Boolean indicating successful write
+            - rule_set_path: Path to the written rule-set.json
+            - document_paths: Dict mapping document names to their written paths
+            - rules_count: Number of rules in the rule set
+            - created_date: ISO date string when the rule set was created
+            - errors: List of error messages if success is False
+        """
+        try:
+            # Parse grill rules from JSON
+            rules_data = json.loads(grill_rules)
+            if not isinstance(rules_data, list):
+                return {
+                    "success": False,
+                    "errors": ["grill_rules must be a JSON array of rule objects"],
+                }
+
+            # Convert to Rule objects with provisional status
+            today = datetime.now().date().isoformat()
+            rules: list[StandardsRule] = []
+
+            for rule_data in rules_data:
+                try:
+                    # Create a Rule object with provisional status
+                    rule = StandardsRule(
+                        rule_id=rule_data["rule_id"],
+                        domain_id=rule_data.get("domain_id"),
+                        text_short=rule_data["text_short"],
+                        text_body=rule_data["text_body"],
+                        source=rule_data["source"],
+                        stack_profile=rule_data.get("stack_profile"),
+                        status="provisional",
+                        verified_date=today,
+                        grill_intent_note=rule_data.get(
+                            "grill_intent_note",
+                            "Recorded from engineering-grill intent.",
+                        ),
+                    )
+                    rules.append(rule)
+                except (KeyError, ValueError) as exc:
+                    return {
+                        "success": False,
+                        "errors": [f"Invalid rule object in grill_rules: {exc}"],
+                    }
+
+            # Create provisional rule set
+            rule_set = RuleSet(
+                version="1.0",
+                project="engineering-audit",
+                rules=rules,
+            )
+
+            # Render all three documents
+            rendered = render_all(rule_set)
+
+            # Determine directories
+            output_path = Path(output_dir)
+            project_path = Path(project_dir) if project_dir else None
+
+            # Write standards and rule set
+            try:
+                write_standards(output_path, rendered, rule_set, project_path)
+            except Exception as exc:
+                return {
+                    "success": False,
+                    "errors": [f"Failed to write standards: {exc}"],
+                }
+
+            # Compute document paths for response
+            docs_dir = (project_path / "docs") if project_path else output_path
+            document_paths = {
+                "agent-standard": str(docs_dir / "coding-standard.agent.md"),
+                "human-standard": str(docs_dir / "engineering-standard.md"),
+                "engineering-policy": str(docs_dir / "engineering-policy.md"),
+            }
+
+            return {
+                "success": True,
+                "rule_set_path": str(output_path / "rule-set.json"),
+                "document_paths": document_paths,
+                "rules_count": len(rules),
+                "created_date": today,
+            }
+
+        except json.JSONDecodeError as exc:
+            return {
+                "success": False,
+                "errors": [f"Invalid JSON in grill_rules: {exc}"],
+            }
+        except Exception as exc:
+            return {
+                "success": False,
+                "errors": [f"Unexpected error: {type(exc).__name__}: {exc}"],
+            }
+
+
 def _register_report_tools(mcp: MCPServer, state: AppState) -> None:
     """Finishing a run: rendering and writing out its report."""
 
@@ -2794,6 +2926,7 @@ def build_server(
     _register_result_tools(mcp, state)
     _register_issue_tools(mcp, state)
     _register_feedback_tools(mcp, state)
+    _register_grill_tools(mcp, state)
     _register_report_tools(mcp, state)
 
     return mcp, state

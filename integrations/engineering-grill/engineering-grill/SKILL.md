@@ -373,6 +373,32 @@ End with a compact handoff: project intent, active and deferred domains, importa
 build gates, residual risks, and open items. Recommend a post-build engineering audit as the
 verification stage. Start that audit only after a separate user request.
 
+## Generate provisional standards
+
+The grill's rules capture the project's engineering intent before code exists. Generate the three provisional standards documents (agent coding standard, human coding standard, engineering policy) from the captured rules.
+
+Call `write_grill_standards_artefacts` with:
+
+- `grill_rules` (string, required): JSON array of the grill's captured rule objects. Each rule object must have `rule_id`, `text_short`, `text_body`, and `source`. Fields `domain_id`, `stack_profile`, and `grill_intent_note` are optional (if `grill_intent_note` is omitted, the tool sets it to "Recorded from engineering-grill intent."). The tool marks all rules as provisional with today's date.
+- `output_dir` (string, required): the project's audit output directory, typically `audit-output/`, or a configured location if known from a prior audit run or CLAUDE.md.
+- `project_dir` (string, optional): the project root directory. If provided, documents are written to `project_dir/docs/`. If not provided, they are written to `output_dir`.
+
+On success, the tool returns a dictionary with keys: `success` (Boolean, value True), `rule_set_path` (string), `document_paths` (dictionary with keys `agent-standard`, `human-standard`, `engineering-policy`), `rules_count` (integer), and `created_date` (ISO date string). On failure, it returns `success` (Boolean, value False) and `errors` (list of error message strings).
+
+**All rules are recorded as provisional.** Each document is annotated "provisional (grill intent only, not yet audited against code)" to signal that no code verification has occurred yet. A later audit run on the same project loads the provisional rule set and merges audit verdicts into it, upgrading provisional rules to verified-pass or verified-finding with evidence. The grill's intent is preserved and evolved with facts.
+
+**No user approval is required at grill time.** The documents are written immediately to their configured paths with managed block markers. The grill is then complete; do not wait for further user review.
+
+If `success` is False, report the `errors` list to the user. Do not silently continue; a tool failure prevents document writing and must be surfaced.
+
+Next, ask whether to add links to the three standards documents in the project's CLAUDE.md, AGENTS.md, or README. If the user agrees, add them to an appropriate section (e.g. "Engineering standards and policies"). Example text to add:
+
+```
+See [Agent Coding Standard](docs/coding-standard.agent.md), [Engineering Standard](docs/engineering-standard.md), and [Engineering Policy](docs/engineering-policy.md) for the standards this project is committed to.
+```
+
+Add the links and confirm completion, then the grill is finished.
+
 ## Host notes
 
 - **The MCP tools may be deferred.** Load both before starting, and tell any sub-agent to do the

@@ -349,14 +349,15 @@ def test_strip_otel_middleware_raises_if_a_lookalike_survives_the_isinstance_fil
 
 
 def test_tool_surface_is_the_ten_tools_with_their_documented_parameters() -> None:
-    # build_server composes seven per-concern registration functions; the
+    # build_server composes eight per-concern registration functions; the
     # protocol surface they produce between them is what clients and AUDIT.md
     # depend on, so it is pinned here rather than left to be noticed later by
     # a client that stopped working.
     #
     # begin_run's 'resume' was added deliberately with crash-recovery: it is
     # the only way an agent can accept or decline continuing an interrupted
-    # run, so it has to be on the wire. No tool was added or removed.
+    # run, so it has to be on the wire. No tool was added or removed since then.
+    # write_grill_standards_artefacts was added for grill-side standards generation.
     mcp, _state = build_server(FIXTURE_PACK)
     tools = asyncio.run(mcp.list_tools())
 
@@ -370,6 +371,7 @@ def test_tool_surface_is_the_ten_tools_with_their_documented_parameters() -> Non
         "run_status",
         "file_issues",
         "submit_feedback",
+        "write_grill_standards_artefacts",
         "render_report",
     ]
 
@@ -407,6 +409,10 @@ def test_tool_surface_is_the_ten_tools_with_their_documented_parameters() -> Non
         "submit_feedback": (
             ["extra_text", "report_conclusion", "report_fix_first"],
             [],
+        ),
+        "write_grill_standards_artefacts": (
+            ["grill_rules", "output_dir", "project_dir"],
+            ["grill_rules", "output_dir"],
         ),
         "render_report": (["finished"], ["finished"]),
     }
