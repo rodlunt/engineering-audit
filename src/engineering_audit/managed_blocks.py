@@ -14,9 +14,25 @@ import re
 from datetime import date
 from pathlib import Path
 
-__all__ = ["write_managed_block"]
+__all__ = ["write_managed_block", "wrap_managed_block"]
 
 logger = logging.getLogger(__name__)
+
+
+def wrap_managed_block(content: str, block_id: str) -> str:
+    """Wrap content in managed-block markers.
+
+    This is the single source of truth for managed-block marker format.
+    All code that needs to wrap content with audit markers must use this function.
+
+    Args:
+        content: The content to wrap.
+        block_id: The block identifier (e.g. 'agent-standard').
+
+    Returns:
+        Content wrapped with opening and closing markers.
+    """
+    return f'<!-- audit:start id="{block_id}" -->\n{content}\n<!-- audit:end -->'
 
 
 def write_managed_block(file_path: Path, content: str, block_id: str) -> bool:
@@ -69,16 +85,9 @@ def _create_file_with_managed_block(
     """
     title = _title_from_block_id(block_id)
     today = date.today().isoformat()
+    wrapped_content = wrap_managed_block(content, block_id)
 
-    file_content = (
-        f"# {title}\n"
-        f"\n"
-        f"Date: {today}\n"
-        f"\n"
-        f'<!-- audit:start id="{block_id}" -->\n'
-        f"{content}\n"
-        f"<!-- audit:end -->\n"
-    )
+    file_content = f"# {title}\n\nDate: {today}\n\n{wrapped_content}\n"
 
     try:
         file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -133,10 +142,9 @@ def _update_managed_block_in_existing_file(
     # Extract content before and after the managed block
     before, after = _extract_surrounding_content(file_text, block_id)
 
-    # Construct the new file content
-    opening_marker = f'<!-- audit:start id="{block_id}" -->'
-    closing_marker = "<!-- audit:end -->"
-    new_file_content = f"{before}{opening_marker}\n{content}\n{closing_marker}{after}"
+    # Construct the new file content using the single source of truth for markers
+    wrapped_content = wrap_managed_block(content, block_id)
+    new_file_content = f"{before}{wrapped_content}{after}"
 
     try:
         file_path.write_text(new_file_content, encoding="utf-8")

@@ -249,6 +249,86 @@ class TestRuleValidation:
         assert rule.rule_id == "S-React-R02"
         assert rule.status == "provisional"
 
+    def test_rule_verified_pass_forbids_fix_due(self) -> None:
+        """A verified-pass rule must not have fix_due."""
+        rule_data = {
+            "rule_id": "D06-R01",
+            "domain_id": "d06",
+            "text_short": "Type hints",
+            "text_body": "Use type hints.",
+            "source": "rules-pack",
+            "stack_profile": None,
+            "status": "verified-pass",
+            "verified_date": "2026-08-25",
+            "severity": None,
+            "finding_details": None,
+            "conflict_with_stack_profile": None,
+            "conflict_resolution": None,
+            "source_url": None,
+            "fix_due": "2026-09-15",
+        }
+        with pytest.raises(ValueError) as exc_info:
+            Rule.model_validate(rule_data)
+        error_msg = str(exc_info.value)
+        assert "D06-R01" in error_msg
+        assert "verified-pass" in error_msg
+        assert "fix_due" in error_msg
+
+    def test_rule_provisional_forbids_ownership(self) -> None:
+        """A provisional rule must not have ownership."""
+        rule_data = {
+            "rule_id": "S-React-R02",
+            "domain_id": None,
+            "text_short": "Component testing",
+            "text_body": "Test components.",
+            "source": "stack-profile",
+            "stack_profile": "react",
+            "status": "provisional",
+            "verified_date": "2026-08-25",
+            "severity": None,
+            "finding_details": None,
+            "conflict_with_stack_profile": None,
+            "conflict_resolution": None,
+            "source_url": None,
+            "ownership": "Frontend team",
+        }
+        with pytest.raises(ValueError) as exc_info:
+            Rule.model_validate(rule_data)
+        error_msg = str(exc_info.value)
+        assert "S-React-R02" in error_msg
+        assert "provisional" in error_msg
+        assert "ownership" in error_msg
+
+    def test_rule_verified_finding_allows_fix_due_and_ownership(self) -> None:
+        """A verified-finding rule can have fix_due and ownership."""
+        rule_data = {
+            "rule_id": "D06-R03",
+            "domain_id": "d06",
+            "text_short": "Error handling",
+            "text_body": "Handle errors.",
+            "source": "rules-pack",
+            "stack_profile": None,
+            "status": "verified-finding",
+            "verified_date": "2026-08-25",
+            "severity": "medium",
+            "finding_details": {
+                "precondition": "Test",
+                "path": "src/test.py",
+                "line": 1,
+                "issue_title": "Title",
+                "issue_body": "Body",
+            },
+            "conflict_with_stack_profile": None,
+            "conflict_resolution": None,
+            "source_url": None,
+            "fix_due": "2026-09-15",
+            "ownership": "Backend team",
+        }
+        rule = Rule.model_validate(rule_data)
+        assert rule.rule_id == "D06-R03"
+        assert rule.fix_due == "2026-09-15"
+        assert rule.ownership == "Backend team"
+
 
 class TestRuleSetValidation:
     """Tests for RuleSet schema validation."""
@@ -526,3 +606,69 @@ class TestRuleSetFileIO:
         assert rule.conflict_with_stack_profile["stack_rule_id"] == "S-FastAPI-R01"
         assert rule.conflict_resolution == "Rules pack wins"
         assert rule.source_url == "https://example.com/rules/d06.md#R02"
+
+    def test_ruleset_preserves_new_policy_fields(self, tmp_path: Path) -> None:
+        """RuleSet preserves revisit_trigger, fix_due, and ownership fields."""
+        rule_set_file = tmp_path / "rule-set.json"
+        ruleset = RuleSet(
+            version="1.0",
+            project="test-project",
+            rules=[
+                Rule(
+                    rule_id="D06-R01",
+                    domain_id="d06",
+                    text_short="Type hints",
+                    text_body="Use type hints.",
+                    source="rules-pack",
+                    stack_profile=None,
+                    status="verified-pass",
+                    verified_date="2026-08-25",
+                    severity=None,
+                    finding_details=None,
+                    conflict_with_stack_profile=None,
+                    conflict_resolution=None,
+                    source_url=None,
+                    revisit_trigger="If codebase grows significantly",
+                ),
+                Rule(
+                    rule_id="D06-R03",
+                    domain_id="d06",
+                    text_short="Error handling",
+                    text_body="Handle errors.",
+                    source="rules-pack",
+                    stack_profile=None,
+                    status="verified-finding",
+                    verified_date="2026-08-25",
+                    severity="medium",
+                    finding_details={
+                        "precondition": "Test",
+                        "path": "src/test.py",
+                        "line": 1,
+                        "issue_title": "Title",
+                        "issue_body": "Body",
+                    },
+                    conflict_with_stack_profile=None,
+                    conflict_resolution=None,
+                    source_url=None,
+                    fix_due="2026-09-15",
+                    ownership="Backend team",
+                    revisit_trigger="Once the fix is merged",
+                ),
+            ],
+        )
+        ruleset.write(rule_set_file)
+        loaded = RuleSet.load(rule_set_file)
+
+        # Check first rule (passed, has revisit_trigger)
+        rule1 = loaded.rules[0]
+        assert rule1.rule_id == "D06-R01"
+        assert rule1.revisit_trigger == "If codebase grows significantly"
+        assert rule1.fix_due is None
+        assert rule1.ownership is None
+
+        # Check second rule (finding, has all three fields)
+        rule2 = loaded.rules[1]
+        assert rule2.rule_id == "D06-R03"
+        assert rule2.fix_due == "2026-09-15"
+        assert rule2.ownership == "Backend team"
+        assert rule2.revisit_trigger == "Once the fix is merged"

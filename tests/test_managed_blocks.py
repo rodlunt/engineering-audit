@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from engineering_audit.managed_blocks import write_managed_block
+from engineering_audit.managed_blocks import wrap_managed_block, write_managed_block
 
 
 class TestWriteManagedBlock:
@@ -340,3 +340,52 @@ class TestWriteManagedBlock:
         written_text = test_file.read_text()
         assert "New" in written_text
         assert "Old" not in written_text
+
+
+class TestWrapManagedBlock:
+    """Tests for the wrap_managed_block function."""
+
+    def test_wrap_managed_block_produces_valid_markers(self) -> None:
+        """wrap_managed_block output contains valid opening and closing markers."""
+        content = "Test content here"
+        block_id = "test-block"
+
+        wrapped = wrap_managed_block(content, block_id)
+
+        assert '<!-- audit:start id="test-block" -->' in wrapped
+        assert "<!-- audit:end -->" in wrapped
+        assert content in wrapped
+
+    def test_wrap_managed_block_round_trips_with_write(self, tmp_path: Path) -> None:
+        """Content wrapped with wrap_managed_block can be round-tripped through write/read.
+
+        This test ensures that wrap_managed_block and write_managed_block use
+        the same marker format. If a second copy of the marker format were
+        reintroduced, this test would fail because the parser would not
+        recognize the output of wrap_managed_block.
+        """
+        test_file = tmp_path / "test.md"
+        original_content = "Original test content"
+        block_id = "test-standard"
+
+        # Create a file with markers using wrap_managed_block
+        wrapped_content = wrap_managed_block(original_content, block_id)
+        test_file.write_text(
+            f"# Test\n\nSome preamble\n\n{wrapped_content}\n\nSome footer\n"
+        )
+
+        # Update using write_managed_block with new content
+        new_content = "Updated test content"
+        result = write_managed_block(test_file, new_content, block_id)
+
+        # Should succeed because markers are valid
+        assert result is True
+
+        # Content should be updated
+        written_text = test_file.read_text()
+        assert new_content in written_text
+        assert original_content not in written_text
+
+        # Preamble and footer should be preserved
+        assert "Some preamble" in written_text
+        assert "Some footer" in written_text

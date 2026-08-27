@@ -93,6 +93,18 @@ class Rule(BaseModel):
         default=None,
         description="Note recorded from engineering-grill intent for provisional rules",
     )
+    revisit_trigger: str | None = Field(
+        default=None,
+        description="Future event or milestone that reactivates this rule for reconsideration",
+    )
+    fix_due: str | None = Field(
+        default=None,
+        description="When the finding should be fixed by (if status is verified-finding)",
+    )
+    ownership: str | None = Field(
+        default=None,
+        description="Who owns fixing or maintaining this rule (if status is verified-finding)",
+    )
 
     @model_validator(mode="after")
     def _status_must_be_valid(self) -> "Rule":
@@ -135,6 +147,28 @@ class Rule(BaseModel):
                 raise ValueError(
                     f"rule {self.rule_id}: status is {self.status} but finding_details "
                     "is not null; finding_details is only for verified-finding rules"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _only_findings_have_fix_due(self) -> "Rule":
+        """Rules with status != verified-finding must not have fix_due."""
+        if self.status != RuleStatus.VERIFIED_FINDING.value:
+            if self.fix_due is not None:
+                raise ValueError(
+                    f"rule {self.rule_id}: status is {self.status} but fix_due "
+                    "is not null; fix_due is only for verified-finding rules"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _only_findings_have_ownership(self) -> "Rule":
+        """Rules with status != verified-finding must not have ownership."""
+        if self.status != RuleStatus.VERIFIED_FINDING.value:
+            if self.ownership is not None:
+                raise ValueError(
+                    f"rule {self.rule_id}: status is {self.status} but ownership "
+                    "is not null; ownership is only for verified-finding rules"
                 )
         return self
 
