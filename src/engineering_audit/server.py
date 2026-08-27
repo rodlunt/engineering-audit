@@ -92,6 +92,16 @@ from engineering_audit.run_state_io import (
     load_run_progress_file,
     save_run_progress,
 )
+from engineering_audit.standards_integration import (
+    audit_rules_from_domain_results,
+    build_diffs,
+    derive_summary_counts,
+    load_prior_rule_set,
+    render_all,
+    verdicts_from_domain_results,
+    write_standards,
+)
+from engineering_audit.standards_merge import merge_rule_set
 from engineering_audit.schema import (
     RUN_STATE_SCHEMA_VERSION,
     AuditConfig,
@@ -2496,6 +2506,47 @@ def _register_report_tools(mcp: MCPServer, state: AppState) -> None:
         _persist_run(run, completed=True)
         _remove_progress_file(run)
 
+        # Standards generation and approval (after report is written, before run teardown)
+        standards_status = "skipped"
+        try:
+            if run.config_server is not None:
+                # Only process standards if there's a config server (interactive mode)
+                verdicts = verdicts_from_domain_results(run.domain_results)
+                audit_rules = audit_rules_from_domain_results(
+                    run.domain_results, state.pack
+                )
+                prior_rule_set = load_prior_rule_set(deliverables_dir)
+                merged = merge_rule_set(prior_rule_set, verdicts, audit_rules)
+                rendered = render_all(merged, state.pack)
+                diffs = build_diffs(deliverables_dir, rendered)
+                summary_counts = derive_summary_counts(prior_rule_set, merged)
+
+                # Present for approval
+                run.config_server.set_approval_data(diffs, summary_counts)
+
+                # Wait for user approval with a timeout
+                approval_timeout_s = 3600  # 1 hour
+                try:
+                    action = run.config_server.wait_approval(approval_timeout_s)
+                    if action == "approve":
+                        write_standards(deliverables_dir, rendered, merged)
+                        standards_status = "approved"
+                    else:
+                        standards_status = "cancelled"
+                except ConfigTimeoutError:
+                    standards_status = "timeout"
+            else:
+                # No config server means non-interactive; skip standards
+                standards_status = "skipped"
+        except Exception as e:
+            # Standards failures must not corrupt the run; log but continue
+            standards_status = f"error: {type(e).__name__}: {str(e)}"
+            _queue_persist_warning(
+                run,
+                f"Standards generation failed: {standards_status}. "
+                f"Review the standards_status field in the response for details.",
+            )
+
         all_findings = [f for r in run.domain_results.values() for f in r.findings]
         severity_counts = Counter(f.severity.value for f in all_findings)
         findings_summary = {
@@ -2522,6 +2573,7 @@ def _register_report_tools(mcp: MCPServer, state: AppState) -> None:
             "run_state_path": str(run_state_path),
             "findings_summary": findings_summary,
             "rules_fetched": rules_fetch_summary,
+            "standards_status": standards_status,
         }
         unsupported = rules_fetch_summary["verdicts_without_rules_fetched_domain_ids"]
         if unsupported:

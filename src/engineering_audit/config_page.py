@@ -327,6 +327,9 @@ class ConfigServer:
             if _APPROVAL_TEMPLATE_PATH.exists()
             else None
         )
+        # Approval flow for standards documents
+        self._approval_submitted = threading.Event()
+        self._approval_action: str | None = None  # "approve" or "cancel"
 
     def start(self) -> str:
         if self._httpd is not None:
@@ -467,9 +470,57 @@ class ConfigServer:
                 self.end_headers()
                 self.wfile.write(body)
 
+            def _handle_standards_submission(self) -> None:
+                """Handle Approve/Cancel from the standards approval page."""
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                except ValueError:
+                    self.send_error(
+                        HTTPStatus.BAD_REQUEST, "Invalid Content-Length header"
+                    )
+                    return
+                if length > _MAX_BODY_BYTES:
+                    self.send_error(
+                        HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "Request body too large"
+                    )
+                    return
+                raw_body = self.rfile.read(length).decode("utf-8")
+                fields = parse_qs(raw_body, keep_blank_values=True)
+
+                # Check CSRF token
+                token = fields.get("csrf_token", [None])[0]
+                if token is None or not secrets.compare_digest(
+                    token, server._csrf_token
+                ):
+                    self.send_error(
+                        HTTPStatus.FORBIDDEN, "Missing or invalid CSRF token"
+                    )
+                    return
+
+                # Get the action (approve or cancel)
+                action = fields.get("action", [None])[0]
+                if action not in ("approve", "cancel"):
+                    self.send_error(HTTPStatus.BAD_REQUEST, "Invalid action")
+                    return
+
+                with server._lock:
+                    server._approval_action = action
+                server._approval_submitted.set()
+
+                # Return a confirmation page
+                body = b"<html><body><p>Standards update processed. You can close this window.</p></body></html>"
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
             def do_POST(self) -> None:  # noqa: N802 - stdlib handler method name
                 if self.path == "/approve-standards":
                     self._serve_approval_page()
+                    return
+                if self.path == "/submit-standards":
+                    self._handle_standards_submission()
                     return
                 if self.path != "/submit":
                     self.send_error(HTTPStatus.NOT_FOUND)
@@ -821,6 +872,25 @@ class ConfigServer:
                     "submitted event set but no config stored: internal bug"
                 )
             return self._config
+
+    def wait_approval(self, timeout_s: float) -> str:
+        """Block for up to timeout_s seconds for approval or cancellation.
+
+        Returns:
+            "approve" if the user clicked Approve, "cancel" if they clicked Cancel.
+
+        Raises ConfigTimeoutError on expiry.
+        """
+        if not self._approval_submitted.wait(timeout=timeout_s):
+            raise ConfigTimeoutError(
+                f"No approval decision submitted within {timeout_s} seconds."
+            )
+        with self._lock:
+            if self._approval_action is None:
+                raise RuntimeError(
+                    "approval_submitted event set but no action stored: internal bug"
+                )
+            return self._approval_action
 
     def shutdown(self) -> None:
         if self._httpd is not None:

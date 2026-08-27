@@ -146,11 +146,11 @@ $summary
 $diffs
 
 <div class="buttons">
-  <form method="POST" action="/submit-standards" style="margin: 0;">
+  <form method="POST" action="/submit-standards" style="margin: 0; display: flex; gap: 1rem;">
     <input type="hidden" name="csrf_token" value="$csrf_token">
     <button type="submit" name="action" value="approve">Approve</button>
+    <button type="submit" name="action" value="cancel">Cancel</button>
   </form>
-  <button type="button" onclick="window.close();">Cancel</button>
 </div>
 </body>
 </html>

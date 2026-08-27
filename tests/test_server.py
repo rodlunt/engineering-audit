@@ -4321,3 +4321,299 @@ def test_begin_run_passes_the_hosts_own_name_to_the_update_check(
     )
 
     assert seen["host_cli"] == "claude-code"
+
+
+# Standards approval workflow tests (ticket 06)
+
+
+def test_render_report_with_approval_writes_all_four_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """render_report with approve action writes documents and rule set."""
+    from engineering_audit.config_page import ConfigServer
+    from engineering_audit.standards_integration import (
+        AGENT_STANDARD_FILENAME,
+        ENGINEERING_POLICY_FILENAME,
+        HUMAN_STANDARD_FILENAME,
+        RULE_SET_FILENAME,
+    )
+
+    mcp, state = build_server(FIXTURE_PACK)
+    out_dir = tmp_path / "audit-output"
+    _begin_run(mcp, out_dir)
+    _preset_config_env(monkeypatch, tmp_path)
+    _call(mcp, "start_config", {})
+    _call(mcp, "get_config", {"timeout_s": 1})
+    _record_d01_with_finding(mcp)
+    _record_d02_all_pass(mcp)
+
+    # Inject a mock config_server that will approve
+    def mock_wait_approval(self, timeout_s):
+        return "approve"
+
+    # Create a mock config_server and attach it to the run
+    mock_config_server = ConfigServer(state.pack.domains)
+    mock_config_server.wait_approval = lambda timeout_s: "approve"
+    if state.run is not None:
+        state.run.config_server = mock_config_server
+
+    result = _call(mcp, "render_report", {"finished": "2026-08-09T10:00:00Z"})
+
+    # Verify all four files were written
+    deliverables_dir = out_dir
+    assert (deliverables_dir / AGENT_STANDARD_FILENAME).exists()
+    assert (deliverables_dir / HUMAN_STANDARD_FILENAME).exists()
+    assert (deliverables_dir / ENGINEERING_POLICY_FILENAME).exists()
+    assert (deliverables_dir / RULE_SET_FILENAME).exists()
+
+    # Verify standards_status indicates approval
+    assert result["standards_status"] == "approved"
+
+    # Verify the documents contain real rule prose
+    agent_content = (deliverables_dir / AGENT_STANDARD_FILENAME).read_text(
+        encoding="utf-8"
+    )
+    assert "D01-R01" in agent_content
+    assert "D01-R02" in agent_content
+
+
+def test_render_report_with_cancel_writes_no_standards_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """render_report with cancel action writes no standards files."""
+    from engineering_audit.config_page import ConfigServer
+    from engineering_audit.standards_integration import (
+        AGENT_STANDARD_FILENAME,
+        ENGINEERING_POLICY_FILENAME,
+        HUMAN_STANDARD_FILENAME,
+        RULE_SET_FILENAME,
+    )
+
+    mcp, state = build_server(FIXTURE_PACK)
+    out_dir = tmp_path / "audit-output"
+    _begin_run(mcp, out_dir)
+    _preset_config_env(monkeypatch, tmp_path)
+    _call(mcp, "start_config", {})
+    _call(mcp, "get_config", {"timeout_s": 1})
+    _record_d01_with_finding(mcp)
+    _record_d02_all_pass(mcp)
+
+    # Create a mock config_server that will cancel
+    mock_config_server = ConfigServer(state.pack.domains)
+    mock_config_server.wait_approval = lambda timeout_s: "cancel"
+    if state.run is not None:
+        state.run.config_server = mock_config_server
+
+    result = _call(mcp, "render_report", {"finished": "2026-08-09T10:00:00Z"})
+
+    # Verify NO standards files were written
+    deliverables_dir = out_dir
+    assert not (deliverables_dir / AGENT_STANDARD_FILENAME).exists()
+    assert not (deliverables_dir / HUMAN_STANDARD_FILENAME).exists()
+    assert not (deliverables_dir / ENGINEERING_POLICY_FILENAME).exists()
+    assert not (deliverables_dir / RULE_SET_FILENAME).exists()
+
+    # Verify standards_status indicates cancellation
+    assert result["standards_status"] == "cancelled"
+
+
+def test_render_report_without_config_server_skips_standards(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """render_report without config_server (preset mode) skips standards."""
+    from engineering_audit.standards_integration import (
+        AGENT_STANDARD_FILENAME,
+        RULE_SET_FILENAME,
+    )
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    out_dir = tmp_path / "audit-output"
+    _begin_run(mcp, out_dir)
+    _preset_config_env(monkeypatch, tmp_path)
+    _call(mcp, "start_config", {})
+    _call(mcp, "get_config", {"timeout_s": 1})
+    _record_d01_with_finding(mcp)
+    _record_d02_all_pass(mcp)
+
+    result = _call(mcp, "render_report", {"finished": "2026-08-09T10:00:00Z"})
+
+    # Verify no standards files were written (no config_server in preset mode)
+    deliverables_dir = out_dir
+    assert not (deliverables_dir / AGENT_STANDARD_FILENAME).exists()
+    assert not (deliverables_dir / RULE_SET_FILENAME).exists()
+
+    # Verify standards_status indicates skip
+    assert result["standards_status"] == "skipped"
+
+
+def test_second_render_report_merges_with_existing_rule_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A second audit run on the same project merges with the existing rule set.
+
+    This test verifies ticket-06 acceptance criterion 4: that a second audit run
+    against the same deliverables directory merges rule verdicts instead of
+    replacing the entire rule set. Specifically:
+    - Rules that pass in both runs keep their original verified_date (proof of merge)
+    - Rules that change status are updated appropriately
+    - Rules from run 1 not in run 2's verdicts are still present in the file
+    - Rule count is >= run 1's count
+    - The rendered agent-standard.md reflects the merged set
+    """
+    from engineering_audit.config_page import ConfigServer
+    from engineering_audit.standards_integration import (
+        AGENT_STANDARD_FILENAME,
+        RULE_SET_FILENAME,
+    )
+
+    # ===== FIRST AUDIT RUN =====
+    mcp1, state1 = build_server(FIXTURE_PACK)
+    deliverables_dir = tmp_path / "deliverables"
+    _begin_run(mcp1, deliverables_dir)
+    _preset_config_env(monkeypatch, tmp_path)
+    _call(mcp1, "start_config", {})
+    _call(mcp1, "get_config", {"timeout_s": 1})
+
+    # First run: D01 has one pass and one finding, D02 all pass
+    _record_d01_with_finding(mcp1)
+    _record_d02_all_pass(mcp1)
+
+    # Mock config_server to approve
+    mock_config_server1 = ConfigServer(state1.pack.domains)
+    mock_config_server1.wait_approval = lambda timeout_s: "approve"
+    if state1.run is not None:
+        state1.run.config_server = mock_config_server1
+
+    result1 = _call(mcp1, "render_report", {"finished": "2026-08-09T10:00:00Z"})
+    assert result1["standards_status"] == "approved"
+
+    # Load and inspect the first rule-set.json
+    rule_set_path = deliverables_dir / RULE_SET_FILENAME
+    assert rule_set_path.exists()
+
+    rule_set_1_content = rule_set_path.read_text(encoding="utf-8")
+    rule_set_1_data = json.loads(rule_set_1_content)
+    run1_rule_count = len(rule_set_1_data["rules"])
+    assert run1_rule_count > 0
+
+    # Capture the verified_date of a rule that will pass in both runs
+    # D02-R01 should pass in both, so its verified_date should stay the same
+    d02_r01_run1 = None
+    run1_verified_dates = {}
+    for rule in rule_set_1_data["rules"]:
+        if rule["rule_id"] == "D02-R01":
+            d02_r01_run1 = rule
+            run1_verified_dates["D02-R01"] = rule.get("verified_date")
+        # Capture all verified dates for comparison
+        run1_verified_dates[rule["rule_id"]] = rule.get("verified_date")
+
+    assert d02_r01_run1 is not None, "D02-R01 should be in first run"
+    assert d02_r01_run1["status"] == "verified-pass"
+    original_d02_r01_date = d02_r01_run1["verified_date"]
+
+    # Also check that agent-standard.md was written
+    agent_md_path = deliverables_dir / AGENT_STANDARD_FILENAME
+    assert agent_md_path.exists()
+    agent_md_1_content = agent_md_path.read_text(encoding="utf-8")
+    assert "D02-R01" in agent_md_1_content
+
+    # ===== SECOND AUDIT RUN =====
+    # Build a fresh server for the second audit (simulating a new audit run)
+    mcp2, state2 = build_server(FIXTURE_PACK)
+    _begin_run(mcp2, deliverables_dir)
+    # deliverables_dir already exists and contains rule-set.json from run 1
+    _call(mcp2, "start_config", {})
+    _call(mcp2, "get_config", {"timeout_s": 1})
+
+    # Second run: Change D01-R02 from finding to pass, keep D02 all pass
+    # This tests that:
+    # - D01-R02 gets updated (changed rule)
+    # - D02-R01 keeps its original date (unchanged-pass rule)
+    # - D02-R02, D02-R03, D02-R04 keep their original dates (unchanged-pass rules)
+    _fetch_domain(mcp2, "d01")
+    verdicts_d01_run2 = _all_pass_verdicts(_domain(mcp2, "d01"))
+    # D01-R02 now passes instead of finding
+    assert verdicts_d01_run2[1]["rule_id"] == "D01-R02"
+    verdicts_d01_run2[1]["verdict"] = "pass"
+
+    result_d01_run2 = {
+        "domain_id": "d01",
+        "status": "completed",
+        "uninspected_evidence": [],
+        "rule_verdicts": verdicts_d01_run2,
+        "findings": [],  # No findings this time
+    }
+    _call(mcp2, "record_domain_result", {"result": result_d01_run2, "replace": False})
+
+    # D02 all pass again
+    _record_d02_all_pass(mcp2)
+
+    # Mock config_server to approve
+    mock_config_server2 = ConfigServer(state2.pack.domains)
+    mock_config_server2.wait_approval = lambda timeout_s: "approve"
+    if state2.run is not None:
+        state2.run.config_server = mock_config_server2
+
+    result2 = _call(mcp2, "render_report", {"finished": "2026-08-10T10:00:00Z"})
+    assert result2["standards_status"] == "approved"
+
+    # Load and inspect the second rule-set.json
+    rule_set_2_content = rule_set_path.read_text(encoding="utf-8")
+    rule_set_2_data = json.loads(rule_set_2_content)
+    run2_rule_count = len(rule_set_2_data["rules"])
+
+    # ===== ASSERTIONS FOR MERGE BEHAVIOR =====
+
+    # 1. Rule count should be >= first run (no rules dropped)
+    assert run2_rule_count >= run1_rule_count, (
+        f"Merge should not drop rules: run1={run1_rule_count}, run2={run2_rule_count}"
+    )
+
+    # 2. D02-R01 (unchanged-pass) should keep its original verified_date
+    d02_r01_run2 = None
+    for rule in rule_set_2_data["rules"]:
+        if rule["rule_id"] == "D02-R01":
+            d02_r01_run2 = rule
+            break
+
+    assert d02_r01_run2 is not None, "D02-R01 should still be in merged rule set"
+    assert d02_r01_run2["status"] == "verified-pass"
+    assert d02_r01_run2["verified_date"] == original_d02_r01_date, (
+        f"D02-R01 should keep original date {original_d02_r01_date}, but got {d02_r01_run2['verified_date']}"
+    )
+
+    # 3. D02-R02, D02-R03 should also keep their original dates
+    for rule_id in ["D02-R02", "D02-R03"]:
+        rule_run2 = next(
+            (r for r in rule_set_2_data["rules"] if r["rule_id"] == rule_id), None
+        )
+        assert rule_run2 is not None, (
+            f"{rule_id} should be in merged rule set (proof of retention)"
+        )
+        assert rule_run2["verified_date"] == run1_verified_dates[rule_id], (
+            f"{rule_id} should keep its original verified_date from run 1"
+        )
+
+    # 4. D01-R02 (changed from finding to pass) should be updated
+    d01_r02_run2 = next(
+        (r for r in rule_set_2_data["rules"] if r["rule_id"] == "D01-R02"), None
+    )
+    assert d01_r02_run2 is not None, "D01-R02 should still be in merged rule set"
+    assert d01_r02_run2["status"] == "verified-pass", (
+        "D01-R02 should be verified-pass after upgrade from finding"
+    )
+
+    # 5. D01-R01 (pass in both runs) should keep its original date
+    d01_r01_run2 = next(
+        (r for r in rule_set_2_data["rules"] if r["rule_id"] == "D01-R01"), None
+    )
+    assert d01_r01_run2 is not None, "D01-R01 should be in merged rule set"
+    assert d01_r01_run2["status"] == "verified-pass"
+    assert d01_r01_run2["verified_date"] == run1_verified_dates["D01-R01"], (
+        "D01-R01 should keep its original verified_date"
+    )
+
+    # 6. Agent standard markdown should reflect merged set
+    agent_md_2_content = agent_md_path.read_text(encoding="utf-8")
+    assert "D02-R01" in agent_md_2_content, "agent-standard.md should contain D02-R01"
+    assert "D01-R02" in agent_md_2_content, "agent-standard.md should contain D01-R02"
