@@ -348,11 +348,11 @@ def test_strip_otel_middleware_raises_if_a_lookalike_survives_the_isinstance_fil
     assert not any(isinstance(m, OpenTelemetryMiddleware) for m in mcp.middleware)
 
 
-def test_tool_surface_is_the_ten_tools_with_their_documented_parameters() -> None:
-    # build_server composes eight per-concern registration functions; the
-    # protocol surface they produce between them is what clients and AUDIT.md
-    # depend on, so it is pinned here rather than left to be noticed later by
-    # a client that stopped working.
+def test_tool_surface_is_the_eleven_tools_with_their_documented_parameters() -> None:
+    # build_server composes multiple registration functions; the protocol
+    # surface they produce between them is what clients and AUDIT.md depend on,
+    # so it is pinned here rather than left to be noticed later by a client
+    # that stopped working.
     #
     # begin_run's 'resume' was added deliberately with crash-recovery: it is
     # the only way an agent can accept or decline continuing an interrupted

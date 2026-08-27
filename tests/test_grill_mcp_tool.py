@@ -12,6 +12,8 @@ import json
 from datetime import date
 from pathlib import Path
 
+import pytest
+
 from engineering_audit.standards import RuleSet
 from engineering_audit.server import build_server
 
@@ -315,3 +317,115 @@ def test_write_grill_standards_artefacts_handles_write_failure(
     error_message = result["errors"][0]
     # Check that error message is actionable: mentions the failure details
     assert "Failed to write" in error_message
+
+
+def test_write_grill_standards_artefacts_rejects_project_dir_not_provided(
+    tmp_path: Path,
+) -> None:
+    """MCP tool rejects when project_dir is not provided.
+
+    When project_dir is omitted (required parameter), the MCP framework raises
+    a ToolError due to schema validation. This test asserts that behaviour.
+    """
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+
+    valid_rule = {
+        "rule_id": "D06-R01",
+        "domain_id": "d06",
+        "text_short": "Use type hints",
+        "text_body": "Use Python 3.9+ type hints.",
+        "source": "rules-pack",
+    }
+
+    # Call the tool without project_dir parameter
+    # This should raise a ToolError due to missing required parameter
+    with pytest.raises(ToolError) as exc_info:
+        _call(
+            mcp,
+            "write_grill_standards_artefacts",
+            {
+                "grill_rules": json.dumps([valid_rule]),
+                "output_dir": str(output_dir),
+                # project_dir is intentionally omitted
+            },
+        )
+
+    # Check that error message is actionable: mentions project_dir is required
+    error_text = str(exc_info.value)
+    assert "project_dir" in error_text or "required" in error_text
+
+
+def test_write_grill_standards_artefacts_rejects_project_dir_does_not_exist(
+    tmp_path: Path,
+) -> None:
+    """MCP tool rejects when project_dir does not exist."""
+    mcp, _state = build_server(FIXTURE_PACK)
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    nonexistent_project = tmp_path / "does_not_exist"
+
+    valid_rule = {
+        "rule_id": "D06-R01",
+        "domain_id": "d06",
+        "text_short": "Use type hints",
+        "text_body": "Use Python 3.9+ type hints.",
+        "source": "rules-pack",
+    }
+
+    result = _call(
+        mcp,
+        "write_grill_standards_artefacts",
+        {
+            "grill_rules": json.dumps([valid_rule]),
+            "output_dir": str(output_dir),
+            "project_dir": str(nonexistent_project),
+        },
+    )
+
+    assert result["success"] is False
+    assert len(result["errors"]) > 0
+    error_message = result["errors"][0]
+    # Check that error message is actionable: mentions path and what is wrong
+    assert "does not exist" in error_message
+    assert "provide a valid path" in error_message.lower()
+
+
+def test_write_grill_standards_artefacts_rejects_project_dir_is_a_file(
+    tmp_path: Path,
+) -> None:
+    """MCP tool rejects when project_dir is a file instead of a directory."""
+    mcp, _state = build_server(FIXTURE_PACK)
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    # Create a file instead of a directory
+    file_path = tmp_path / "not_a_directory.txt"
+    file_path.touch()
+
+    valid_rule = {
+        "rule_id": "D06-R01",
+        "domain_id": "d06",
+        "text_short": "Use type hints",
+        "text_body": "Use Python 3.9+ type hints.",
+        "source": "rules-pack",
+    }
+
+    result = _call(
+        mcp,
+        "write_grill_standards_artefacts",
+        {
+            "grill_rules": json.dumps([valid_rule]),
+            "output_dir": str(output_dir),
+            "project_dir": str(file_path),
+        },
+    )
+
+    assert result["success"] is False
+    assert len(result["errors"]) > 0
+    error_message = result["errors"][0]
+    # Check that error message is actionable: mentions it is not a directory
+    assert "not a directory" in error_message
+    assert "file" in error_message or "directory" in error_message
