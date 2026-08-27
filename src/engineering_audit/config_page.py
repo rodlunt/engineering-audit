@@ -31,11 +31,17 @@ from engineering_audit.output_location import (
 )
 from engineering_audit.rules import Domain
 from engineering_audit.schema import AuditConfig, TelemetryConsent
+from engineering_audit.standards_approval import (
+    DiffModel,
+    SummaryCount,
+    highlight_managed_block_markers,
+)
 
 __all__ = ["ConfigServer", "ConfigTimeoutError"]
 
 _TEMPLATE_PATH = Path(__file__).parent / "templates" / "config-page.html"
 _SUBMITTED_TEMPLATE_PATH = Path(__file__).parent / "templates" / "config-submitted.html"
+_APPROVAL_TEMPLATE_PATH = Path(__file__).parent / "templates" / "approval-page.html"
 
 # The path the page's heartbeat polls. Deliberately its own route rather than
 # a HEAD of "/": it answers with no body and no work, so a poll every few
@@ -87,6 +93,16 @@ _DRAFT_COOKIE_MAX_AGE_S = 3600
 # delivery mode is a few hundred bytes; anything past this did not come from
 # this page, and is dropped rather than parsed.
 _MAX_DRAFT_COOKIE_CHARS = 4096
+
+
+def _title_for_document(document_id: str) -> str:
+    """Get the human-readable title for a document ID."""
+    titles = {
+        "agent-standard": "Agent Coding Standard",
+        "human-standard": "Engineering Standard",
+        "engineering-policy": "Engineering Policy",
+    }
+    return titles.get(document_id, document_id)
 
 
 def _csp(script_nonce: str | None) -> str:
@@ -155,6 +171,19 @@ class _ConfigDraft:
 
     selected_domain_ids: set[str]
     issue_mode: str
+
+
+@dataclass
+class _ApprovalData:
+    """Data for the standards approval page.
+
+    Attributes:
+        diffs: List of DiffModel objects for the three documents (agent, human, policy).
+        summary_counts: Summary counts derived from the rule set.
+    """
+
+    diffs: list[DiffModel]
+    summary_counts: SummaryCount
 
 
 def _parse_draft_cookie(
@@ -301,6 +330,12 @@ class ConfigServer:
         self._lock = threading.Lock()
         self._config: AuditConfig | None = None
         self._submitted = threading.Event()
+        self._approval_data: _ApprovalData | None = None
+        self._approval_template_text = (
+            _APPROVAL_TEMPLATE_PATH.read_text(encoding="utf-8")
+            if _APPROVAL_TEMPLATE_PATH.exists()
+            else None
+        )
 
     def start(self) -> str:
         if self._httpd is not None:
@@ -419,7 +454,32 @@ class ConfigServer:
                 self.end_headers()
                 self.wfile.write(body)
 
+            def _serve_approval_page(self) -> None:
+                """Serve the standards approval page.
+
+                This is a read-only preview page showing diffs of the three
+                standards documents before they are written to disk. It must
+                not write anything to disk.
+                """
+                if (
+                    server._approval_data is None
+                    or server._approval_template_text is None
+                ):
+                    self.send_error(HTTPStatus.NOT_FOUND, "Approval data not available")
+                    return
+
+                self._script_nonce = secrets.token_urlsafe(16)
+                body = server._render_approval_page(self._script_nonce).encode("utf-8")
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
             def do_POST(self) -> None:  # noqa: N802 - stdlib handler method name
+                if self.path == "/approve-standards":
+                    self._serve_approval_page()
+                    return
                 if self.path != "/submit":
                     self.send_error(HTTPStatus.NOT_FOUND)
                     return
@@ -779,3 +839,77 @@ class ConfigServer:
         if self._thread is not None:
             self._thread.join(timeout=5)
             self._thread = None
+
+    def set_approval_data(
+        self, diffs: list[DiffModel], summary_counts: SummaryCount
+    ) -> None:
+        """Set the approval data for the /approve-standards endpoint.
+
+        Args:
+            diffs: List of DiffModel objects (one per document).
+            summary_counts: SummaryCount object with rule counts.
+        """
+        with self._lock:
+            self._approval_data = _ApprovalData(
+                diffs=diffs, summary_counts=summary_counts
+            )
+
+    def _render_approval_page(self, script_nonce: str = "") -> str:
+        """Render the approval page showing diffs of the three documents.
+
+        Args:
+            script_nonce: CSP nonce for inline scripts.
+
+        Returns:
+            HTML string ready to send to the client.
+        """
+        if self._approval_data is None or self._approval_template_text is None:
+            return "<html><body>Approval data not available</body></html>"
+
+        # Build HTML for each diff
+        diffs_html = []
+        for diff in self._approval_data.diffs:
+            current = diff.current_content or "(File does not exist yet)"
+            # Escape content first, then apply marker highlighting
+            escaped_current = html.escape(current)
+            highlighted_current = highlight_managed_block_markers(escaped_current)
+            escaped_proposed = html.escape(diff.proposed_content)
+            highlighted_proposed = highlight_managed_block_markers(escaped_proposed)
+            diffs_html.append(
+                f"""
+    <div class="document-diff" data-document-id="{html.escape(diff.document_id)}">
+        <h3>{html.escape(_title_for_document(diff.document_id))}</h3>
+        <div class="diff-container">
+            <div class="diff-side current-side">
+                <h4>Current</h4>
+                <pre>{highlighted_current}</pre>
+            </div>
+            <div class="diff-side proposed-side">
+                <h4>Proposed</h4>
+                <pre>{highlighted_proposed}</pre>
+            </div>
+        </div>
+    </div>
+                """
+            )
+
+        summary = self._approval_data.summary_counts
+        summary_html = f"""
+    <div class="summary">
+        <h2>Summary of Changes</h2>
+        <ul>
+            <li><strong>New rules:</strong> {summary.new_rules}</li>
+            <li><strong>Verified (passed):</strong> {summary.upgraded_to_verified}</li>
+            <li><strong>Findings recorded:</strong> {summary.findings_recorded}</li>
+            <li><strong>Not applicable:</strong> {summary.not_applicable}</li>
+        </ul>
+    </div>
+        """
+
+        template = string.Template(self._approval_template_text)
+        return template.substitute(
+            csp_nonce=html.escape(script_nonce),
+            summary=summary_html,
+            diffs="\n".join(diffs_html),
+            csrf_token=html.escape(self._csrf_token),
+        )

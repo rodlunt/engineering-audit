@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>engineering-audit: approve standards documents</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f7f7f5;
+    --fg: #1a1a1a;
+    --muted: #5b5b5b;
+    --card-bg: #ffffff;
+    --border: #d8d8d4;
+    --accent: #2f5d50;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16181a;
+      --fg: #e8e8e6;
+      --muted: #a3a3a0;
+      --card-bg: #1f2224;
+      --border: #34383a;
+      --accent: #7fbfae;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    max-width: 100%;
+    margin: 0;
+    padding: 1.25rem;
+    line-height: 1.5;
+  }
+  h1 { font-size: 1.4rem; margin-bottom: 0.25rem; }
+  h2 { font-size: 1.1rem; }
+  h3 { font-size: 1rem; margin-top: 1rem; margin-bottom: 0.5rem; }
+  h4 { font-size: 0.95rem; margin: 0.5rem 0 0.25rem; color: var(--muted); }
+  .summary {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem;
+    margin-bottom: 2rem;
+  }
+  .summary ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+  .summary li {
+    padding: 0.4rem 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .summary li:last-child { border-bottom: none; }
+  .document-diff {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem;
+    margin-bottom: 1.25rem;
+  }
+  .diff-container {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+    margin-top: 0.75rem;
+  }
+  .diff-side {
+    overflow-x: auto;
+  }
+  .diff-side pre {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.75rem;
+    margin: 0;
+    font-size: 0.85rem;
+    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+    line-height: 1.4;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    max-height: 500px;
+    overflow-y: auto;
+  }
+  .managed-block-marker {
+    background-color: rgba(47, 93, 80, 0.15);
+    border-left: 3px solid var(--accent);
+    padding: 0.25rem 0.5rem;
+  }
+  @media (prefers-color-scheme: dark) {
+    .managed-block-marker {
+      background-color: rgba(127, 191, 174, 0.1);
+    }
+  }
+  .buttons {
+    display: flex;
+    gap: 1rem;
+    justify-content: center;
+    margin-top: 2rem;
+    padding: 1.25rem;
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  button {
+    padding: 0.75rem 1.5rem;
+    font-size: 1rem;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-weight: 600;
+    transition: all 0.2s ease;
+  }
+  button[type="submit"] {
+    background: var(--accent);
+    color: white;
+  }
+  button[type="submit"]:hover {
+    opacity: 0.9;
+    transform: scale(1.02);
+  }
+  button[type="button"] {
+    background: var(--border);
+    color: var(--fg);
+  }
+  button[type="button"]:hover {
+    background: var(--muted);
+    color: white;
+  }
+  @media (max-width: 768px) {
+    .diff-container {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>
+</head>
+<body>
+<h1>Review Standards Documents</h1>
+<p class="lede">Below are the three standards documents that will be written to disk if you click Approve. Current content is on the left, proposed on the right.</p>
+
+$summary
+
+$diffs
+
+<div class="buttons">
+  <form method="POST" action="/submit-standards" style="margin: 0;">
+    <input type="hidden" name="csrf_token" value="$csrf_token">
+    <button type="submit" name="action" value="approve">Approve</button>
+  </form>
+  <button type="button" onclick="window.close();">Cancel</button>
+</div>
+</body>
+</html>

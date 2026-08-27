@@ -14,9 +14,78 @@ import re
 from datetime import date
 from pathlib import Path
 
-__all__ = ["write_managed_block", "wrap_managed_block"]
+__all__ = [
+    "write_managed_block",
+    "wrap_managed_block",
+    "get_managed_block_opening_marker",
+    "get_managed_block_closing_marker",
+    "get_escaped_opening_marker_pattern",
+    "get_escaped_opening_marker_pattern_any_id",
+    "get_escaped_closing_marker_pattern",
+]
 
 logger = logging.getLogger(__name__)
+
+
+def get_managed_block_opening_marker(block_id: str) -> str:
+    """Get the opening marker string for a managed block.
+
+    Args:
+        block_id: The block identifier (e.g. 'agent-standard').
+
+    Returns:
+        The opening marker string, e.g. '<!-- audit:start id="agent-standard" -->'
+    """
+    return f'<!-- audit:start id="{block_id}" -->'
+
+
+def get_managed_block_closing_marker() -> str:
+    """Get the closing marker string for a managed block.
+
+    Returns:
+        The closing marker string: '<!-- audit:end -->'
+    """
+    return "<!-- audit:end -->"
+
+
+def get_escaped_opening_marker_pattern(block_id: str) -> str:
+    """Get the regex pattern for an escaped opening marker with a specific block_id.
+
+    This pattern matches the opening marker after it has been HTML-escaped
+    (i.e. when & becomes &amp;, < becomes &lt;, > becomes &gt;, " becomes &quot;).
+
+    Args:
+        block_id: The block identifier to match in the pattern.
+
+    Returns:
+        A regex pattern string that matches the escaped opening marker.
+    """
+    escaped_id = re.escape(block_id)
+    return rf"&lt;!-- audit:start id=&quot;{escaped_id}&quot; --&gt;"
+
+
+def get_escaped_opening_marker_pattern_any_id() -> str:
+    """Get the regex pattern for an escaped opening marker with any block_id.
+
+    This pattern matches the opening marker after it has been HTML-escaped,
+    accepting any block identifier.
+
+    Returns:
+        A regex pattern string that matches any escaped opening marker.
+    """
+    return r"&lt;!-- audit:start id=&quot;[^&]*&quot; --&gt;"
+
+
+def get_escaped_closing_marker_pattern() -> str:
+    """Get the regex pattern for an escaped closing marker.
+
+    This pattern matches the closing marker after it has been HTML-escaped
+    (i.e. when & becomes &amp;, < becomes &lt;, > becomes &gt;).
+
+    Returns:
+        A regex pattern string that matches the escaped closing marker.
+    """
+    return r"&lt;!-- audit:end --&gt;"
 
 
 def wrap_managed_block(content: str, block_id: str) -> str:
@@ -32,7 +101,9 @@ def wrap_managed_block(content: str, block_id: str) -> str:
     Returns:
         Content wrapped with opening and closing markers.
     """
-    return f'<!-- audit:start id="{block_id}" -->\n{content}\n<!-- audit:end -->'
+    opening = get_managed_block_opening_marker(block_id)
+    closing = get_managed_block_closing_marker()
+    return f"{opening}\n{content}\n{closing}"
 
 
 def write_managed_block(file_path: Path, content: str, block_id: str) -> bool:
@@ -162,7 +233,7 @@ def _validate_markers(file_text: str, block_id: str) -> bool | str:
         A specific error message string if there is an issue.
     """
     opening_pattern = rf'<!-- audit:start id="{re.escape(block_id)}" -->'
-    closing_pattern = r"<!-- audit:end -->"
+    closing_pattern = re.escape(get_managed_block_closing_marker())
 
     opening_matches = list(re.finditer(opening_pattern, file_text))
     closing_matches = list(re.finditer(closing_pattern, file_text))
@@ -234,7 +305,7 @@ def _extract_surrounding_content(file_text: str, block_id: str) -> tuple[str, st
     guaranteed to exist and be well-formed.
     """
     opening_pattern = rf'<!-- audit:start id="{re.escape(block_id)}" -->'
-    closing_pattern = r"<!-- audit:end -->"
+    closing_pattern = re.escape(get_managed_block_closing_marker())
 
     opening_match = re.search(opening_pattern, file_text)
     closing_match = re.search(closing_pattern, file_text)
