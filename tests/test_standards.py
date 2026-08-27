@@ -154,6 +154,30 @@ class TestRuleValidation:
         assert "status" in error_msg.lower()
         assert "invalid-status" in error_msg
 
+    def test_rule_rejects_invalid_source(self) -> None:
+        """A rule with an invalid source value is rejected."""
+        rule_data = {
+            "rule_id": "D06-R01",
+            "domain_id": "d06",
+            "text_short": "Type hints",
+            "text_body": "Use type hints.",
+            "source": "invalid-source",
+            "stack_profile": None,
+            "status": "verified-pass",
+            "verified_date": "2026-08-25",
+            "severity": None,
+            "finding_details": None,
+            "conflict_with_stack_profile": None,
+            "conflict_resolution": None,
+            "source_url": None,
+        }
+        with pytest.raises(ValueError) as exc_info:
+            Rule.model_validate(rule_data)
+        error_msg = str(exc_info.value)
+        assert "D06-R01" in error_msg
+        assert "source" in error_msg.lower()
+        assert "invalid-source" in error_msg
+
     def test_rule_verified_finding_valid_with_finding_details(self) -> None:
         """A rule with status=verified-finding and finding_details is valid."""
         rule_data = {

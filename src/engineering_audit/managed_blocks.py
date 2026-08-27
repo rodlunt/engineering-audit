@@ -162,14 +162,13 @@ def _validate_markers(file_text: str, block_id: str) -> bool | str:
     # Check for opening marker
     if len(opening_matches) == 0:
         # Check if there's an opening marker with a different id
-        if re.search(r'<!-- audit:start id="[^"]*" -->', file_text):
-            wrong_id_match = re.search(r'<!-- audit:start id="([^"]*)" -->', file_text)
-            if wrong_id_match:
-                found_id = wrong_id_match.group(1)
-                return (
-                    f"Opening marker has id '{found_id}' but expected '{block_id}'; "
-                    f"update the id attribute to '{block_id}' and try again"
-                )
+        wrong_id_match = re.search(r'<!-- audit:start id="([^"]*)" -->', file_text)
+        if wrong_id_match is not None:
+            found_id = wrong_id_match.group(1)
+            return (
+                f"Opening marker has id '{found_id}' but expected '{block_id}'; "
+                f"update the id attribute to '{block_id}' and try again"
+            )
         # Check if there's a malformed opening marker
         if re.search(r"<!-- audit:start", file_text):
             return (
@@ -220,8 +219,8 @@ def _extract_surrounding_content(file_text: str, block_id: str) -> tuple[str, st
 
     Returns:
         A tuple of (before, after) where before is content before the opening
-        marker and after is content after the closing marker (including the
-        closing marker itself up to but not including any text after).
+        marker and after is content after the closing marker (excluding the
+        closing marker itself).
 
     This function assumes validation has already passed, so markers are
     guaranteed to exist and be well-formed.

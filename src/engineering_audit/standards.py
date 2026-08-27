@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field, model_validator
 
 __all__ = [
     "RuleStatus",
+    "RuleSource",
     "Rule",
     "RuleSet",
 ]
@@ -31,6 +32,13 @@ class RuleStatus(str, Enum):
     VERIFIED_PASS = "verified-pass"
     VERIFIED_FINDING = "verified-finding"
     VERIFIED_NOT_APPLICABLE = "verified-not-applicable"
+
+
+class RuleSource(str, Enum):
+    """The source of a rule."""
+
+    RULES_PACK = "rules-pack"
+    STACK_PROFILE = "stack-profile"
 
 
 class Rule(BaseModel):
@@ -94,6 +102,17 @@ class Rule(BaseModel):
             raise ValueError(
                 f"rule {self.rule_id}: status is '{self.status}' but must be one of "
                 f"{', '.join(sorted(valid_statuses))}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _source_must_be_valid(self) -> "Rule":
+        """Source must be one of the two allowed values."""
+        valid_sources = {s.value for s in RuleSource}
+        if self.source not in valid_sources:
+            raise ValueError(
+                f"rule {self.rule_id}: source is '{self.source}' but must be one of "
+                f"{', '.join(sorted(valid_sources))}"
             )
         return self
 
