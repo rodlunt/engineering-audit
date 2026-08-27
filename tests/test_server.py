@@ -56,7 +56,9 @@ def _call(mcp, name: str, arguments: dict):
     return result.structured_content
 
 
-def _begin_run(mcp, output_dir: Path, **overrides) -> dict:
+def _begin_run(
+    mcp, output_dir: Path, repo_dir: Path | None = None, **overrides
+) -> dict:
     defaults = dict(
         assistant="claude-code",
         model="claude-sonnet-5",
@@ -65,6 +67,8 @@ def _begin_run(mcp, output_dir: Path, **overrides) -> dict:
         started="2026-08-09T09:00:00Z",
         output_dir=str(output_dir),
     )
+    if repo_dir is not None:
+        defaults["repo_dir"] = str(repo_dir)
     defaults.update(overrides)
     return _call(mcp, "begin_run", defaults)
 
@@ -4340,7 +4344,9 @@ def test_render_report_with_approval_writes_all_four_files(
 
     mcp, state = build_server(FIXTURE_PACK)
     out_dir = tmp_path / "audit-output"
-    _begin_run(mcp, out_dir)
+    repo_dir = tmp_path / "audited-repo"
+    repo_dir.mkdir()
+    _begin_run(mcp, out_dir, repo_dir=repo_dir)
     _preset_config_env(monkeypatch, tmp_path)
     _call(mcp, "start_config", {})
     _call(mcp, "get_config", {"timeout_s": 1})
@@ -4359,18 +4365,18 @@ def test_render_report_with_approval_writes_all_four_files(
 
     result = _call(mcp, "render_report", {"finished": "2026-08-09T10:00:00Z"})
 
-    # Verify all four files were written
+    # Verify all four files were written: documents in repo_dir/docs/, rule set in out_dir
     deliverables_dir = out_dir
-    assert (deliverables_dir / AGENT_STANDARD_FILENAME).exists()
-    assert (deliverables_dir / HUMAN_STANDARD_FILENAME).exists()
-    assert (deliverables_dir / ENGINEERING_POLICY_FILENAME).exists()
+    assert (repo_dir / "docs" / AGENT_STANDARD_FILENAME).exists()
+    assert (repo_dir / "docs" / HUMAN_STANDARD_FILENAME).exists()
+    assert (repo_dir / "docs" / ENGINEERING_POLICY_FILENAME).exists()
     assert (deliverables_dir / RULE_SET_FILENAME).exists()
 
     # Verify standards_status indicates approval
     assert result["standards_status"] == "approved"
 
     # Verify the documents contain real rule prose
-    agent_content = (deliverables_dir / AGENT_STANDARD_FILENAME).read_text(
+    agent_content = (repo_dir / "docs" / AGENT_STANDARD_FILENAME).read_text(
         encoding="utf-8"
     )
     assert "D01-R01" in agent_content
@@ -4391,7 +4397,9 @@ def test_render_report_with_cancel_writes_no_standards_files(
 
     mcp, state = build_server(FIXTURE_PACK)
     out_dir = tmp_path / "audit-output"
-    _begin_run(mcp, out_dir)
+    repo_dir = tmp_path / "audited-repo"
+    repo_dir.mkdir()
+    _begin_run(mcp, out_dir, repo_dir=repo_dir)
     _preset_config_env(monkeypatch, tmp_path)
     _call(mcp, "start_config", {})
     _call(mcp, "get_config", {"timeout_s": 1})
@@ -4406,11 +4414,11 @@ def test_render_report_with_cancel_writes_no_standards_files(
 
     result = _call(mcp, "render_report", {"finished": "2026-08-09T10:00:00Z"})
 
-    # Verify NO standards files were written
+    # Verify NO standards files were written: not in repo_dir/docs/ and not in deliverables_dir
     deliverables_dir = out_dir
-    assert not (deliverables_dir / AGENT_STANDARD_FILENAME).exists()
-    assert not (deliverables_dir / HUMAN_STANDARD_FILENAME).exists()
-    assert not (deliverables_dir / ENGINEERING_POLICY_FILENAME).exists()
+    assert not (repo_dir / "docs" / AGENT_STANDARD_FILENAME).exists()
+    assert not (repo_dir / "docs" / HUMAN_STANDARD_FILENAME).exists()
+    assert not (repo_dir / "docs" / ENGINEERING_POLICY_FILENAME).exists()
     assert not (deliverables_dir / RULE_SET_FILENAME).exists()
 
     # Verify standards_status indicates cancellation
@@ -4469,7 +4477,9 @@ def test_second_render_report_merges_with_existing_rule_set(
     # ===== FIRST AUDIT RUN =====
     mcp1, state1 = build_server(FIXTURE_PACK)
     deliverables_dir = tmp_path / "deliverables"
-    _begin_run(mcp1, deliverables_dir)
+    repo_dir = tmp_path / "audited-repo"
+    repo_dir.mkdir()
+    _begin_run(mcp1, deliverables_dir, repo_dir=repo_dir)
     _preset_config_env(monkeypatch, tmp_path)
     _call(mcp1, "start_config", {})
     _call(mcp1, "get_config", {"timeout_s": 1})
@@ -4511,8 +4521,8 @@ def test_second_render_report_merges_with_existing_rule_set(
     assert d02_r01_run1["status"] == "verified-pass"
     original_d02_r01_date = d02_r01_run1["verified_date"]
 
-    # Also check that agent-standard.md was written
-    agent_md_path = deliverables_dir / AGENT_STANDARD_FILENAME
+    # Also check that agent-standard.md was written to repo_dir/docs/
+    agent_md_path = repo_dir / "docs" / AGENT_STANDARD_FILENAME
     assert agent_md_path.exists()
     agent_md_1_content = agent_md_path.read_text(encoding="utf-8")
     assert "D02-R01" in agent_md_1_content
@@ -4520,7 +4530,7 @@ def test_second_render_report_merges_with_existing_rule_set(
     # ===== SECOND AUDIT RUN =====
     # Build a fresh server for the second audit (simulating a new audit run)
     mcp2, state2 = build_server(FIXTURE_PACK)
-    _begin_run(mcp2, deliverables_dir)
+    _begin_run(mcp2, deliverables_dir, repo_dir=repo_dir)
     # deliverables_dir already exists and contains rule-set.json from run 1
     _call(mcp2, "start_config", {})
     _call(mcp2, "get_config", {"timeout_s": 1})

@@ -47,9 +47,11 @@ __all__ = [
 ]
 
 # Module constants for document filenames
-AGENT_STANDARD_FILENAME = "agent-standard.md"
-HUMAN_STANDARD_FILENAME = "human-standard.md"
+# Three standards documents go in docs/ subdirectory of audited project root
+AGENT_STANDARD_FILENAME = "coding-standard.agent.md"
+HUMAN_STANDARD_FILENAME = "engineering-standard.md"
 ENGINEERING_POLICY_FILENAME = "engineering-policy.md"
+# Rule set stays in deliverables directory
 RULE_SET_FILENAME = "rule-set.json"
 
 # Document IDs (from managed_blocks.py titles mapping)
@@ -365,15 +367,23 @@ def derive_summary_counts(prior: RuleSet | None, merged: RuleSet) -> SummaryCoun
     )
 
 
-def build_diffs(deliverables_dir: Path, rendered: Mapping[str, str]) -> list[DiffModel]:
+def build_diffs(
+    deliverables_dir: Path, rendered: Mapping[str, str], repo_dir: Path | None = None
+) -> list[DiffModel]:
     """Build diff models for each of the three documents.
 
     For each document, reads existing file content (if present) and builds
     a DiffModel with file_exists status and current/proposed content.
 
+    The three standards documents are looked for in repo_dir/docs/ if repo_dir
+    is provided, otherwise in deliverables_dir (for backward compatibility or
+    testing without a repo).
+
     Args:
-        deliverables_dir: Path to directory containing or to contain the files.
+        deliverables_dir: Path to directory containing or to contain the rule set.
         rendered: Mapping of document_id -> rendered markdown.
+        repo_dir: Optional path to audited project root. If provided, standards
+            documents are expected in repo_dir/docs/.
 
     Returns:
         List of DiffModel objects, one per document, in stable order:
@@ -382,9 +392,12 @@ def build_diffs(deliverables_dir: Path, rendered: Mapping[str, str]) -> list[Dif
     diffs: list[DiffModel] = []
     document_ids = [_AGENT_STANDARD_ID, _HUMAN_STANDARD_ID, _ENGINEERING_POLICY_ID]
 
+    # Determine target directory for standards documents
+    standards_dir = (repo_dir / "docs") if repo_dir else deliverables_dir
+
     for document_id in document_ids:
         filename = _DOCUMENT_ID_TO_FILENAME[document_id]
-        file_path = deliverables_dir / filename
+        file_path = standards_dir / filename
         current_content = None
         file_exists = False
 
@@ -428,9 +441,16 @@ def render_all(
 
 
 def write_standards(
-    deliverables_dir: Path, rendered: Mapping[str, str], rule_set: RuleSet
+    deliverables_dir: Path,
+    rendered: Mapping[str, str],
+    rule_set: RuleSet,
+    repo_dir: Path | None = None,
 ) -> None:
     """Write the three standards documents and rule set to disk.
+
+    The three standards documents are written to repo_dir/docs/ if repo_dir
+    is provided, otherwise to deliverables_dir (for backward compatibility or
+    testing without a repo). The rule set is always written to deliverables_dir.
 
     Writes via write_managed_block for each document, then writes the
     rule set JSON. If any document write fails (returns False), raises
@@ -438,22 +458,30 @@ def write_standards(
     rule set intact for retry.
 
     Args:
-        deliverables_dir: Path to directory where files will be written.
+        deliverables_dir: Path to directory where the rule set will be written.
         rendered: Mapping of document_id -> rendered markdown (with markers).
         rule_set: Rule set to write.
+        repo_dir: Optional path to audited project root. If provided, standards
+            documents are written to repo_dir/docs/. Otherwise, they are written
+            to deliverables_dir.
 
     Raises:
-        RuntimeError: If deliverables_dir cannot be created or if any
+        RuntimeError: If any directory cannot be created or if any
             document write fails.
     """
-    # Ensure directory exists
+    # Ensure deliverables directory exists (for rule set)
     deliverables_dir.mkdir(parents=True, exist_ok=True)
+
+    # Determine target directory for standards documents
+    standards_dir = (repo_dir / "docs") if repo_dir else deliverables_dir
+    # Ensure standards directory exists
+    standards_dir.mkdir(parents=True, exist_ok=True)
 
     # Write each document via write_managed_block
     document_ids = [_AGENT_STANDARD_ID, _HUMAN_STANDARD_ID, _ENGINEERING_POLICY_ID]
     for document_id in document_ids:
         filename = _DOCUMENT_ID_TO_FILENAME[document_id]
-        file_path = deliverables_dir / filename
+        file_path = standards_dir / filename
         rendered_with_markers = rendered.get(document_id, "")
 
         # Extract content from between the markers (rendering functions wrap content)

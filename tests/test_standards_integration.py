@@ -606,7 +606,7 @@ class TestBuildDiffs:
         assert all(d.current_content is None for d in diffs)
 
     def test_loads_existing_file_content(self, tmp_path: Path) -> None:
-        """build_diffs reads existing file content."""
+        """build_diffs reads existing file content from deliverables_dir when no repo_dir."""
         deliverables_dir = tmp_path / "deliverables"
         deliverables_dir.mkdir()
 
@@ -625,6 +625,32 @@ class TestBuildDiffs:
         agent_diff = next(d for d in diffs if d.document_id == "agent-standard")
         assert agent_diff.file_exists is True
         assert agent_diff.current_content == "Old agent content"
+        assert agent_diff.proposed_content == "New content"
+
+    def test_loads_existing_file_content_from_repo_docs(self, tmp_path: Path) -> None:
+        """build_diffs reads existing file content from repo_dir/docs when repo_dir provided."""
+        repo_dir = tmp_path / "repo"
+        docs_dir = repo_dir / "docs"
+        docs_dir.mkdir(parents=True)
+
+        deliverables_dir = tmp_path / "deliverables"
+        deliverables_dir.mkdir()
+
+        # Create an existing file in docs/
+        agent_file = docs_dir / AGENT_STANDARD_FILENAME
+        agent_file.write_text("Old agent content from repo")
+
+        rendered = {
+            "agent-standard": "New content",
+            "human-standard": "Human content",
+            "engineering-policy": "Policy content",
+        }
+
+        diffs = build_diffs(deliverables_dir, rendered, repo_dir)
+
+        agent_diff = next(d for d in diffs if d.document_id == "agent-standard")
+        assert agent_diff.file_exists is True
+        assert agent_diff.current_content == "Old agent content from repo"
         assert agent_diff.proposed_content == "New content"
 
 
@@ -663,8 +689,10 @@ class TestRenderAll:
 class TestWriteStandards:
     """Tests for write_standards."""
 
-    def test_writes_all_four_files(self, tmp_path: Path) -> None:
-        """write_standards writes all three documents and rule set."""
+    def test_writes_all_four_files_to_deliverables_dir_when_no_repo_dir(
+        self, tmp_path: Path
+    ) -> None:
+        """write_standards writes documents to deliverables_dir when no repo_dir."""
         deliverables_dir = tmp_path / "deliverables"
         deliverables_dir.mkdir()
 
@@ -692,10 +720,49 @@ class TestWriteStandards:
 
         write_standards(deliverables_dir, rendered, rule_set)
 
-        # Verify all files were written
+        # Verify all files were written to deliverables_dir
         assert (deliverables_dir / AGENT_STANDARD_FILENAME).exists()
         assert (deliverables_dir / HUMAN_STANDARD_FILENAME).exists()
         assert (deliverables_dir / ENGINEERING_POLICY_FILENAME).exists()
+        assert (deliverables_dir / RULE_SET_FILENAME).exists()
+
+    def test_writes_standards_to_repo_docs_when_repo_dir_provided(
+        self, tmp_path: Path
+    ) -> None:
+        """write_standards writes docs to repo_dir/docs when repo_dir provided."""
+        repo_dir = tmp_path / "repo"
+        deliverables_dir = tmp_path / "deliverables"
+        deliverables_dir.mkdir()
+
+        rendered = {
+            "agent-standard": '<!-- audit:start id="agent-standard" -->\nAgent\n<!-- audit:end -->',
+            "human-standard": '<!-- audit:start id="human-standard" -->\nHuman\n<!-- audit:end -->',
+            "engineering-policy": '<!-- audit:start id="engineering-policy" -->\nPolicy\n<!-- audit:end -->',
+        }
+
+        rule_set = RuleSet(
+            version="1.0",
+            project="test",
+            rules=[
+                Rule(
+                    rule_id="D01-R01",
+                    domain_id="d01",
+                    text_short="Type hints",
+                    text_body="Use type hints",
+                    source="rules-pack",
+                    status="verified-pass",
+                    verified_date="2026-08-25",
+                )
+            ],
+        )
+
+        write_standards(deliverables_dir, rendered, rule_set, repo_dir)
+
+        # Verify three documents written to repo/docs/
+        assert (repo_dir / "docs" / AGENT_STANDARD_FILENAME).exists()
+        assert (repo_dir / "docs" / HUMAN_STANDARD_FILENAME).exists()
+        assert (repo_dir / "docs" / ENGINEERING_POLICY_FILENAME).exists()
+        # Rule set always goes to deliverables_dir
         assert (deliverables_dir / RULE_SET_FILENAME).exists()
 
     def test_creates_directory_if_needed(self, tmp_path: Path) -> None:
@@ -717,6 +784,30 @@ class TestWriteStandards:
         write_standards(deliverables_dir, rendered, rule_set)
 
         assert deliverables_dir.exists()
+        assert (deliverables_dir / RULE_SET_FILENAME).exists()
+
+    def test_creates_repo_docs_directory_if_needed(self, tmp_path: Path) -> None:
+        """write_standards creates repo_dir/docs if it doesn't exist."""
+        repo_dir = tmp_path / "new" / "repo"
+        deliverables_dir = tmp_path / "deliverables"
+        deliverables_dir.mkdir()
+
+        rendered = {
+            "agent-standard": '<!-- audit:start id="agent-standard" -->\nAgent\n<!-- audit:end -->',
+            "human-standard": '<!-- audit:start id="human-standard" -->\nHuman\n<!-- audit:end -->',
+            "engineering-policy": '<!-- audit:start id="engineering-policy" -->\nPolicy\n<!-- audit:end -->',
+        }
+
+        rule_set = RuleSet(
+            version="1.0",
+            project="test",
+            rules=[],
+        )
+
+        write_standards(deliverables_dir, rendered, rule_set, repo_dir)
+
+        assert (repo_dir / "docs").exists()
+        assert (repo_dir / "docs" / AGENT_STANDARD_FILENAME).exists()
         assert (deliverables_dir / RULE_SET_FILENAME).exists()
 
     def test_document_write_failure_does_not_write_rule_set(
@@ -850,7 +941,7 @@ class TestEndToEnd:
 
         rules_pack = MockRulesPack()
 
-        # First write
+        # First write (using deliverables_dir since no repo_dir provided)
         audit_rules_1 = audit_rules_from_domain_results(domain_results_1, rules_pack)
 
         # Would normally merge with prior, but first run has no prior
@@ -864,7 +955,8 @@ class TestEndToEnd:
         rendered_1 = render_all(rule_set_1)
         write_standards(deliverables_dir, rendered_1, rule_set_1)
 
-        # Verify first write
+        # Verify first write - documents in deliverables_dir, rule set in deliverables_dir
+        assert (deliverables_dir / AGENT_STANDARD_FILENAME).exists()
         assert (deliverables_dir / RULE_SET_FILENAME).exists()
         prior = load_prior_rule_set(deliverables_dir)
         assert prior is not None
@@ -897,6 +989,10 @@ class TestEndToEnd:
 
         rendered_2 = render_all(rule_set_2)
         write_standards(deliverables_dir, rendered_2, rule_set_2)
+
+        # Verify second write - documents still in deliverables_dir, rule set updated
+        assert (deliverables_dir / AGENT_STANDARD_FILENAME).exists()
+        assert (deliverables_dir / RULE_SET_FILENAME).exists()
 
         # Verify second write
         final = load_prior_rule_set(deliverables_dir)

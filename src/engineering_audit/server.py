@@ -2518,7 +2518,7 @@ def _register_report_tools(mcp: MCPServer, state: AppState) -> None:
                 prior_rule_set = load_prior_rule_set(deliverables_dir)
                 merged = merge_rule_set(prior_rule_set, verdicts, audit_rules)
                 rendered = render_all(merged, state.pack)
-                diffs = build_diffs(deliverables_dir, rendered)
+                diffs = build_diffs(deliverables_dir, rendered, run.repo_dir)
                 summary_counts = derive_summary_counts(prior_rule_set, merged)
 
                 # Present for approval
@@ -2529,7 +2529,9 @@ def _register_report_tools(mcp: MCPServer, state: AppState) -> None:
                 try:
                     action = run.config_server.wait_approval(approval_timeout_s)
                     if action == "approve":
-                        write_standards(deliverables_dir, rendered, merged)
+                        write_standards(
+                            deliverables_dir, rendered, merged, run.repo_dir
+                        )
                         standards_status = "approved"
                     else:
                         standards_status = "cancelled"
