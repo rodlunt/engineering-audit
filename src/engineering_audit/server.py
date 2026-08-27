@@ -2516,9 +2516,14 @@ def _register_grill_tools(mcp: MCPServer, state: AppState) -> None:
                     )
                     rules.append(rule)
                 except (KeyError, ValueError) as exc:
+                    field_hint = ""
+                    if isinstance(exc, KeyError):
+                        field_hint = f" Missing required field: {exc.args[0]}"
                     return {
                         "success": False,
-                        "errors": [f"Invalid rule object in grill_rules: {exc}"],
+                        "errors": [
+                            f"Rule object invalid or missing required fields (rule_id, text_short, text_body, source).{field_hint}"
+                        ],
                     }
 
             # Create provisional rule set
@@ -2541,7 +2546,9 @@ def _register_grill_tools(mcp: MCPServer, state: AppState) -> None:
             except Exception as exc:
                 return {
                     "success": False,
-                    "errors": [f"Failed to write standards: {exc}"],
+                    "errors": [
+                        f"Failed to write standards to output directory ({output_path}): {exc}. Check that the directory exists and is writable."
+                    ],
                 }
 
             # Compute document paths for response
@@ -2563,7 +2570,9 @@ def _register_grill_tools(mcp: MCPServer, state: AppState) -> None:
         except json.JSONDecodeError as exc:
             return {
                 "success": False,
-                "errors": [f"Invalid JSON in grill_rules: {exc}"],
+                "errors": [
+                    f"Malformed JSON in grill_rules: {exc}. Check the JSON syntax and ensure the input is properly formatted."
+                ],
             }
         except Exception as exc:
             return {

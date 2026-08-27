@@ -28,6 +28,23 @@ __all__ = [
 ]
 
 
+def _all_rules_are_provisional(rule_set: RuleSet) -> bool:
+    """Check if all rules in the rule set have provisional status.
+
+    Returns True only if the rule set has at least one rule and all rules
+    have status PROVISIONAL.
+
+    Args:
+        rule_set: The rule set to check.
+
+    Returns:
+        True if all rules are provisional, False otherwise.
+    """
+    if not rule_set.rules:
+        return False
+    return all(rule.status == RuleStatus.PROVISIONAL.value for rule in rule_set.rules)
+
+
 def _rule_sort_key(rule: Rule) -> tuple[tuple[bool, str | None], str]:
     """Sort key for rules: domain ID then rule ID, with domainless rules last.
 
@@ -68,6 +85,12 @@ def render_agent_standard(rule_set: RuleSet) -> str:
 
     # Render content between markers
     lines = ["# Agent Coding Standard", ""]
+
+    # Add provisional marker if all rules are provisional
+    if _all_rules_are_provisional(rule_set):
+        lines.append("[Provisional: intent only, not yet audited]")
+        lines.append("")
+
     lines.append("Rules are identified by rule ID and current verification status.")
     lines.append("")
 
@@ -152,6 +175,12 @@ def render_human_standard(
 
     # Render content between markers
     lines = ["# Engineering Standard", ""]
+
+    # Add provisional marker if all rules are provisional
+    if _all_rules_are_provisional(rule_set):
+        lines.append("[Provisional: intent only, not yet audited]")
+        lines.append("")
+
     lines.append(
         "This document records the rules we follow in our code. "
         "Each rule shows its current verification status."
@@ -261,6 +290,12 @@ def render_policy(rule_set: RuleSet) -> str:
 
     # Render content
     lines = ["# Engineering Policy", ""]
+
+    # Add provisional marker if all rules are provisional
+    if _all_rules_are_provisional(rule_set):
+        lines.append("[Provisional: intent only, not yet audited]")
+        lines.append("")
+
     lines.append(
         "This policy states what we commit to enforce in our code. "
         "Every rule below has been audited and has a verification status and date."

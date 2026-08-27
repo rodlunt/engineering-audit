@@ -1016,3 +1016,319 @@ class TestRenderHumanStandardRulesPack:
         output = render_human_standard(rule_set, None)
         assert "D06-R01" in output
         assert "Type hints" in output
+
+
+class TestProvisionalDocumentMarker:
+    """Tests for top-of-document provisional marker in all three renderers."""
+
+    def test_agent_standard_includes_provisional_marker_when_all_rules_provisional(
+        self,
+    ) -> None:
+        """Agent standard includes top-of-document provisional marker when all rules are provisional."""
+        rule_set = RuleSet(
+            version="1.0",
+            project="test-project",
+            rules=[
+                Rule(
+                    rule_id="S-React-R01",
+                    domain_id=None,
+                    text_short="Testing",
+                    text_body="Test all components.",
+                    source="stack-profile",
+                    stack_profile="react",
+                    status="provisional",
+                    verified_date="2026-08-25",
+                    severity=None,
+                    finding_details=None,
+                    conflict_with_stack_profile=None,
+                    conflict_resolution=None,
+                    source_url=None,
+                ),
+            ],
+        )
+        output = render_agent_standard(rule_set)
+        assert "[Provisional: intent only, not yet audited]" in output
+        # Marker should appear inside managed block
+        start = output.find('<!-- audit:start id="agent-standard" -->')
+        end = output.find("<!-- audit:end -->")
+        content = output[start:end]
+        assert "[Provisional: intent only, not yet audited]" in content
+
+    def test_agent_standard_excludes_provisional_marker_when_all_rules_verified(
+        self,
+    ) -> None:
+        """Agent standard excludes top-of-document marker when all rules are verified."""
+        rule_set = RuleSet(
+            version="1.0",
+            project="test-project",
+            rules=[
+                Rule(
+                    rule_id="D06-R01",
+                    domain_id="d06",
+                    text_short="Type hints",
+                    text_body="Use type hints.",
+                    source="rules-pack",
+                    stack_profile=None,
+                    status="verified-pass",
+                    verified_date="2026-08-25",
+                    severity=None,
+                    finding_details=None,
+                    conflict_with_stack_profile=None,
+                    conflict_resolution=None,
+                    source_url=None,
+                ),
+            ],
+        )
+        output = render_agent_standard(rule_set)
+        assert "[Provisional: intent only, not yet audited]" not in output
+
+    def test_agent_standard_excludes_provisional_marker_with_mixed_rules(
+        self,
+    ) -> None:
+        """Agent standard excludes marker when rule set contains mixed statuses."""
+        rule_set = RuleSet(
+            version="1.0",
+            project="test-project",
+            rules=[
+                Rule(
+                    rule_id="D06-R01",
+                    domain_id="d06",
+                    text_short="Type hints",
+                    text_body="Use type hints.",
+                    source="rules-pack",
+                    stack_profile=None,
+                    status="verified-pass",
+                    verified_date="2026-08-25",
+                    severity=None,
+                    finding_details=None,
+                    conflict_with_stack_profile=None,
+                    conflict_resolution=None,
+                    source_url=None,
+                ),
+                Rule(
+                    rule_id="S-React-R01",
+                    domain_id=None,
+                    text_short="Testing",
+                    text_body="Test all components.",
+                    source="stack-profile",
+                    stack_profile="react",
+                    status="provisional",
+                    verified_date="2026-08-25",
+                    severity=None,
+                    finding_details=None,
+                    conflict_with_stack_profile=None,
+                    conflict_resolution=None,
+                    source_url=None,
+                ),
+            ],
+        )
+        output = render_agent_standard(rule_set)
+        assert "[Provisional: intent only, not yet audited]" not in output
+
+    def test_human_standard_includes_provisional_marker_when_all_rules_provisional(
+        self,
+    ) -> None:
+        """Human standard includes top-of-document provisional marker when all rules are provisional."""
+        rule_set = RuleSet(
+            version="1.0",
+            project="test-project",
+            rules=[
+                Rule(
+                    rule_id="S-React-R01",
+                    domain_id=None,
+                    text_short="Testing",
+                    text_body="Test all components.",
+                    source="stack-profile",
+                    stack_profile="react",
+                    status="provisional",
+                    verified_date="2026-08-25",
+                    severity=None,
+                    finding_details=None,
+                    conflict_with_stack_profile=None,
+                    conflict_resolution=None,
+                    source_url=None,
+                ),
+            ],
+        )
+        output = render_human_standard(rule_set, None)
+        assert "[Provisional: intent only, not yet audited]" in output
+        # Marker should appear inside managed block
+        start = output.find('<!-- audit:start id="human-standard" -->')
+        end = output.find("<!-- audit:end -->")
+        content = output[start:end]
+        assert "[Provisional: intent only, not yet audited]" in content
+
+    def test_human_standard_excludes_provisional_marker_when_all_rules_verified(
+        self,
+    ) -> None:
+        """Human standard excludes marker when all rules are verified."""
+        rule_set = RuleSet(
+            version="1.0",
+            project="test-project",
+            rules=[
+                Rule(
+                    rule_id="D06-R01",
+                    domain_id="d06",
+                    text_short="Type hints",
+                    text_body="Use type hints.",
+                    source="rules-pack",
+                    stack_profile=None,
+                    status="verified-pass",
+                    verified_date="2026-08-25",
+                    severity=None,
+                    finding_details=None,
+                    conflict_with_stack_profile=None,
+                    conflict_resolution=None,
+                    source_url=None,
+                ),
+            ],
+        )
+        output = render_human_standard(rule_set, None)
+        assert "[Provisional: intent only, not yet audited]" not in output
+
+    def test_human_standard_excludes_provisional_marker_with_mixed_rules(
+        self,
+    ) -> None:
+        """Human standard excludes marker when rule set contains mixed statuses."""
+        rule_set = RuleSet(
+            version="1.0",
+            project="test-project",
+            rules=[
+                Rule(
+                    rule_id="D06-R01",
+                    domain_id="d06",
+                    text_short="Type hints",
+                    text_body="Use type hints.",
+                    source="rules-pack",
+                    stack_profile=None,
+                    status="verified-pass",
+                    verified_date="2026-08-25",
+                    severity=None,
+                    finding_details=None,
+                    conflict_with_stack_profile=None,
+                    conflict_resolution=None,
+                    source_url=None,
+                ),
+                Rule(
+                    rule_id="S-React-R01",
+                    domain_id=None,
+                    text_short="Testing",
+                    text_body="Test all components.",
+                    source="stack-profile",
+                    stack_profile="react",
+                    status="provisional",
+                    verified_date="2026-08-25",
+                    severity=None,
+                    finding_details=None,
+                    conflict_with_stack_profile=None,
+                    conflict_resolution=None,
+                    source_url=None,
+                ),
+            ],
+        )
+        output = render_human_standard(rule_set, None)
+        assert "[Provisional: intent only, not yet audited]" not in output
+
+    def test_policy_includes_provisional_marker_when_all_rules_provisional(
+        self,
+    ) -> None:
+        """Policy includes top-of-document provisional marker when all rules are provisional."""
+        rule_set = RuleSet(
+            version="1.0",
+            project="test-project",
+            rules=[
+                Rule(
+                    rule_id="S-React-R01",
+                    domain_id=None,
+                    text_short="Testing",
+                    text_body="Test all components.",
+                    source="stack-profile",
+                    stack_profile="react",
+                    status="provisional",
+                    verified_date="2026-08-25",
+                    severity=None,
+                    finding_details=None,
+                    conflict_with_stack_profile=None,
+                    conflict_resolution=None,
+                    source_url=None,
+                ),
+            ],
+        )
+        output = render_policy(rule_set)
+        assert "[Provisional: intent only, not yet audited]" in output
+        # Marker should appear inside managed block
+        start = output.find('<!-- audit:start id="engineering-policy" -->')
+        end = output.find("<!-- audit:end -->")
+        content = output[start:end]
+        assert "[Provisional: intent only, not yet audited]" in content
+
+    def test_policy_excludes_provisional_marker_when_all_rules_verified(
+        self,
+    ) -> None:
+        """Policy excludes marker when all rules are verified."""
+        rule_set = RuleSet(
+            version="1.0",
+            project="test-project",
+            rules=[
+                Rule(
+                    rule_id="D06-R01",
+                    domain_id="d06",
+                    text_short="Type hints",
+                    text_body="Use type hints.",
+                    source="rules-pack",
+                    stack_profile=None,
+                    status="verified-pass",
+                    verified_date="2026-08-25",
+                    severity=None,
+                    finding_details=None,
+                    conflict_with_stack_profile=None,
+                    conflict_resolution=None,
+                    source_url=None,
+                ),
+            ],
+        )
+        output = render_policy(rule_set)
+        assert "[Provisional: intent only, not yet audited]" not in output
+
+    def test_policy_excludes_provisional_marker_with_mixed_rules(
+        self,
+    ) -> None:
+        """Policy excludes marker when rule set contains mixed statuses."""
+        rule_set = RuleSet(
+            version="1.0",
+            project="test-project",
+            rules=[
+                Rule(
+                    rule_id="D06-R01",
+                    domain_id="d06",
+                    text_short="Type hints",
+                    text_body="Use type hints.",
+                    source="rules-pack",
+                    stack_profile=None,
+                    status="verified-pass",
+                    verified_date="2026-08-25",
+                    severity=None,
+                    finding_details=None,
+                    conflict_with_stack_profile=None,
+                    conflict_resolution=None,
+                    source_url=None,
+                ),
+                Rule(
+                    rule_id="S-React-R01",
+                    domain_id=None,
+                    text_short="Testing",
+                    text_body="Test all components.",
+                    source="stack-profile",
+                    stack_profile="react",
+                    status="provisional",
+                    verified_date="2026-08-25",
+                    severity=None,
+                    finding_details=None,
+                    conflict_with_stack_profile=None,
+                    conflict_resolution=None,
+                    source_url=None,
+                ),
+            ],
+        )
+        output = render_policy(rule_set)
+        assert "[Provisional: intent only, not yet audited]" not in output
