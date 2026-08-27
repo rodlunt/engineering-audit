@@ -412,7 +412,7 @@ def test_tool_surface_is_the_ten_tools_with_their_documented_parameters() -> Non
         ),
         "write_grill_standards_artefacts": (
             ["grill_rules", "output_dir", "project_dir"],
-            ["grill_rules", "output_dir"],
+            ["grill_rules", "output_dir", "project_dir"],
         ),
         "render_report": (["finished"], ["finished"]),
     }

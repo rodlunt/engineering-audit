@@ -2454,7 +2454,7 @@ def _register_grill_tools(mcp: MCPServer, state: AppState) -> None:
     def write_grill_standards_artefacts(
         grill_rules: str,
         output_dir: str,
-        project_dir: str | None = None,
+        project_dir: str,
     ) -> dict[str, Any]:
         """Generate provisional standards artefacts from grill-captured rules.
 
@@ -2471,9 +2471,9 @@ def _register_grill_tools(mcp: MCPServer, state: AppState) -> None:
                 stack_profile. All rules will be marked provisional with today's date.
             output_dir: Path to the directory where rule-set.json will be written
                 (typically the project's audit-output directory).
-            project_dir: Optional path to the project root. If provided, the three
-                standards documents are written to project_dir/docs/. If not provided,
-                they are written to output_dir.
+            project_dir: Required path to the project root directory. The three
+                standards documents are written to project_dir/docs/ as per the
+                spec's file placement requirement.
 
         Returns:
             Dictionary with keys:
@@ -2485,6 +2485,34 @@ def _register_grill_tools(mcp: MCPServer, state: AppState) -> None:
             - errors: List of error messages if success is False
         """
         try:
+            # Validate project_dir is provided and exists
+            if not project_dir:
+                return {
+                    "success": False,
+                    "errors": [
+                        "project_dir is required. Standards documents must be written to the project's configured paths (docs/). "
+                        "Provide the path to the project root directory where the grill will record standards."
+                    ],
+                }
+
+            project_path = Path(project_dir)
+            if not project_path.exists():
+                return {
+                    "success": False,
+                    "errors": [
+                        f"project_dir does not exist: {project_dir}. "
+                        "Please provide a valid path to an existing project directory."
+                    ],
+                }
+            if not project_path.is_dir():
+                return {
+                    "success": False,
+                    "errors": [
+                        f"project_dir is not a directory: {project_dir}. "
+                        "Please provide a path to a valid project directory, not a file."
+                    ],
+                }
+
             # Parse grill rules from JSON
             rules_data = json.loads(grill_rules)
             if not isinstance(rules_data, list):
@@ -2538,7 +2566,6 @@ def _register_grill_tools(mcp: MCPServer, state: AppState) -> None:
 
             # Determine directories
             output_path = Path(output_dir)
-            project_path = Path(project_dir) if project_dir else None
 
             # Write standards and rule set
             try:
@@ -2546,17 +2573,20 @@ def _register_grill_tools(mcp: MCPServer, state: AppState) -> None:
             except Exception as exc:
                 return {
                     "success": False,
-                    "errors": [
-                        f"Failed to write standards to output directory ({output_path}): {exc}. Check that the directory exists and is writable."
-                    ],
+                    "errors": [f"Failed to write standards documents: {exc}"],
                 }
 
             # Compute document paths for response
-            docs_dir = (project_path / "docs") if project_path else output_path
             document_paths = {
-                "agent-standard": str(docs_dir / "coding-standard.agent.md"),
-                "human-standard": str(docs_dir / "engineering-standard.md"),
-                "engineering-policy": str(docs_dir / "engineering-policy.md"),
+                "agent-standard": str(
+                    project_path / "docs" / "coding-standard.agent.md"
+                ),
+                "human-standard": str(
+                    project_path / "docs" / "engineering-standard.md"
+                ),
+                "engineering-policy": str(
+                    project_path / "docs" / "engineering-policy.md"
+                ),
             }
 
             return {

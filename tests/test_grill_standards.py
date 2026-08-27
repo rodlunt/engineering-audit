@@ -233,7 +233,9 @@ class TestWriteProvisionalStandards:
 
         rendered = render_all(rule_set)
         deliverables_dir = tmp_path / "deliverables"
+        deliverables_dir.mkdir()
         repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
 
         write_standards(deliverables_dir, rendered, rule_set, repo_dir)
 
@@ -263,7 +265,9 @@ class TestWriteProvisionalStandards:
 
         rendered = render_all(rule_set)
         deliverables_dir = tmp_path / "deliverables"
+        deliverables_dir.mkdir()
         repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
 
         write_standards(deliverables_dir, rendered, rule_set, repo_dir)
 
@@ -298,7 +302,9 @@ class TestWriteProvisionalStandards:
 
         rendered = render_all(rule_set)
         deliverables_dir = tmp_path / "deliverables"
+        deliverables_dir.mkdir()
         repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
 
         write_standards(deliverables_dir, rendered, rule_set, repo_dir)
 

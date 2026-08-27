@@ -185,6 +185,8 @@ def test_write_grill_standards_artefacts_rejects_invalid_json(tmp_path: Path) ->
     mcp, _state = build_server(FIXTURE_PACK)
     output_dir = tmp_path / "output"
     output_dir.mkdir()
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
 
     # Call the tool with invalid JSON
     result = _call(
@@ -193,6 +195,7 @@ def test_write_grill_standards_artefacts_rejects_invalid_json(tmp_path: Path) ->
         {
             "grill_rules": "not valid json {",
             "output_dir": str(output_dir),
+            "project_dir": str(project_dir),
         },
     )
 
@@ -215,6 +218,8 @@ def test_write_grill_standards_artefacts_rejects_non_array_grill_rules(
     mcp, _state = build_server(FIXTURE_PACK)
     output_dir = tmp_path / "output"
     output_dir.mkdir()
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
 
     # Call the tool with valid JSON but not an array
     result = _call(
@@ -223,6 +228,7 @@ def test_write_grill_standards_artefacts_rejects_non_array_grill_rules(
         {
             "grill_rules": json.dumps({"rule_id": "D06-R01"}),  # Object, not array
             "output_dir": str(output_dir),
+            "project_dir": str(project_dir),
         },
     )
 
@@ -240,6 +246,8 @@ def test_write_grill_standards_artefacts_rejects_rule_missing_required_fields(
     mcp, _state = build_server(FIXTURE_PACK)
     output_dir = tmp_path / "output"
     output_dir.mkdir()
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
 
     # Create a rule missing required fields (missing 'text_short')
     incomplete_rule = {
@@ -255,6 +263,7 @@ def test_write_grill_standards_artefacts_rejects_rule_missing_required_fields(
         {
             "grill_rules": json.dumps([incomplete_rule]),
             "output_dir": str(output_dir),
+            "project_dir": str(project_dir),
         },
     )
 
@@ -280,6 +289,8 @@ def test_write_grill_standards_artefacts_handles_write_failure(
     # Create a file where a directory should be, to force a write failure
     output_dir = tmp_path / "blockeddir"
     output_dir.touch()  # Create a file instead of directory
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
 
     valid_rule = {
         "rule_id": "D06-R01",
@@ -295,12 +306,12 @@ def test_write_grill_standards_artefacts_handles_write_failure(
         {
             "grill_rules": json.dumps([valid_rule]),
             "output_dir": str(output_dir),
+            "project_dir": str(project_dir),
         },
     )
 
     assert result["success"] is False
     assert len(result["errors"]) > 0
     error_message = result["errors"][0]
-    # Check that error message is actionable: mentions directory and what to check
-    assert "directory" in error_message or "output" in error_message
-    assert "writable" in error_message or "exists" in error_message
+    # Check that error message is actionable: mentions the failure details
+    assert "Failed to write" in error_message

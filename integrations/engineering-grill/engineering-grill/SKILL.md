@@ -381,7 +381,7 @@ Call `write_grill_standards_artefacts` with:
 
 - `grill_rules` (string, required): JSON array of the grill's captured rule objects. Each rule object must have `rule_id`, `text_short`, `text_body`, and `source`. Fields `domain_id`, `stack_profile`, and `grill_intent_note` are optional (if `grill_intent_note` is omitted, the tool sets it to "Recorded from engineering-grill intent."). The tool marks all rules as provisional with today's date.
 - `output_dir` (string, required): the project's audit output directory, typically `audit-output/`, or a configured location if known from a prior audit run or CLAUDE.md.
-- `project_dir` (string, optional): the project root directory. If provided, documents are written to `project_dir/docs/`. If not provided, they are written to `output_dir`.
+- `project_dir` (string, required): the project root directory. The three standards documents are written to `project_dir/docs/` as required by the specification. This directory must exist.
 
 On success, the tool returns a dictionary with keys: `success` (Boolean, value True), `rule_set_path` (string), `document_paths` (dictionary with keys `agent-standard`, `human-standard`, `engineering-policy`), `rules_count` (integer), and `created_date` (ISO date string). On failure, it returns `success` (Boolean, value False) and `errors` (list of error message strings).
 
