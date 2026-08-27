@@ -157,6 +157,80 @@ class TestDetectedStack:
         assert hash(stack1) == hash(stack2)
 
 
+class TestDetectStackPythonDevDependencies:
+    """Tests for dev dependency handling in Python stack detection."""
+
+    def test_framework_only_in_optional_dependencies_not_detected(
+        self, tmp_path: Path
+    ) -> None:
+        """Framework in optional-dependencies (dev) is NOT detected as stack."""
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text("""
+[project]
+name = "test"
+dependencies = ["requests"]
+
+[project.optional-dependencies]
+dev = ["django>=3.0"]
+""")
+        stack = detect_stack(tmp_path)
+
+        assert "python" in stack.identifiers
+        assert "django" not in stack.identifiers
+
+    def test_framework_only_in_requirements_dev_not_detected(
+        self, tmp_path: Path
+    ) -> None:
+        """Framework in requirements-dev.txt is NOT detected as stack."""
+        req = tmp_path / "requirements.txt"
+        req.write_text("requests\n")
+
+        req_dev = tmp_path / "requirements-dev.txt"
+        req_dev.write_text("django>=3.0\n")
+
+        stack = detect_stack(tmp_path)
+
+        assert "python" in stack.identifiers
+        assert "django" not in stack.identifiers
+
+    def test_framework_only_in_pipfile_dev_packages_not_detected(
+        self, tmp_path: Path
+    ) -> None:
+        """Framework in Pipfile [dev-packages] is NOT detected as stack."""
+        pipfile = tmp_path / "Pipfile"
+        pipfile.write_text("""
+[packages]
+requests = "*"
+
+[dev-packages]
+django = "*"
+""")
+        stack = detect_stack(tmp_path)
+
+        assert "python" in stack.identifiers
+        assert "django" not in stack.identifiers
+
+    def test_framework_in_runtime_detected_with_dev_also_present(
+        self, tmp_path: Path
+    ) -> None:
+        """Framework in runtime deps is detected even if also in dev deps."""
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text("""
+[project]
+name = "test"
+dependencies = ["django>=3.0"]
+
+[project.optional-dependencies]
+dev = ["django>=3.0"]
+""")
+        stack = detect_stack(tmp_path)
+
+        assert "python" in stack.identifiers
+        assert "django" in stack.identifiers
+        # Evidence should point to runtime source
+        assert stack.evidence["django"].file_path == "pyproject.toml"
+
+
 class TestDetectStackPython:
     """Tests for detect_stack with Python dependency files."""
 
@@ -207,14 +281,16 @@ flask==2.0.0
         assert stack.evidence["python"].file_path == "requirements.txt"
         assert stack.evidence["flask"].file_path == "requirements.txt"
 
-    def test_detects_from_requirements_dev_txt(self, tmp_path: Path) -> None:
-        """requirements-dev.txt is detected."""
+    def test_detects_python_from_requirements_dev_txt(self, tmp_path: Path) -> None:
+        """Python is detected from requirements-dev.txt but frameworks are not."""
         req_dev = tmp_path / "requirements-dev.txt"
         req_dev.write_text("django>=3.0\n")
         stack = detect_stack(tmp_path)
 
+        # Python is detected because it's a language (can come from dev)
         assert "python" in stack.identifiers
-        assert "django" in stack.identifiers
+        # django is a framework, so it should NOT be detected from dev-only file
+        assert "django" not in stack.identifiers
 
     def test_detects_from_setup_cfg(self, tmp_path: Path) -> None:
         """Python is detected from setup.cfg."""
@@ -290,6 +366,77 @@ flask = ">=2.0"
         assert stack.evidence["python"].file_path == "pyproject.toml"
 
 
+class TestDetectStackJavaScriptDevDependencies:
+    """Tests for dev dependency handling in JavaScript stack detection."""
+
+    def test_framework_only_in_dev_dependencies_not_detected(
+        self, tmp_path: Path
+    ) -> None:
+        """Framework in devDependencies is NOT detected as stack."""
+        package = tmp_path / "package.json"
+        package.write_text("""
+{
+  "name": "test",
+  "dependencies": {
+    "axios": "^1.0.0"
+  },
+  "devDependencies": {
+    "react": "^18.0.0"
+  }
+}
+""")
+        stack = detect_stack(tmp_path)
+
+        assert "javascript" in stack.identifiers
+        assert "react" not in stack.identifiers
+
+    def test_typescript_in_dev_dependencies_still_detected(
+        self, tmp_path: Path
+    ) -> None:
+        """TypeScript in devDependencies IS detected (regression guard)."""
+        package = tmp_path / "package.json"
+        package.write_text("""
+{
+  "name": "test",
+  "dependencies": {
+    "next": "^13.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  }
+}
+""")
+        stack = detect_stack(tmp_path)
+
+        assert "typescript" in stack.identifiers
+        assert "next" in stack.identifiers
+        assert "javascript" not in stack.identifiers
+
+    def test_framework_in_runtime_and_dev_detected_with_runtime_evidence(
+        self, tmp_path: Path
+    ) -> None:
+        """Framework in both runtime and dev deps detected with runtime evidence."""
+        package = tmp_path / "package.json"
+        package.write_text("""
+{
+  "name": "test",
+  "dependencies": {
+    "react": "^18.0.0"
+  },
+  "devDependencies": {
+    "react": "^18.0.0",
+    "@types/react": "^18.0.0"
+  }
+}
+""")
+        stack = detect_stack(tmp_path)
+
+        assert "javascript" in stack.identifiers
+        assert "react" in stack.identifiers
+        # Evidence should point to the dependency (runtime source)
+        assert stack.evidence["react"].dependency_or_line == "react"
+
+
 class TestDetectStackJavaScript:
     """Tests for detect_stack with JavaScript dependency files."""
 
@@ -332,8 +479,10 @@ class TestDetectStackJavaScript:
         assert "next" in stack.identifiers
         assert "javascript" not in stack.identifiers
 
-    def test_detects_frameworks_from_dev_dependencies(self, tmp_path: Path) -> None:
-        """Frameworks in devDependencies are detected."""
+    def test_does_not_detect_frameworks_only_in_dev_dependencies(
+        self, tmp_path: Path
+    ) -> None:
+        """Frameworks in devDependencies (only) are NOT detected."""
         package = tmp_path / "package.json"
         package.write_text("""
 {
@@ -346,8 +495,10 @@ class TestDetectStackJavaScript:
 """)
         stack = detect_stack(tmp_path)
 
+        # JavaScript is detected from package.json, but svelte (framework) is not
+        # because it's only in devDependencies
         assert "javascript" in stack.identifiers
-        assert "svelte" in stack.identifiers
+        assert "svelte" not in stack.identifiers
 
     def test_skips_malformed_package_json(self, tmp_path: Path) -> None:
         """Malformed package.json is skipped without crashing."""
@@ -405,7 +556,7 @@ class TestDetectStackMultiple:
         assert stack.identifiers == ()
 
     def test_multiple_requirements_files(self, tmp_path: Path) -> None:
-        """Multiple requirements-*.txt files are all checked."""
+        """Multiple requirements-*.txt files are checked but dev frameworks ignored."""
         req = tmp_path / "requirements.txt"
         req.write_text("django\n")
 
@@ -414,10 +565,10 @@ class TestDetectStackMultiple:
 
         stack = detect_stack(tmp_path)
 
-        # Should detect both django and flask
+        # Should detect django (runtime) but NOT flask (dev-only)
         assert "python" in stack.identifiers
         assert "django" in stack.identifiers
-        assert "flask" in stack.identifiers
+        assert "flask" not in stack.identifiers
 
 
 class TestGrillStackFromRuleSet:

@@ -224,6 +224,9 @@ def _detect_python_stack(
 ) -> tuple[StackEvidence | None, dict[str, StackEvidence]]:
     """Detect Python language and frameworks.
 
+    Frameworks are detected only from runtime dependencies. Language (Python)
+    can be detected from runtime or dev dependencies.
+
     Returns:
         Tuple of (language_evidence, frameworks_dict).
         language_evidence is None if Python is not detected.
@@ -231,6 +234,7 @@ def _detect_python_stack(
     """
     python_evidence = None
     frameworks = {}
+    runtime_frameworks_by_name: dict[str, StackEvidence] = {}
 
     # Check pyproject.toml (PEP 621 and Poetry)
     pyproject = repo_dir / "pyproject.toml"
@@ -245,11 +249,9 @@ def _detect_python_stack(
                 dependency_or_line="[project] or [tool.poetry.dependencies]",
             )
 
-            # Extract dependencies
-            deps = set()
+            # Extract runtime dependencies (PEP 621)
             if "project" in data and "dependencies" in data["project"]:
                 for dep_line in data["project"]["dependencies"]:
-                    # Extract package name (before version specifier)
                     pkg_name = (
                         dep_line.split("[")[0]
                         .split(">=")[0]
@@ -257,63 +259,110 @@ def _detect_python_stack(
                         .split("<")[0]
                         .strip()
                     )
-                    deps.add(pkg_name.lower())
+                    pkg_name_lower = pkg_name.lower()
+                    if pkg_name_lower in _PY_FRAMEWORKS:
+                        fw = _PY_FRAMEWORKS[pkg_name_lower]
+                        runtime_frameworks_by_name[fw] = StackEvidence(
+                            file_path="pyproject.toml",
+                            dependency_or_line=pkg_name_lower,
+                        )
 
+            # Extract runtime dependencies (Poetry)
             if (
                 "tool" in data
                 and "poetry" in data["tool"]
                 and "dependencies" in data["tool"]["poetry"]
             ):
                 for pkg_name in data["tool"]["poetry"]["dependencies"]:
-                    deps.add(pkg_name.lower())
+                    pkg_name_lower = pkg_name.lower()
+                    if pkg_name_lower in _PY_FRAMEWORKS:
+                        fw = _PY_FRAMEWORKS[pkg_name_lower]
+                        runtime_frameworks_by_name[fw] = StackEvidence(
+                            file_path="pyproject.toml",
+                            dependency_or_line=pkg_name_lower,
+                        )
 
-            # Map to frameworks
-            for dep in deps:
-                if dep in _PY_FRAMEWORKS:
-                    fw = _PY_FRAMEWORKS[dep]
-                    frameworks[fw] = StackEvidence(
-                        file_path="pyproject.toml",
-                        dependency_or_line=dep,
-                    )
+            # Frameworks only from runtime; language can be from dev too
+            frameworks.update(runtime_frameworks_by_name)
+
         except Exception:
             # Skip on any parse error
             pass
 
-    # Check requirements*.txt
-    if not python_evidence:
-        req_files = list(repo_dir.glob("requirements*.txt"))
-        if req_files:
-            python_evidence = StackEvidence(
-                file_path=req_files[0].name,
-                dependency_or_line="dependency declaration",
-            )
+    # Check requirements*.txt (separate runtime and dev files)
+    req_files = sorted(repo_dir.glob("requirements*.txt"))
+    req_files_by_type: dict[str, list[Path]] = {"runtime": [], "dev": []}
 
-            # Extract dependencies from all requirements files
-            for req_file in req_files:
-                try:
-                    content = req_file.read_text(encoding="utf-8")
-                    for line in content.splitlines():
-                        line = line.strip()
-                        if line and not line.startswith("#"):
-                            # Extract package name
-                            pkg_name = (
-                                line.split("[")[0]
-                                .split(">=")[0]
-                                .split("==")[0]
-                                .split("<")[0]
-                                .split(">")[0]
-                                .strip()
+    for req_file in req_files:
+        name_lower = req_file.name.lower()
+        # Check if it's a dev requirements file
+        if "dev" in name_lower or "development" in name_lower:
+            req_files_by_type["dev"].append(req_file)
+        else:
+            req_files_by_type["runtime"].append(req_file)
+
+    # Process runtime requirements files first
+    if req_files_by_type["runtime"] and not python_evidence:
+        python_evidence = StackEvidence(
+            file_path=req_files_by_type["runtime"][0].name,
+            dependency_or_line="dependency declaration",
+        )
+
+    for req_file in req_files_by_type["runtime"]:
+        try:
+            content = req_file.read_text(encoding="utf-8")
+            for line in content.splitlines():
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    pkg_name = (
+                        line.split("[")[0]
+                        .split(">=")[0]
+                        .split("==")[0]
+                        .split("<")[0]
+                        .split(">")[0]
+                        .strip()
+                    )
+                    if pkg_name:
+                        pkg_name_lower = pkg_name.lower()
+                        if pkg_name_lower in _PY_FRAMEWORKS:
+                            fw = _PY_FRAMEWORKS[pkg_name_lower]
+                            runtime_frameworks_by_name[fw] = StackEvidence(
+                                file_path=req_file.name,
+                                dependency_or_line=pkg_name_lower,
                             )
-                            if pkg_name:
-                                pkg_name_lower = pkg_name.lower()
-                                if pkg_name_lower in _PY_FRAMEWORKS:
-                                    fw = _PY_FRAMEWORKS[pkg_name_lower]
-                                    frameworks[fw] = StackEvidence(
-                                        file_path=req_file.name,
-                                        dependency_or_line=pkg_name_lower,
-                                    )
-                except Exception:
-                    pass
+        except Exception:
+            pass
+
+    # Process dev requirements files (frameworks not extracted, only language)
+    if req_files_by_type["dev"] and not python_evidence:
+        python_evidence = StackEvidence(
+            file_path=req_files_by_type["dev"][0].name,
+            dependency_or_line="dependency declaration",
+        )
+
+    for req_file in req_files_by_type["dev"]:
+        try:
+            content = req_file.read_text(encoding="utf-8")
+            for line in content.splitlines():
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    pkg_name = (
+                        line.split("[")[0]
+                        .split(">=")[0]
+                        .split("==")[0]
+                        .split("<")[0]
+                        .split(">")[0]
+                        .strip()
+                    )
+                    if pkg_name:
+                        pkg_name_lower = pkg_name.lower()
+                        # Dev files: only language, not frameworks
+                        # (so we skip frameworks here)
+        except Exception:
+            pass
+
+    # Add runtime frameworks to result
+    frameworks.update(runtime_frameworks_by_name)
 
     # Check setup.cfg
     setup_cfg = repo_dir / "setup.cfg"
@@ -330,6 +379,7 @@ def _detect_python_stack(
                     dependency_or_line="[metadata] or [options]",
                 )
 
+            # [options] install_requires is runtime
             if "options" in config and "install_requires" in config["options"]:
                 deps_str = config["options"]["install_requires"]
                 for dep_line in deps_str.split("\n"):
@@ -350,6 +400,9 @@ def _detect_python_stack(
                                     file_path="setup.cfg",
                                     dependency_or_line=pkg_name_lower,
                                 )
+
+            # [options.extras_require] are optional/dev dependencies (frameworks ignored)
+            # So we skip them for framework detection
         except Exception:
             pass
 
@@ -366,7 +419,7 @@ def _detect_python_stack(
                     dependency_or_line="[packages]",
                 )
 
-            # Extract from [packages] section
+            # Extract from [packages] section (runtime)
             if "packages" in data:
                 for pkg_name in data["packages"]:
                     pkg_name_lower = pkg_name.lower()
@@ -376,6 +429,9 @@ def _detect_python_stack(
                             file_path="Pipfile",
                             dependency_or_line=pkg_name_lower,
                         )
+
+            # [dev-packages] is dev only (frameworks ignored)
+            # So we skip it for framework detection
         except Exception:
             pass
 
@@ -386,6 +442,9 @@ def _detect_js_stack(
     repo_dir: Path,
 ) -> tuple[StackEvidence | None, dict[str, StackEvidence]]:
     """Detect JavaScript/TypeScript language and frameworks.
+
+    Frameworks are detected only from runtime dependencies. Language (JavaScript/TypeScript)
+    can be detected from runtime or dev dependencies.
 
     Returns:
         Tuple of (language_evidence, frameworks_dict).
@@ -404,20 +463,24 @@ def _detect_js_stack(
     except Exception:
         return None, {}
 
-    # Detect JavaScript from presence of package.json
-    all_deps = {}
+    # Separate runtime and dev dependencies
+    runtime_deps = {}
+    dev_deps = {}
 
-    # Merge dependencies and devDependencies
     if "dependencies" in data and isinstance(data["dependencies"], dict):
-        all_deps.update(data["dependencies"])
+        runtime_deps.update(data["dependencies"])
     if "devDependencies" in data and isinstance(data["devDependencies"], dict):
-        all_deps.update(data["devDependencies"])
+        dev_deps.update(data["devDependencies"])
 
-    # Check for TypeScript
-    if "typescript" in all_deps:
+    # Detect language from presence of package.json (can come from either)
+    # Check for TypeScript first (may be in dev)
+    if "typescript" in runtime_deps or "typescript" in dev_deps:
+        ts_location = "typescript"
+        if "typescript" in runtime_deps:
+            ts_location = "typescript (runtime)"
         js_evidence = StackEvidence(
             file_path="package.json",
-            dependency_or_line="typescript",
+            dependency_or_line=ts_location,
         )
     else:
         js_evidence = StackEvidence(
@@ -425,8 +488,8 @@ def _detect_js_stack(
             dependency_or_line="dependencies",
         )
 
-    # Extract frameworks
-    for pkg_name in all_deps:
+    # Extract frameworks from RUNTIME dependencies only
+    for pkg_name in runtime_deps:
         pkg_name_lower = pkg_name.lower()
         if pkg_name_lower in _JS_FRAMEWORKS:
             fw = _JS_FRAMEWORKS[pkg_name_lower]

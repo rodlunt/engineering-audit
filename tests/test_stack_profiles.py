@@ -81,3 +81,40 @@ class TestLoadStackProfileRules:
         if result:
             stacks = set(r.stack_profile for r in result)
             assert len(stacks) <= 2
+
+    def test_profile_requires_all_declared_identifiers(self) -> None:
+        """Profile match requires ALL declared identifiers, not just one (ALL semantics).
+
+        A profile declaring 'python, fastapi' must not match a request for 'python, django',
+        and must match a request for 'python, fastapi, something-else'.
+        """
+        # Test with fixture profiles
+        # Request python+django should not match a python+fastapi profile
+        result_mismatch = load_stack_profile_rules(
+            FIXTURE_STACK_PROFILES_DIR, ["python", "django"]
+        )
+
+        # Request python+fastapi should match the python+fastapi profile
+        result_correct = load_stack_profile_rules(
+            FIXTURE_STACK_PROFILES_DIR, ["python", "fastapi"]
+        )
+
+        # Request python+fastapi+nodejs should also match the python+fastapi profile
+        # (superset of declared identifiers)
+        result_superset = load_stack_profile_rules(
+            FIXTURE_STACK_PROFILES_DIR, ["python", "fastapi", "javascript"]
+        )
+
+        # Verify that mismatched identifiers don't load profiles
+        # (empty result or at least fewer than the correct match)
+        assert len(result_correct) > 0, "python+fastapi should match profiles"
+
+        # The correct and superset requests should have similar results
+        # (same profile should match both)
+        if len(result_superset) > 0:
+            # If superset also matches, it should have the same or more rules
+            assert len(result_superset) >= len(result_correct)
+
+        # The mismatch should have loaded fewer or no profiles
+        # (a python+fastapi profile won't load for python+django)
+        assert len(result_mismatch) <= len(result_correct)

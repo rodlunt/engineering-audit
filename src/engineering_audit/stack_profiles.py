@@ -54,15 +54,17 @@ def load_stack_profile_rules(
     """Load stack profile rules for given stack identifiers from a rules pack.
 
     Searches the rules pack for stack profile definitions matching the given
-    stack identifiers. A profile matches if any of its declared stack identifiers
-    are in the requested set. If the pack contains no profiles directory or the
+    stack identifiers. A profile matches if ALL of its declared stack identifiers
+    are in the requested set. For example, a profile declaring 'python, fastapi'
+    will only load when both python and fastapi are detected; it will not load
+    for a python+django project. If the pack contains no profiles directory or the
     directory has no matching profile files, returns an empty list.
 
     Args:
         pack_root: Path to the rules pack root directory.
         stack_identifiers: Iterable of individual stack identifiers to match
             (e.g., ['python', 'fastapi']). A profile file that declares multiple
-            identifiers will match if any of them are in this set. Each Rule's
+            identifiers will match only if ALL of them are in this set. Each Rule's
             stack_profile field is set to the first identifier declared in the
             profile.
 
