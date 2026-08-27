@@ -10,7 +10,11 @@ from pathlib import Path
 
 import pytest
 
-from engineering_audit.managed_blocks import wrap_managed_block, write_managed_block
+from engineering_audit.managed_blocks import (
+    get_document_title,
+    wrap_managed_block,
+    write_managed_block,
+)
 
 
 class TestWriteManagedBlock:
@@ -389,3 +393,35 @@ class TestWrapManagedBlock:
         # Preamble and footer should be preserved
         assert "Some preamble" in written_text
         assert "Some footer" in written_text
+
+
+class TestGetDocumentTitle:
+    """Tests for the get_document_title function."""
+
+    def test_returns_correct_title_for_agent_standard(self) -> None:
+        """get_document_title maps 'agent-standard' to its title."""
+        title = get_document_title("agent-standard")
+        assert title == "Agent Coding Standard"
+
+    def test_returns_correct_title_for_human_standard(self) -> None:
+        """get_document_title maps 'human-standard' to its title."""
+        title = get_document_title("human-standard")
+        assert title == "Engineering Standard"
+
+    def test_returns_correct_title_for_engineering_policy(self) -> None:
+        """get_document_title maps 'engineering-policy' to its title."""
+        title = get_document_title("engineering-policy")
+        assert title == "Engineering Policy"
+
+    def test_returns_raw_id_for_unknown_document_id(self) -> None:
+        """get_document_title returns the raw ID unchanged for unknown IDs."""
+        unknown_id = "unknown-standard"
+        title = get_document_title(unknown_id)
+        assert title == unknown_id
+
+    def test_returns_raw_id_for_various_unknown_ids(self) -> None:
+        """get_document_title handles various unknown ID formats."""
+        test_cases = ["foo-bar", "custom-id", "anything"]
+        for test_id in test_cases:
+            title = get_document_title(test_id)
+            assert title == test_id

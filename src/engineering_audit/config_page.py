@@ -23,6 +23,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 from pydantic import ValidationError
 
+from engineering_audit.managed_blocks import get_document_title
 from engineering_audit.output_location import (
     UnresolvableOutputLocation,
     existing_deliverables_warning,
@@ -93,16 +94,6 @@ _DRAFT_COOKIE_MAX_AGE_S = 3600
 # delivery mode is a few hundred bytes; anything past this did not come from
 # this page, and is dropped rather than parsed.
 _MAX_DRAFT_COOKIE_CHARS = 4096
-
-
-def _title_for_document(document_id: str) -> str:
-    """Get the human-readable title for a document ID."""
-    titles = {
-        "agent-standard": "Agent Coding Standard",
-        "human-standard": "Engineering Standard",
-        "engineering-policy": "Engineering Policy",
-    }
-    return titles.get(document_id, document_id)
 
 
 def _csp(script_nonce: str | None) -> str:
@@ -878,7 +869,7 @@ class ConfigServer:
             diffs_html.append(
                 f"""
     <div class="document-diff" data-document-id="{html.escape(diff.document_id)}">
-        <h3>{html.escape(_title_for_document(diff.document_id))}</h3>
+        <h3>{html.escape(get_document_title(diff.document_id))}</h3>
         <div class="diff-container">
             <div class="diff-side current-side">
                 <h4>Current</h4>

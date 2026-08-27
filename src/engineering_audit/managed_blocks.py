@@ -22,6 +22,7 @@ __all__ = [
     "get_escaped_opening_marker_pattern",
     "get_escaped_opening_marker_pattern_any_id",
     "get_escaped_closing_marker_pattern",
+    "get_document_title",
 ]
 
 logger = logging.getLogger(__name__)
@@ -154,7 +155,7 @@ def _create_file_with_managed_block(
     - A date line with today's date
     - The managed block with the provided content inside
     """
-    title = _title_from_block_id(block_id)
+    title = get_document_title(block_id)
     today = date.today().isoformat()
     wrapped_content = wrap_managed_block(content, block_id)
 
@@ -169,24 +170,31 @@ def _create_file_with_managed_block(
         return False
 
 
-def _title_from_block_id(block_id: str) -> str:
-    """Generate a human-readable title from a block ID.
+def get_document_title(document_id: str) -> str:
+    """Get the human-readable title for a standards document ID.
+
+    Maps the three known standards document IDs to their human-readable titles.
+    For unknown IDs, returns the raw ID unchanged.
+
+    Args:
+        document_id: The document identifier (e.g., 'agent-standard',
+            'human-standard', 'engineering-policy').
+
+    Returns:
+        The human-readable title for the document.
 
     Examples:
         'agent-standard' -> 'Agent Coding Standard'
         'human-standard' -> 'Engineering Standard'
         'engineering-policy' -> 'Engineering Policy'
+        'unknown-id' -> 'unknown-id'
     """
-    parts = block_id.split("-")
-    if block_id == "agent-standard":
-        return "Agent Coding Standard"
-    elif block_id == "human-standard":
-        return "Engineering Standard"
-    elif block_id == "engineering-policy":
-        return "Engineering Policy"
-    else:
-        # Generic title from block_id
-        return " ".join(part.capitalize() for part in parts)
+    titles = {
+        "agent-standard": "Agent Coding Standard",
+        "human-standard": "Engineering Standard",
+        "engineering-policy": "Engineering Policy",
+    }
+    return titles.get(document_id, document_id)
 
 
 def _update_managed_block_in_existing_file(
