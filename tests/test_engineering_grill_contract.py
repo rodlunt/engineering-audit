@@ -20,9 +20,25 @@ SKILL_PATH = GRILL_ROOT / "engineering-grill" / "SKILL.md"
 FORMATS_PATH = (
     GRILL_ROOT / "engineering-grill" / "references" / "documentation-formats.md"
 )
+README_PATH = GRILL_ROOT / "README.md"
 
 SKILL = SKILL_PATH.read_text(encoding="utf-8")
 FORMATS = FORMATS_PATH.read_text(encoding="utf-8")
+README = README_PATH.read_text(encoding="utf-8")
+_coverage_template_match = re.search(
+    r"##\s+Engineering coverage.*?```markdown\n(?P<template>.*?)\n```",
+    FORMATS,
+    flags=re.MULTILINE | re.DOTALL,
+)
+assert _coverage_template_match is not None, "engineering coverage template is missing"
+COVERAGE_TEMPLATE = _coverage_template_match.group("template")
+_adr_template_match = re.search(
+    r"##\s+Architecture decision record.*?```markdown\n(?P<template>.*?)\n```",
+    FORMATS,
+    flags=re.MULTILINE | re.DOTALL,
+)
+assert _adr_template_match is not None, "ADR template is missing"
+ADR_TEMPLATE = _adr_template_match.group("template")
 
 
 def _section(document: str, heading: str) -> str:
@@ -47,6 +63,251 @@ def _first_match(document: str, patterns: tuple[str, ...], label: str) -> re.Mat
     found = [match for match in matches if match is not None]
     assert found, f"{label} marker is missing"
     return min(found, key=lambda match: match.start())
+
+
+def _markdown_table(section: str) -> tuple[list[str], list[list[str]]]:
+    """Read the first Markdown table in a public coverage-record section."""
+
+    lines = [
+        line.strip() for line in section.splitlines() if line.strip().startswith("|")
+    ]
+    assert len(lines) >= 3, (
+        "expected a Markdown table with a header and at least one row"
+    )
+
+    def cells(line: str) -> list[str]:
+        return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+    headers = cells(lines[0])
+    rows = [cells(line) for line in lines[2:]]
+    assert all(len(row) == len(headers) for row in rows), (
+        "coverage-record table rows must have the same columns as their header"
+    )
+    return headers, rows
+
+
+def test_coverage_record_defines_four_outcomes_and_cross_reference_provenance() -> None:
+    """Question rows expose stable outcome and provenance fields."""
+
+    outcomes_section = _section(COVERAGE_TEMPLATE, "Question outcomes")
+    headers, rows = _markdown_table(outcomes_section)
+
+    assert headers == [
+        "Session",
+        "Question",
+        "Domain",
+        "Outcome",
+        "Decision or answer",
+        "Provenance",
+        "Reason",
+    ]
+
+    outcomes = {row[3] for row in rows}
+    assert outcomes == {
+        "answered",
+        "resolved-by-cross-reference",
+        "deferred",
+        "not-asked",
+    }
+
+    resolved = next(
+        row
+        for row in rows
+        if row[0] == "fresh" and row[3] == "resolved-by-cross-reference"
+    )
+    assert re.fullmatch(r"DEC-\d+: .+", resolved[4])
+    assert re.search(r"earlier decision DEC-\d+: .+", resolved[5], flags=re.IGNORECASE)
+    assert resolved[6] not in {"", "-"}
+
+
+def test_coverage_record_preserves_cross_reference_on_resume() -> None:
+    """Resuming carries provenance forward without changing the outcome."""
+
+    outcomes_section = _section(COVERAGE_TEMPLATE, "Question outcomes")
+    _headers, rows = _markdown_table(outcomes_section)
+
+    fresh = next(
+        row
+        for row in rows
+        if row[0] == "fresh" and row[3] == "resolved-by-cross-reference"
+    )
+    resumed = next(row for row in rows if row[0] == "resumed" and row[1] == fresh[1])
+
+    assert resumed[3] == "resolved-by-cross-reference"
+    assert resumed[3] != "answered"
+    assert resumed[4:] == fresh[4:]
+
+
+def test_coverage_record_count_equations_hold_in_fresh_and_resumed_sessions() -> None:
+    """Fresh and resumed coverage snapshots use both public count equations."""
+
+    totals_section = _section(COVERAGE_TEMPLATE, "Session totals")
+    headers, rows = _markdown_table(totals_section)
+
+    assert headers == [
+        "Session",
+        "Derived",
+        "Asked",
+        "Answered",
+        "Resolved by cross-reference",
+        "Deferred",
+        "Not asked",
+    ]
+    totals = {row[0]: [int(value) for value in row[1:]] for row in rows}
+    assert set(totals) == {"fresh", "resumed"}
+
+    for derived, asked, answered, resolved, deferred, not_asked in totals.values():
+        assert asked == answered + deferred
+        assert derived == asked + resolved + not_asked
+
+    assert all(values[3] > 0 for values in totals.values())
+
+
+def test_domain_totals_match_resumed_question_outcomes() -> None:
+    """Per-domain coverage totals agree with the resumed Markdown ledger."""
+
+    domain_headers, domain_rows = _markdown_table(
+        _section(COVERAGE_TEMPLATE, "Domain coverage")
+    )
+    outcome_headers, outcome_rows = _markdown_table(
+        _section(COVERAGE_TEMPLATE, "Question outcomes")
+    )
+    count_headers = (
+        "Derived",
+        "Asked",
+        "Answered",
+        "Resolved by cross-reference",
+        "Deferred",
+        "Not asked",
+    )
+    assert domain_headers == [
+        "Domain",
+        "Status",
+        "Basis",
+        "Source",
+        *count_headers,
+        "Revisit trigger",
+    ]
+    assert "Outcome" in outcome_headers
+    domain_columns = {header: index for index, header in enumerate(domain_headers)}
+    outcome_columns = {header: index for index, header in enumerate(outcome_headers)}
+
+    expected_by_domain: dict[str, dict[str, int]] = {}
+    for row in outcome_rows:
+        if row[outcome_columns["Session"]] != "resumed":
+            continue
+        domain_id = row[outcome_columns["Domain"]]
+        outcome = row[outcome_columns["Outcome"]]
+        counts = expected_by_domain.setdefault(
+            domain_id, {header: 0 for header in count_headers}
+        )
+        counts["Derived"] += 1
+        if outcome in {"answered", "deferred"}:
+            counts["Asked"] += 1
+        if outcome == "answered":
+            counts["Answered"] += 1
+        elif outcome == "resolved-by-cross-reference":
+            counts["Resolved by cross-reference"] += 1
+        elif outcome == "deferred":
+            counts["Deferred"] += 1
+        elif outcome == "not-asked":
+            counts["Not asked"] += 1
+
+    for row in domain_rows:
+        domain_id = row[domain_columns["Domain"]].split(maxsplit=1)[0]
+        if (
+            row[domain_columns["Status"]] != "active-now"
+            or row[domain_columns["Derived"]] == "n/a"
+        ):
+            continue
+        assert domain_id in expected_by_domain, (
+            f"active domain {domain_id} has no resumed question rows"
+        )
+        actual = {header: int(row[domain_columns[header]]) for header in count_headers}
+        assert actual == expected_by_domain[domain_id], (
+            f"domain {domain_id} totals disagree with its resumed question outcomes"
+        )
+
+    total = next(
+        row for row in domain_rows if row[domain_columns["Domain"]] == "**Total**"
+    )
+    actual_total = {
+        header: int(total[domain_columns[header]].strip("*"))
+        for header in count_headers
+    }
+    expected_total = {
+        header: sum(counts[header] for counts in expected_by_domain.values())
+        for header in count_headers
+    }
+    assert actual_total == expected_total
+
+
+def test_documentation_format_states_outcome_and_resume_rules() -> None:
+    """The format guide makes the generated record rules explicit."""
+
+    # The output example contains level-two headings of its own, so inspect the
+    # complete format reference rather than stopping at the first nested heading.
+    coverage = FORMATS
+
+    assert re.search(
+        r"`resolved-by-cross-reference`.*?(?:only|valid only).*?earlier decision"
+        r".*?identifier.*?title.*?reason",
+        coverage,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    assert re.search(r"asked\s*=\s*answered\s*\+\s*deferred", coverage)
+    assert re.search(
+        r"derived\s*=\s*asked\s*\+\s*resolved-by-cross-reference\s*\+\s*not[- ]asked",
+        coverage,
+    )
+    assert re.search(
+        r"resum.*?preserv.*?resolved-by-cross-reference.*?(?:not|never).*?answered",
+        coverage,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+
+def test_skill_and_guide_define_outcomes_resume_and_count_semantics() -> None:
+    """The user-facing guide matches the coverage-record contract."""
+
+    hot_seat = _section(SKILL, "The Hot Seat")
+    capture = _section(SKILL, "Capture confirmed decisions")
+    progress = _section(README, "Progress and stopping")
+
+    assert re.search(
+        r"`answered`.*?direct user answer", hot_seat, flags=re.IGNORECASE | re.DOTALL
+    )
+    assert re.search(
+        r"`resolved-by-cross-reference`.*?not asked directly.*?earlier decision",
+        hot_seat,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    assert re.search(
+        r"`resolved-by-cross-reference`.*?(?:only|valid only).*?identifier.*?title.*?reason",
+        hot_seat,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    assert re.search(
+        r"`deferred`.*?asked.*?reason", hot_seat, flags=re.IGNORECASE | re.DOTALL
+    )
+    assert re.search(
+        r"`not-asked`.*?retained.*?not shown.*?resolved",
+        hot_seat,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    assert re.search(
+        r"resum.*?preserv.*?resolved-by-cross-reference.*?(?:not|never).*?answered",
+        hot_seat + capture,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    assert "resolved-by-cross-reference" in progress
+    assert re.search(r"-\s+\*\*not-asked:\*\*", progress)
+    assert re.search(r"asked\s*=\s*answered\s*\+\s*deferred", progress)
+    assert re.search(
+        r"derived\s*=\s*asked\s*\+\s*resolved-by-cross-reference\s*\+\s*not[- ]asked",
+        progress,
+    )
 
 
 def test_skill_has_nine_section_headings_in_order() -> None:
@@ -285,3 +546,148 @@ def test_bail_out_offers_handoff_or_mvp_split() -> None:
         hot_seat,
         flags=re.IGNORECASE | re.DOTALL,
     ), "The Hot Seat must offer these after the record is written"
+
+
+def test_adr_grouping_requires_shared_context_decision_and_tradeoff() -> None:
+    """Grouped ADRs require all three parts of a coherent decision context."""
+    assert re.search(
+        r"group(?:ed|ing)?.{0,120}share(?:s|d)?\s+context",
+        FORMATS,
+        flags=re.IGNORECASE | re.DOTALL,
+    ), "ADR guidance must require grouped decisions to share context"
+    assert re.search(
+        r"group(?:ed|ing)?.{0,120}decided\s+together",
+        FORMATS,
+        flags=re.IGNORECASE | re.DOTALL,
+    ), "ADR guidance must require grouped decisions to be decided together"
+    assert re.search(
+        r"group(?:ed|ing)?.{0,300}share(?:s|d)?\s+(?:the\s+)?main\s+trade[- ]off",
+        FORMATS,
+        flags=re.IGNORECASE | re.DOTALL,
+    ), "ADR guidance must require grouped decisions to share the main trade-off"
+
+
+def test_adr_guidance_splits_decisions_with_independent_boundaries() -> None:
+    """Independent alternatives and ownership boundaries force separate ADRs."""
+    for boundary in (
+        "independent alternatives",
+        "independent owners",
+        "independent lifecycles",
+        "independent reversal paths",
+    ):
+        assert re.search(
+            rf"{boundary}.{{0,180}}(?:split|separate)",
+            FORMATS,
+            flags=re.IGNORECASE | re.DOTALL,
+        ), f"ADR guidance must split decisions with {boundary}"
+
+
+def test_grouped_adr_template_keeps_rationale_and_each_consequence_visible() -> None:
+    """A grouped record has one rationale and a repeatable per-decision shape."""
+    grouped_template_match = re.search(
+        r"For\s+a\s+grouped\s+ADR,.*?```markdown\n(?P<template>.*?)\n```",
+        FORMATS,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    assert grouped_template_match is not None, "grouped ADR template is missing"
+    grouped_template = grouped_template_match.group("template")
+
+    assert re.search(r"^##\s+Grouping rationale\s*$", grouped_template, re.MULTILINE)
+    assert re.search(r"^##\s+Decisions\s*$", grouped_template, re.MULTILINE)
+    assert re.search(r"^###\s+Decision\s+\d+", grouped_template, re.MULTILINE)
+    assert re.search(r"\*\*Decision:\*\*", grouped_template)
+    assert re.search(r"\*\*Consequences:\*\*", grouped_template)
+
+
+def test_grouped_adrs_apply_qualification_bar_to_each_decision() -> None:
+    """Grouping does not lower the hard-to-reverse ADR qualification bar."""
+    assert re.search(r"^##\s+Decision\s*$", ADR_TEMPLATE, re.MULTILINE)
+    assert re.search(r"^##\s+Alternatives considered\s*$", ADR_TEMPLATE, re.MULTILINE)
+    assert re.search(r"^##\s+Consequences\s*$", ADR_TEMPLATE, re.MULTILINE)
+    assert re.search(
+        r"group(?:ed|ing).{0,240}(?:each|every|individual)\s+decision"
+        r".{0,240}hard[- ]to[- ]reverse.{0,240}surprising.{0,240}real\s+trade[- ]off",
+        FORMATS,
+        flags=re.IGNORECASE | re.DOTALL,
+    ), "grouped ADR guidance must apply the full qualification bar to every decision"
+    assert re.search(
+        r"single[- ]decision\s+form.{0,160}(?:one|single)\s+decision",
+        FORMATS,
+        flags=re.IGNORECASE | re.DOTALL,
+    ), "ADR guidance must preserve a clear single-decision form"
+
+
+def test_adr_numbering_is_append_only_and_uses_next_number() -> None:
+    """New ADRs follow the existing sequence without rewriting its history."""
+    assert re.search(
+        r"next(?:\s+available)?\s+(?:ADR\s+)?number.{0,100}"
+        r"highest\s+(?:existing\s+)?ADR",
+        FORMATS,
+        flags=re.IGNORECASE | re.DOTALL,
+    ), "ADR guidance must use the next number after the highest existing ADR"
+    assert re.search(r"append[- ]only", FORMATS, flags=re.IGNORECASE)
+    assert re.search(
+        r"(?:never|do\s+not).{0,80}(?:renumber|overwrite|replace).{0,80}"
+        r"existing",
+        FORMATS,
+        flags=re.IGNORECASE | re.DOTALL,
+    ), "ADR guidance must protect existing records from renumbering or overwrite"
+
+
+def test_skill_applies_adr_grouping_rules_when_capturing_decisions() -> None:
+    """The assistant workflow carries the ADR grouping contract into project records."""
+    capture = _section(SKILL, "Capture confirmed decisions")
+
+    assert re.search(
+        r"group(?:ed|ing)?.{0,180}share(?:s|d)?\s+context",
+        capture,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    assert re.search(
+        r"group(?:ed|ing)?.{0,260}decided\s+together",
+        capture,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    assert re.search(
+        r"group(?:ed|ing)?.{0,320}share(?:s|d)?\s+(?:the\s+)?main\s+trade[- ]off",
+        capture,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    assert re.search(
+        r"(?:split|separate).{0,180}independent\s+"
+        r"(?:alternatives|owners|lifecycles|reversal\s+paths)",
+        capture,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    assert re.search(r"grouping\s+rationale", capture, flags=re.IGNORECASE)
+    assert re.search(
+        r"each\s+(?:individual\s+)?decision.{0,160}consequence",
+        capture,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    assert re.search(r"append[- ]only", capture, flags=re.IGNORECASE)
+    assert re.search(
+        r"next(?:\s+available)?\s+(?:ADR\s+)?number",
+        capture,
+        flags=re.IGNORECASE,
+    )
+
+
+def test_readme_explains_grouped_adrs_and_append_only_history() -> None:
+    """The integration overview names the grouped-record behaviour for users."""
+    produces = _section(README, "What it produces")
+
+    assert re.search(
+        r"group(?:ed|ing)?.{0,240}ADR", produces, flags=re.IGNORECASE | re.DOTALL
+    )
+    assert re.search(
+        r"group(?:ed|ing)?.{0,260}(?:rationale|each\s+decision|consequence)",
+        produces,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    assert re.search(
+        r"independent.{0,180}(?:split|separate)",
+        produces,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    assert re.search(r"append[- ]only", produces, flags=re.IGNORECASE)

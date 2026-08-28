@@ -51,23 +51,36 @@ documents, checks them against the conversation, and continues ADR numbering. It
 them blindly. The grill does not write project code, start an audit, make pass/fail claims, or
 file GitHub issues.
 
+A grouped ADR is used only when its decisions share context, were decided together in one
+confirmed design discussion, and share the main trade-off. The record keeps the grouping
+rationale, each decision, and each decision's consequences visible. If decisions have
+independent alternatives, independent owners, independent lifecycles, or independent reversal
+paths, split them into separate ADRs.
+Every grouped decision must still be hard to reverse, surprising without its history, and the
+result of a real trade-off. New ADRs use the next number after the highest existing record, and
+ADR history is append-only.
+
 ## Progress and stopping
 
-During a grill session, the assistant records five counts at every checkpoint, on completion, and
+During a grill session, the assistant records six counts at every checkpoint, on completion, and
 on early exit:
 
 - **derived:** retained project-specific questions after filtering out filler;
 - **asked:** questions shown to you;
-- **answered:** questions answered well enough to settle the decision;
+- **answered:** questions settled by a direct user answer;
+- **resolved-by-cross-reference:** questions not asked directly because an earlier recorded
+  decision resolves them, with the earlier decision identifier, title, and reuse reason recorded;
 - **deferred:** questions shown but unanswered, including those interrupted with a reason to
   resume;
-- **not asked:** every retained question not shown yet, including dependency-held items and those
-  held on early exit.
+- **not-asked:** retained questions not shown and not resolved, including dependency-held items
+  and those held on early exit.
 
 These counts always satisfy two invariants: `asked = answered + deferred` and
-`derived = asked + not_asked`. At completion, the record explains any non-zero deferred or
-not-asked count. On early exit, it keeps all counts, marks the session incomplete, and names the
-next frontier so a later session can resume without losing progress.
+`derived = asked + resolved-by-cross-reference + not-asked`. A resumed session preserves the
+outcome and provenance of each earlier row, so a resolved cross-reference never becomes
+`answered`. At completion, the record explains any non-zero deferred or not-asked count. On early
+exit, it keeps all counts, marks the session incomplete, and names the next frontier so a later
+session can resume without losing progress.
 
 ## Support and requirements
 

@@ -27,6 +27,8 @@ nextsession.md
 # Local scratch: extracted emails, tester reports (never commit)
 raw/
 
+.scratch/
+
 # Secrets. No .env exists in this repo today and none is planned, which is
 # exactly why this is here: the guard has to predate the file, not follow it.
 # This repo is public, so the first .env someone drops in during a debugging
