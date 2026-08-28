@@ -26,24 +26,52 @@ Write `docs/engineering-coverage.md` as a design ledger, not an audit report or 
 
 ## Domain coverage
 
-| Domain | Status | Basis | Source | Derived | Asked | Answered | Deferred | Not asked | Revisit trigger |
-|---|---|---|---|---|---|---|---|---|---|
-| D01 Designing a Data Model | active-now | Persistent customer records are planned. | mcp | 9 | 1 | 0 | 1 | 8 | |
-| D02 Requirements Elicitation | active-now | New system. | mcp | 8 | 2 | 2 | 0 | 6 | |
-| D08 Threat Modelling and Risk | active-now | Bulk personal data. | fallback | 7 | 0 | 0 | 0 | 7 | |
-| D15 Interface Design | active-now | Operator screens planned. | **none** | n/a | 0 | 0 | 0 | n/a | |
-| D09 Incident Response | required-later | The service will run in production. | | | | | | | Deployment topology settled |
-| D16 Presenting Data | not-applicable | The product has no decision-support output. | | | | | | | Reporting enters scope |
-| **Total** | | | | **24** | **3** | **2** | **1** | **21** | |
+| Domain | Status | Basis | Source | Derived | Asked | Answered | Resolved by cross-reference | Deferred | Not asked | Revisit trigger |
+|---|---|---|---|---|---|---|---|---|---|---|
+| D01 Designing a Data Model | active-now | Persistent customer records are planned. | mcp | 2 | 1 | 1 | 1 | 0 | 0 | |
+| D02 Requirements Elicitation | active-now | New system. | mcp | 2 | 1 | 0 | 0 | 1 | 1 | |
+| D08 Threat Modelling and Risk | active-now | Bulk personal data. | fallback | 1 | 1 | 1 | 0 | 0 | 0 | |
+| D15 Interface Design | active-now | Operator screens planned. | **none** | n/a | 0 | 0 | 0 | 0 | n/a | |
+| D09 Incident Response | required-later | The service will run in production. | | | | | | | | Deployment topology settled |
+| D16 Presenting Data | not-applicable | The product has no decision-support output. | | | | | | | | Reporting enters scope |
+| **Total** | | | | **5** | **3** | **2** | **1** | **1** | **1** | |
+
+## Question outcomes
+
+Each retained question has exactly one outcome. The four stable outcomes are `answered`,
+`resolved-by-cross-reference`, `deferred`, and `not-asked`.
+
+| Session | Question | Domain | Outcome | Decision or answer | Provenance | Reason |
+|---|---|---|---|---|---|---|
+| fresh | Q1 | D01 | answered | DEC-001: Use the existing customer ledger | direct user answer | The user chose the existing ledger. |
+| fresh | Q2 | D01 | resolved-by-cross-reference | DEC-001: Use the existing customer ledger | earlier decision DEC-001: Use the existing customer ledger | The earlier decision resolves this question too. |
+| fresh | Q3 | D02 | deferred | - | user was asked | The user deferred this decision to the next release. |
+| fresh | Q4 | D02 | not-asked | - | retained but not shown or resolved | - |
+| fresh | Q5 | D08 | answered | DEC-002: Require a threat review | direct user answer | The user required a threat review. |
+| resumed | Q1 | D01 | answered | DEC-001: Use the existing customer ledger | direct user answer | The user chose the existing ledger. |
+| resumed | Q2 | D01 | resolved-by-cross-reference | DEC-001: Use the existing customer ledger | earlier decision DEC-001: Use the existing customer ledger | The earlier decision resolves this question too. |
+| resumed | Q3 | D02 | deferred | - | user was asked | The user deferred this decision to the next release. |
+| resumed | Q4 | D02 | not-asked | - | retained but not shown or resolved | - |
+| resumed | Q5 | D08 | answered | DEC-002: Require a threat review | direct user answer | The user required a threat review. |
+
+## Session totals
+
+| Session | Derived | Asked | Answered | Resolved by cross-reference | Deferred | Not asked |
+|---|---:|---:|---:|---:|---:|---:|
+| fresh | 5 | 3 | 2 | 1 | 1 | 1 |
+| resumed | 5 | 3 | 2 | 1 | 1 | 1 |
 
 When the Hot Seat collapses near-duplicate questions from multiple domains into a single merged
 question, the answer counts as asked and answered for every domain whose derived question it
 subsumes. Merged questions are noted explicitly in the record (e.g., "Q1 merged from d02/d15");
 per-domain row totals may therefore exceed the distinct questions actually put to the user, so
 the `**Total**` row reports distinct question count, not the sum of per-domain columns.
+If a merged question is `resolved-by-cross-reference`, apply that outcome to every derived
+question it subsumes, retain the same earlier decision provenance and reuse reason, and count
+those rows as resolved rather than answered.
 
 The count columns are what make a short session legible afterwards. A run that asked
-three of twenty-four and a run that asked all twenty-four are the same document
+three of five and a run that asked all five are the same document
 without them, and the second is the only one that earned its conclusions.
 
 Fill them only for `active-now` domains; the other states have no derived questions
@@ -89,6 +117,18 @@ reason this column exists.
 Keep every domain returned by `list_domains` in the coverage table. Give each
 `not-applicable` entry a project-specific absent precondition and each `required-later` entry a
 concrete revisit trigger. Use only identifiers read from the current framework source.
+
+The `Question outcomes` table records one stable outcome per retained question. `answered` means
+that the user gave a direct answer. `resolved-by-cross-reference` means that the question was not
+asked directly because an earlier decision resolves it. This outcome is valid only when its
+`Provenance` names the earlier decision identifier and title, and its `Reason` states why that
+decision is reused. `deferred` means that the question was asked and postponed with a reason.
+`not-asked` means that the question was retained but not shown and not resolved.
+
+When a session resumes, preserve each question's outcome and provenance. A
+`resolved-by-cross-reference` outcome does not become `answered` just because the session
+resumed. The domain and session totals must satisfy `asked = answered + deferred` and
+`derived = asked + resolved-by-cross-reference + not-asked`.
 
 ## Project language
 

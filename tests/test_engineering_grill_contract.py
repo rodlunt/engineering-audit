@@ -20,9 +20,18 @@ SKILL_PATH = GRILL_ROOT / "engineering-grill" / "SKILL.md"
 FORMATS_PATH = (
     GRILL_ROOT / "engineering-grill" / "references" / "documentation-formats.md"
 )
+README_PATH = GRILL_ROOT / "README.md"
 
 SKILL = SKILL_PATH.read_text(encoding="utf-8")
 FORMATS = FORMATS_PATH.read_text(encoding="utf-8")
+README = README_PATH.read_text(encoding="utf-8")
+_coverage_template_match = re.search(
+    r"##\s+Engineering coverage.*?```markdown\n(?P<template>.*?)\n```",
+    FORMATS,
+    flags=re.MULTILINE | re.DOTALL,
+)
+assert _coverage_template_match is not None, "engineering coverage template is missing"
+COVERAGE_TEMPLATE = _coverage_template_match.group("template")
 
 
 def _section(document: str, heading: str) -> str:
@@ -47,6 +56,251 @@ def _first_match(document: str, patterns: tuple[str, ...], label: str) -> re.Mat
     found = [match for match in matches if match is not None]
     assert found, f"{label} marker is missing"
     return min(found, key=lambda match: match.start())
+
+
+def _markdown_table(section: str) -> tuple[list[str], list[list[str]]]:
+    """Read the first Markdown table in a public coverage-record section."""
+
+    lines = [
+        line.strip() for line in section.splitlines() if line.strip().startswith("|")
+    ]
+    assert len(lines) >= 3, (
+        "expected a Markdown table with a header and at least one row"
+    )
+
+    def cells(line: str) -> list[str]:
+        return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+    headers = cells(lines[0])
+    rows = [cells(line) for line in lines[2:]]
+    assert all(len(row) == len(headers) for row in rows), (
+        "coverage-record table rows must have the same columns as their header"
+    )
+    return headers, rows
+
+
+def test_coverage_record_defines_four_outcomes_and_cross_reference_provenance() -> None:
+    """Question rows expose stable outcome and provenance fields."""
+
+    outcomes_section = _section(COVERAGE_TEMPLATE, "Question outcomes")
+    headers, rows = _markdown_table(outcomes_section)
+
+    assert headers == [
+        "Session",
+        "Question",
+        "Domain",
+        "Outcome",
+        "Decision or answer",
+        "Provenance",
+        "Reason",
+    ]
+
+    outcomes = {row[3] for row in rows}
+    assert outcomes == {
+        "answered",
+        "resolved-by-cross-reference",
+        "deferred",
+        "not-asked",
+    }
+
+    resolved = next(
+        row
+        for row in rows
+        if row[0] == "fresh" and row[3] == "resolved-by-cross-reference"
+    )
+    assert re.fullmatch(r"DEC-\d+: .+", resolved[4])
+    assert re.search(r"earlier decision DEC-\d+: .+", resolved[5], flags=re.IGNORECASE)
+    assert resolved[6] not in {"", "-"}
+
+
+def test_coverage_record_preserves_cross_reference_on_resume() -> None:
+    """Resuming carries provenance forward without changing the outcome."""
+
+    outcomes_section = _section(COVERAGE_TEMPLATE, "Question outcomes")
+    _headers, rows = _markdown_table(outcomes_section)
+
+    fresh = next(
+        row
+        for row in rows
+        if row[0] == "fresh" and row[3] == "resolved-by-cross-reference"
+    )
+    resumed = next(row for row in rows if row[0] == "resumed" and row[1] == fresh[1])
+
+    assert resumed[3] == "resolved-by-cross-reference"
+    assert resumed[3] != "answered"
+    assert resumed[4:] == fresh[4:]
+
+
+def test_coverage_record_count_equations_hold_in_fresh_and_resumed_sessions() -> None:
+    """Fresh and resumed coverage snapshots use both public count equations."""
+
+    totals_section = _section(COVERAGE_TEMPLATE, "Session totals")
+    headers, rows = _markdown_table(totals_section)
+
+    assert headers == [
+        "Session",
+        "Derived",
+        "Asked",
+        "Answered",
+        "Resolved by cross-reference",
+        "Deferred",
+        "Not asked",
+    ]
+    totals = {row[0]: [int(value) for value in row[1:]] for row in rows}
+    assert set(totals) == {"fresh", "resumed"}
+
+    for derived, asked, answered, resolved, deferred, not_asked in totals.values():
+        assert asked == answered + deferred
+        assert derived == asked + resolved + not_asked
+
+    assert all(values[3] > 0 for values in totals.values())
+
+
+def test_domain_totals_match_resumed_question_outcomes() -> None:
+    """Per-domain coverage totals agree with the resumed Markdown ledger."""
+
+    domain_headers, domain_rows = _markdown_table(
+        _section(COVERAGE_TEMPLATE, "Domain coverage")
+    )
+    outcome_headers, outcome_rows = _markdown_table(
+        _section(COVERAGE_TEMPLATE, "Question outcomes")
+    )
+    count_headers = (
+        "Derived",
+        "Asked",
+        "Answered",
+        "Resolved by cross-reference",
+        "Deferred",
+        "Not asked",
+    )
+    assert domain_headers == [
+        "Domain",
+        "Status",
+        "Basis",
+        "Source",
+        *count_headers,
+        "Revisit trigger",
+    ]
+    assert "Outcome" in outcome_headers
+    domain_columns = {header: index for index, header in enumerate(domain_headers)}
+    outcome_columns = {header: index for index, header in enumerate(outcome_headers)}
+
+    expected_by_domain: dict[str, dict[str, int]] = {}
+    for row in outcome_rows:
+        if row[outcome_columns["Session"]] != "resumed":
+            continue
+        domain_id = row[outcome_columns["Domain"]]
+        outcome = row[outcome_columns["Outcome"]]
+        counts = expected_by_domain.setdefault(
+            domain_id, {header: 0 for header in count_headers}
+        )
+        counts["Derived"] += 1
+        if outcome in {"answered", "deferred"}:
+            counts["Asked"] += 1
+        if outcome == "answered":
+            counts["Answered"] += 1
+        elif outcome == "resolved-by-cross-reference":
+            counts["Resolved by cross-reference"] += 1
+        elif outcome == "deferred":
+            counts["Deferred"] += 1
+        elif outcome == "not-asked":
+            counts["Not asked"] += 1
+
+    for row in domain_rows:
+        domain_id = row[domain_columns["Domain"]].split(maxsplit=1)[0]
+        if (
+            row[domain_columns["Status"]] != "active-now"
+            or row[domain_columns["Derived"]] == "n/a"
+        ):
+            continue
+        assert domain_id in expected_by_domain, (
+            f"active domain {domain_id} has no resumed question rows"
+        )
+        actual = {header: int(row[domain_columns[header]]) for header in count_headers}
+        assert actual == expected_by_domain[domain_id], (
+            f"domain {domain_id} totals disagree with its resumed question outcomes"
+        )
+
+    total = next(
+        row for row in domain_rows if row[domain_columns["Domain"]] == "**Total**"
+    )
+    actual_total = {
+        header: int(total[domain_columns[header]].strip("*"))
+        for header in count_headers
+    }
+    expected_total = {
+        header: sum(counts[header] for counts in expected_by_domain.values())
+        for header in count_headers
+    }
+    assert actual_total == expected_total
+
+
+def test_documentation_format_states_outcome_and_resume_rules() -> None:
+    """The format guide makes the generated record rules explicit."""
+
+    # The output example contains level-two headings of its own, so inspect the
+    # complete format reference rather than stopping at the first nested heading.
+    coverage = FORMATS
+
+    assert re.search(
+        r"`resolved-by-cross-reference`.*?(?:only|valid only).*?earlier decision"
+        r".*?identifier.*?title.*?reason",
+        coverage,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    assert re.search(r"asked\s*=\s*answered\s*\+\s*deferred", coverage)
+    assert re.search(
+        r"derived\s*=\s*asked\s*\+\s*resolved-by-cross-reference\s*\+\s*not[- ]asked",
+        coverage,
+    )
+    assert re.search(
+        r"resum.*?preserv.*?resolved-by-cross-reference.*?(?:not|never).*?answered",
+        coverage,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+
+def test_skill_and_guide_define_outcomes_resume_and_count_semantics() -> None:
+    """The user-facing guide matches the coverage-record contract."""
+
+    hot_seat = _section(SKILL, "The Hot Seat")
+    capture = _section(SKILL, "Capture confirmed decisions")
+    progress = _section(README, "Progress and stopping")
+
+    assert re.search(
+        r"`answered`.*?direct user answer", hot_seat, flags=re.IGNORECASE | re.DOTALL
+    )
+    assert re.search(
+        r"`resolved-by-cross-reference`.*?not asked directly.*?earlier decision",
+        hot_seat,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    assert re.search(
+        r"`resolved-by-cross-reference`.*?(?:only|valid only).*?identifier.*?title.*?reason",
+        hot_seat,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    assert re.search(
+        r"`deferred`.*?asked.*?reason", hot_seat, flags=re.IGNORECASE | re.DOTALL
+    )
+    assert re.search(
+        r"`not-asked`.*?retained.*?not shown.*?resolved",
+        hot_seat,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    assert re.search(
+        r"resum.*?preserv.*?resolved-by-cross-reference.*?(?:not|never).*?answered",
+        hot_seat + capture,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    assert "resolved-by-cross-reference" in progress
+    assert re.search(r"-\s+\*\*not-asked:\*\*", progress)
+    assert re.search(r"asked\s*=\s*answered\s*\+\s*deferred", progress)
+    assert re.search(
+        r"derived\s*=\s*asked\s*\+\s*resolved-by-cross-reference\s*\+\s*not[- ]asked",
+        progress,
+    )
 
 
 def test_skill_has_nine_section_headings_in_order() -> None:
