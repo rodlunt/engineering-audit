@@ -1685,3 +1685,222 @@ def test_the_two_reader_conclusion_labels_point_at_their_own_surface() -> None:
     # The report page keeps pointing at the fields directly beneath it.
     assert "below" in report_label.lower()
     assert "this report" in report_label.lower()
+
+
+class TestApprovalPageEndpoint:
+    """Tests for the /approve-standards endpoint."""
+
+    def test_approve_standards_endpoint_returns_404_when_no_data_set(self, domains):
+        """POST /approve-standards returns 404 when approval data not set."""
+        srv = ConfigServer(domains)
+        try:
+            url = srv.start()
+            try:
+                urllib.request.urlopen(url + "approve-standards", timeout=5)
+                pytest.fail("Expected HTTPError")
+            except urllib.error.HTTPError as e:
+                assert e.code == 404
+        finally:
+            srv.shutdown()
+
+    def test_approve_standards_endpoint_returns_html_when_data_set(self, domains):
+        """POST /approve-standards returns HTML with diffs when data set."""
+        from engineering_audit.standards import Rule, RuleSet, RuleStatus
+        from engineering_audit.standards_approval import (
+            build_diff_model,
+            derive_summary_counts,
+        )
+
+        rule_set = RuleSet(
+            version="1.0",
+            project="test",
+            rules=[
+                Rule(
+                    rule_id="D01-R01",
+                    domain_id="d01",
+                    text_short="Test rule",
+                    text_body="Test body.",
+                    source="rules-pack",
+                    status=RuleStatus.VERIFIED_PASS.value,
+                    verified_date="2026-08-27",
+                ),
+            ],
+        )
+
+        proposed_content = (
+            '<!-- audit:start id="agent-standard" -->\nContent\n<!-- audit:end -->'
+        )
+        diffs = [
+            build_diff_model(None, proposed_content, "agent-standard"),
+            build_diff_model(None, proposed_content, "human-standard"),
+            build_diff_model(None, proposed_content, "engineering-policy"),
+        ]
+        counts = derive_summary_counts(rule_set)
+
+        srv = ConfigServer(domains)
+        try:
+            url = srv.start()
+            srv.set_approval_data(diffs, counts)
+
+            host_port = url[len("http://") :].rstrip("/")
+            host, port_str = host_port.split(":")
+            conn = http.client.HTTPConnection(host, int(port_str), timeout=5)
+            try:
+                conn.putrequest("POST", "/approve-standards")
+                conn.putheader("Content-Length", "0")
+                conn.endheaders()
+                resp = conn.getresponse()
+                body = resp.read().decode("utf-8")
+                assert resp.status == 200
+                assert "Review Standards Documents" in body
+                assert "Summary of Changes" in body
+            finally:
+                conn.close()
+        finally:
+            srv.shutdown()
+
+    def test_approval_page_shows_current_content_when_file_exists(self, domains):
+        """Approval page shows current file content when file exists (not placeholder)."""
+        from engineering_audit.standards import RuleSet
+        from engineering_audit.standards_approval import (
+            build_diff_model,
+            derive_summary_counts,
+        )
+
+        rule_set = RuleSet(version="1.0", project="test", rules=[])
+        current_content = "# Old Standards\n\nThis is the current file content."
+        proposed_content = (
+            '<!-- audit:start id="agent-standard" -->\n'
+            "New content here\n"
+            "<!-- audit:end -->"
+        )
+        diffs = [
+            build_diff_model(current_content, proposed_content, "agent-standard"),
+            build_diff_model(None, proposed_content, "human-standard"),
+            build_diff_model(None, proposed_content, "engineering-policy"),
+        ]
+        counts = derive_summary_counts(rule_set)
+
+        srv = ConfigServer(domains)
+        try:
+            url = srv.start()
+            srv.set_approval_data(diffs, counts)
+
+            host_port = url[len("http://") :].rstrip("/")
+            host, port_str = host_port.split(":")
+            conn = http.client.HTTPConnection(host, int(port_str), timeout=5)
+            try:
+                conn.putrequest("POST", "/approve-standards")
+                conn.putheader("Content-Length", "0")
+                conn.endheaders()
+                resp = conn.getresponse()
+                body = resp.read().decode("utf-8")
+                assert resp.status == 200
+                # The actual current content should be in the page
+                assert "Old Standards" in body
+                assert "This is the current file content" in body
+                # The agent-standard diff should show the actual content, not the placeholder
+                # Extract the agent-standard diff section to check it specifically
+                assert 'data-document-id="agent-standard"' in body
+                agent_start = body.find('data-document-id="agent-standard"')
+                agent_end = body.find("data-document-id=", agent_start + 1)
+                if agent_end == -1:
+                    agent_end = body.find("</body>")
+                agent_section = body[agent_start:agent_end]
+                assert "Old Standards" in agent_section
+                assert "(File does not exist yet)" not in agent_section
+            finally:
+                conn.close()
+        finally:
+            srv.shutdown()
+
+    def test_approval_page_highlights_managed_block_markers(self, domains):
+        """Managed-block markers are wrapped in highlight span on approval page."""
+        from engineering_audit.standards import RuleSet
+        from engineering_audit.standards_approval import (
+            build_diff_model,
+            derive_summary_counts,
+        )
+
+        rule_set = RuleSet(version="1.0", project="test", rules=[])
+        proposed_content = (
+            '<!-- audit:start id="agent-standard" -->\n'
+            "Content line 1\n"
+            "Content line 2\n"
+            "<!-- audit:end -->"
+        )
+        diffs = [
+            build_diff_model(None, proposed_content, "agent-standard"),
+            build_diff_model(None, proposed_content, "human-standard"),
+            build_diff_model(None, proposed_content, "engineering-policy"),
+        ]
+        counts = derive_summary_counts(rule_set)
+
+        srv = ConfigServer(domains)
+        try:
+            url = srv.start()
+            srv.set_approval_data(diffs, counts)
+
+            host_port = url[len("http://") :].rstrip("/")
+            host, port_str = host_port.split(":")
+            conn = http.client.HTTPConnection(host, int(port_str), timeout=5)
+            try:
+                conn.putrequest("POST", "/approve-standards")
+                conn.putheader("Content-Length", "0")
+                conn.endheaders()
+                resp = conn.getresponse()
+                body = resp.read().decode("utf-8")
+                assert resp.status == 200
+                # Markers should be wrapped in span with managed-block-marker class
+                # The markers are HTML-escaped, so they appear as &lt;!-- and &quot;
+                assert '<span class="managed-block-marker">&lt;!-- audit:start' in body
+                assert '<span class="managed-block-marker">&lt;!-- audit:end' in body
+            finally:
+                conn.close()
+        finally:
+            srv.shutdown()
+
+    def test_approval_page_escapes_untrusted_content(self, domains):
+        """Untrusted file content is HTML-escaped, preventing XSS injection."""
+        from engineering_audit.standards import RuleSet
+        from engineering_audit.standards_approval import (
+            build_diff_model,
+            derive_summary_counts,
+        )
+
+        rule_set = RuleSet(version="1.0", project="test", rules=[])
+        # Content with script tag injection attempt
+        malicious_content = "Normal line\n<script>alert(1)</script>\nAnother line"
+        proposed_content = (
+            '<!-- audit:start id="agent-standard" -->\nSafe content\n<!-- audit:end -->'
+        )
+        diffs = [
+            build_diff_model(malicious_content, proposed_content, "agent-standard"),
+            build_diff_model(None, proposed_content, "human-standard"),
+            build_diff_model(None, proposed_content, "engineering-policy"),
+        ]
+        counts = derive_summary_counts(rule_set)
+
+        srv = ConfigServer(domains)
+        try:
+            url = srv.start()
+            srv.set_approval_data(diffs, counts)
+
+            host_port = url[len("http://") :].rstrip("/")
+            host, port_str = host_port.split(":")
+            conn = http.client.HTTPConnection(host, int(port_str), timeout=5)
+            try:
+                conn.putrequest("POST", "/approve-standards")
+                conn.putheader("Content-Length", "0")
+                conn.endheaders()
+                resp = conn.getresponse()
+                body = resp.read().decode("utf-8")
+                assert resp.status == 200
+                # Raw script tag must NOT be present in response
+                assert "<script>alert(1)</script>" not in body
+                # Escaped form MUST be present
+                assert "&lt;script&gt;alert(1)&lt;/script&gt;" in body
+            finally:
+                conn.close()
+        finally:
+            srv.shutdown()

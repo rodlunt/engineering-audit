@@ -49,7 +49,7 @@ def _first_match(document: str, patterns: tuple[str, ...], label: str) -> re.Mat
     return min(found, key=lambda match: match.start())
 
 
-def test_skill_has_nine_section_headings_in_order() -> None:
+def test_skill_has_ten_section_headings_in_order() -> None:
     """Guard against revert to old layout. Current sections are fixed."""
     expected_sections = [
         "Load the live framework",
@@ -60,12 +60,13 @@ def test_skill_has_nine_section_headings_in_order() -> None:
         "The deep dive",
         "Capture confirmed decisions",
         "Complete the grill",
+        "Generate provisional standards",
         "Host notes",
     ]
 
     found_sections = re.findall(r"^##\s+([^#\n]+?)\s*$", SKILL, flags=re.MULTILINE)
     assert found_sections == expected_sections, (
-        f"SKILL.md must have exactly nine sections in this order: {expected_sections}; "
+        f"SKILL.md must have exactly ten sections in this order: {expected_sections}; "
         f"found {found_sections}"
     )
 

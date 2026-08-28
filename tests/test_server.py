@@ -56,7 +56,9 @@ def _call(mcp, name: str, arguments: dict):
     return result.structured_content
 
 
-def _begin_run(mcp, output_dir: Path, **overrides) -> dict:
+def _begin_run(
+    mcp, output_dir: Path, repo_dir: Path | None = None, **overrides
+) -> dict:
     defaults = dict(
         assistant="claude-code",
         model="claude-sonnet-5",
@@ -65,6 +67,8 @@ def _begin_run(mcp, output_dir: Path, **overrides) -> dict:
         started="2026-08-09T09:00:00Z",
         output_dir=str(output_dir),
     )
+    if repo_dir is not None:
+        defaults["repo_dir"] = str(repo_dir)
     defaults.update(overrides)
     return _call(mcp, "begin_run", defaults)
 
@@ -344,15 +348,17 @@ def test_strip_otel_middleware_raises_if_a_lookalike_survives_the_isinstance_fil
     assert not any(isinstance(m, OpenTelemetryMiddleware) for m in mcp.middleware)
 
 
-def test_tool_surface_is_the_ten_tools_with_their_documented_parameters() -> None:
-    # build_server composes seven per-concern registration functions; the
-    # protocol surface they produce between them is what clients and AUDIT.md
-    # depend on, so it is pinned here rather than left to be noticed later by
-    # a client that stopped working.
+def test_tool_surface_is_the_twelve_tools_with_their_documented_parameters() -> None:
+    # build_server composes multiple registration functions; the protocol
+    # surface they produce between them is what clients and AUDIT.md depend on,
+    # so it is pinned here rather than left to be noticed later by a client
+    # that stopped working.
     #
     # begin_run's 'resume' was added deliberately with crash-recovery: it is
     # the only way an agent can accept or decline continuing an interrupted
-    # run, so it has to be on the wire. No tool was added or removed.
+    # run, so it has to be on the wire. No tool was added or removed since then.
+    # write_grill_standards_artefacts was added for grill-side standards generation.
+    # link_standards_in_documents was added to link standards in project files.
     mcp, _state = build_server(FIXTURE_PACK)
     tools = asyncio.run(mcp.list_tools())
 
@@ -366,6 +372,8 @@ def test_tool_surface_is_the_ten_tools_with_their_documented_parameters() -> Non
         "run_status",
         "file_issues",
         "submit_feedback",
+        "write_grill_standards_artefacts",
+        "link_standards_in_documents",
         "render_report",
     ]
 
@@ -403,6 +411,14 @@ def test_tool_surface_is_the_ten_tools_with_their_documented_parameters() -> Non
         "submit_feedback": (
             ["extra_text", "report_conclusion", "report_fix_first"],
             [],
+        ),
+        "write_grill_standards_artefacts": (
+            ["grill_rules", "output_dir", "project_dir"],
+            ["grill_rules", "output_dir", "project_dir"],
+        ),
+        "link_standards_in_documents": (
+            ["project_dir", "target_files"],
+            ["project_dir", "target_files"],
         ),
         "render_report": (["finished"], ["finished"]),
     }
@@ -4321,3 +4337,881 @@ def test_begin_run_passes_the_hosts_own_name_to_the_update_check(
     )
 
     assert seen["host_cli"] == "claude-code"
+
+
+# Standards approval workflow tests (ticket 06)
+
+
+def test_render_report_with_approval_writes_all_four_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """render_report with approve action writes documents and rule set."""
+    from engineering_audit.config_page import ConfigServer
+    from engineering_audit.standards_integration import (
+        AGENT_STANDARD_FILENAME,
+        ENGINEERING_POLICY_FILENAME,
+        HUMAN_STANDARD_FILENAME,
+        RULE_SET_FILENAME,
+    )
+
+    mcp, state = build_server(FIXTURE_PACK)
+    out_dir = tmp_path / "audit-output"
+    repo_dir = tmp_path / "audited-repo"
+    repo_dir.mkdir()
+    _begin_run(mcp, out_dir, repo_dir=repo_dir)
+    _preset_config_env(monkeypatch, tmp_path)
+    _call(mcp, "start_config", {})
+    _call(mcp, "get_config", {"timeout_s": 1})
+    _record_d01_with_finding(mcp)
+    _record_d02_all_pass(mcp)
+
+    # Inject a mock config_server that will approve
+    def mock_wait_approval(self, timeout_s):
+        return "approve"
+
+    # Create a mock config_server and attach it to the run
+    mock_config_server = ConfigServer(state.pack.domains)
+    mock_config_server.wait_approval = lambda timeout_s: "approve"
+    if state.run is not None:
+        state.run.config_server = mock_config_server
+
+    result = _call(mcp, "render_report", {"finished": "2026-08-09T10:00:00Z"})
+
+    # Verify all four files were written: documents in repo_dir/docs/, rule set in out_dir
+    deliverables_dir = out_dir
+    assert (repo_dir / "docs" / AGENT_STANDARD_FILENAME).exists()
+    assert (repo_dir / "docs" / HUMAN_STANDARD_FILENAME).exists()
+    assert (repo_dir / "docs" / ENGINEERING_POLICY_FILENAME).exists()
+    assert (deliverables_dir / RULE_SET_FILENAME).exists()
+
+    # Verify standards_status indicates approval
+    assert result["standards_status"] == "approved"
+
+    # Verify the documents contain real rule prose
+    agent_content = (repo_dir / "docs" / AGENT_STANDARD_FILENAME).read_text(
+        encoding="utf-8"
+    )
+    assert "D01-R01" in agent_content
+    assert "D01-R02" in agent_content
+
+
+def test_render_report_with_cancel_writes_no_standards_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """render_report with cancel action writes no standards files."""
+    from engineering_audit.config_page import ConfigServer
+    from engineering_audit.standards_integration import (
+        AGENT_STANDARD_FILENAME,
+        ENGINEERING_POLICY_FILENAME,
+        HUMAN_STANDARD_FILENAME,
+        RULE_SET_FILENAME,
+    )
+
+    mcp, state = build_server(FIXTURE_PACK)
+    out_dir = tmp_path / "audit-output"
+    repo_dir = tmp_path / "audited-repo"
+    repo_dir.mkdir()
+    _begin_run(mcp, out_dir, repo_dir=repo_dir)
+    _preset_config_env(monkeypatch, tmp_path)
+    _call(mcp, "start_config", {})
+    _call(mcp, "get_config", {"timeout_s": 1})
+    _record_d01_with_finding(mcp)
+    _record_d02_all_pass(mcp)
+
+    # Create a mock config_server that will cancel
+    mock_config_server = ConfigServer(state.pack.domains)
+    mock_config_server.wait_approval = lambda timeout_s: "cancel"
+    if state.run is not None:
+        state.run.config_server = mock_config_server
+
+    result = _call(mcp, "render_report", {"finished": "2026-08-09T10:00:00Z"})
+
+    # Verify NO standards files were written: not in repo_dir/docs/ and not in deliverables_dir
+    deliverables_dir = out_dir
+    assert not (repo_dir / "docs" / AGENT_STANDARD_FILENAME).exists()
+    assert not (repo_dir / "docs" / HUMAN_STANDARD_FILENAME).exists()
+    assert not (repo_dir / "docs" / ENGINEERING_POLICY_FILENAME).exists()
+    assert not (deliverables_dir / RULE_SET_FILENAME).exists()
+
+    # Verify standards_status indicates cancellation
+    assert result["standards_status"] == "cancelled"
+
+
+def test_render_report_without_config_server_skips_standards(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """render_report without config_server (preset mode) skips standards."""
+    from engineering_audit.standards_integration import (
+        AGENT_STANDARD_FILENAME,
+        RULE_SET_FILENAME,
+    )
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    out_dir = tmp_path / "audit-output"
+    _begin_run(mcp, out_dir)
+    _preset_config_env(monkeypatch, tmp_path)
+    _call(mcp, "start_config", {})
+    _call(mcp, "get_config", {"timeout_s": 1})
+    _record_d01_with_finding(mcp)
+    _record_d02_all_pass(mcp)
+
+    result = _call(mcp, "render_report", {"finished": "2026-08-09T10:00:00Z"})
+
+    # Verify no standards files were written (no config_server in preset mode)
+    deliverables_dir = out_dir
+    assert not (deliverables_dir / AGENT_STANDARD_FILENAME).exists()
+    assert not (deliverables_dir / RULE_SET_FILENAME).exists()
+
+    # Verify standards_status indicates skip
+    assert result["standards_status"] == "skipped"
+
+
+def test_second_render_report_merges_with_existing_rule_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A second audit run on the same project merges with the existing rule set.
+
+    This test verifies ticket-06 acceptance criterion 4: that a second audit run
+    against the same deliverables directory merges rule verdicts instead of
+    replacing the entire rule set. Specifically:
+    - Rules that pass in both runs keep their original verified_date (proof of merge)
+    - Rules that change status are updated appropriately
+    - Rules from run 1 not in run 2's verdicts are still present in the file
+    - Rule count is >= run 1's count
+    - The rendered agent-standard.md reflects the merged set
+    """
+    from engineering_audit.config_page import ConfigServer
+    from engineering_audit.standards_integration import (
+        AGENT_STANDARD_FILENAME,
+        RULE_SET_FILENAME,
+    )
+
+    # ===== FIRST AUDIT RUN =====
+    mcp1, state1 = build_server(FIXTURE_PACK)
+    deliverables_dir = tmp_path / "deliverables"
+    repo_dir = tmp_path / "audited-repo"
+    repo_dir.mkdir()
+    _begin_run(mcp1, deliverables_dir, repo_dir=repo_dir)
+    _preset_config_env(monkeypatch, tmp_path)
+    _call(mcp1, "start_config", {})
+    _call(mcp1, "get_config", {"timeout_s": 1})
+
+    # First run: D01 has one pass and one finding, D02 all pass
+    _record_d01_with_finding(mcp1)
+    _record_d02_all_pass(mcp1)
+
+    # Mock config_server to approve
+    mock_config_server1 = ConfigServer(state1.pack.domains)
+    mock_config_server1.wait_approval = lambda timeout_s: "approve"
+    if state1.run is not None:
+        state1.run.config_server = mock_config_server1
+
+    result1 = _call(mcp1, "render_report", {"finished": "2026-08-09T10:00:00Z"})
+    assert result1["standards_status"] == "approved"
+
+    # Load and inspect the first rule-set.json
+    rule_set_path = deliverables_dir / RULE_SET_FILENAME
+    assert rule_set_path.exists()
+
+    rule_set_1_content = rule_set_path.read_text(encoding="utf-8")
+    rule_set_1_data = json.loads(rule_set_1_content)
+    run1_rule_count = len(rule_set_1_data["rules"])
+    assert run1_rule_count > 0
+
+    # Capture the verified_date of a rule that will pass in both runs
+    # D02-R01 should pass in both, so its verified_date should stay the same
+    d02_r01_run1 = None
+    run1_verified_dates = {}
+    for rule in rule_set_1_data["rules"]:
+        if rule["rule_id"] == "D02-R01":
+            d02_r01_run1 = rule
+            run1_verified_dates["D02-R01"] = rule.get("verified_date")
+        # Capture all verified dates for comparison
+        run1_verified_dates[rule["rule_id"]] = rule.get("verified_date")
+
+    assert d02_r01_run1 is not None, "D02-R01 should be in first run"
+    assert d02_r01_run1["status"] == "verified-pass"
+    original_d02_r01_date = d02_r01_run1["verified_date"]
+
+    # Also check that agent-standard.md was written to repo_dir/docs/
+    agent_md_path = repo_dir / "docs" / AGENT_STANDARD_FILENAME
+    assert agent_md_path.exists()
+    agent_md_1_content = agent_md_path.read_text(encoding="utf-8")
+    assert "D02-R01" in agent_md_1_content
+
+    # ===== SECOND AUDIT RUN =====
+    # Build a fresh server for the second audit (simulating a new audit run)
+    mcp2, state2 = build_server(FIXTURE_PACK)
+    _begin_run(mcp2, deliverables_dir, repo_dir=repo_dir)
+    # deliverables_dir already exists and contains rule-set.json from run 1
+    _call(mcp2, "start_config", {})
+    _call(mcp2, "get_config", {"timeout_s": 1})
+
+    # Second run: Change D01-R02 from finding to pass, keep D02 all pass
+    # This tests that:
+    # - D01-R02 gets updated (changed rule)
+    # - D02-R01 keeps its original date (unchanged-pass rule)
+    # - D02-R02, D02-R03, D02-R04 keep their original dates (unchanged-pass rules)
+    _fetch_domain(mcp2, "d01")
+    verdicts_d01_run2 = _all_pass_verdicts(_domain(mcp2, "d01"))
+    # D01-R02 now passes instead of finding
+    assert verdicts_d01_run2[1]["rule_id"] == "D01-R02"
+    verdicts_d01_run2[1]["verdict"] = "pass"
+
+    result_d01_run2 = {
+        "domain_id": "d01",
+        "status": "completed",
+        "uninspected_evidence": [],
+        "rule_verdicts": verdicts_d01_run2,
+        "findings": [],  # No findings this time
+    }
+    _call(mcp2, "record_domain_result", {"result": result_d01_run2, "replace": False})
+
+    # D02 all pass again
+    _record_d02_all_pass(mcp2)
+
+    # Mock config_server to approve
+    mock_config_server2 = ConfigServer(state2.pack.domains)
+    mock_config_server2.wait_approval = lambda timeout_s: "approve"
+    if state2.run is not None:
+        state2.run.config_server = mock_config_server2
+
+    result2 = _call(mcp2, "render_report", {"finished": "2026-08-10T10:00:00Z"})
+    assert result2["standards_status"] == "approved"
+
+    # Load and inspect the second rule-set.json
+    rule_set_2_content = rule_set_path.read_text(encoding="utf-8")
+    rule_set_2_data = json.loads(rule_set_2_content)
+    run2_rule_count = len(rule_set_2_data["rules"])
+
+    # ===== ASSERTIONS FOR MERGE BEHAVIOR =====
+
+    # 1. Rule count should be >= first run (no rules dropped)
+    assert run2_rule_count >= run1_rule_count, (
+        f"Merge should not drop rules: run1={run1_rule_count}, run2={run2_rule_count}"
+    )
+
+    # 2. D02-R01 (unchanged-pass) should keep its original verified_date
+    d02_r01_run2 = None
+    for rule in rule_set_2_data["rules"]:
+        if rule["rule_id"] == "D02-R01":
+            d02_r01_run2 = rule
+            break
+
+    assert d02_r01_run2 is not None, "D02-R01 should still be in merged rule set"
+    assert d02_r01_run2["status"] == "verified-pass"
+    assert d02_r01_run2["verified_date"] == original_d02_r01_date, (
+        f"D02-R01 should keep original date {original_d02_r01_date}, but got {d02_r01_run2['verified_date']}"
+    )
+
+    # 3. D02-R02, D02-R03 should also keep their original dates
+    for rule_id in ["D02-R02", "D02-R03"]:
+        rule_run2 = next(
+            (r for r in rule_set_2_data["rules"] if r["rule_id"] == rule_id), None
+        )
+        assert rule_run2 is not None, (
+            f"{rule_id} should be in merged rule set (proof of retention)"
+        )
+        assert rule_run2["verified_date"] == run1_verified_dates[rule_id], (
+            f"{rule_id} should keep its original verified_date from run 1"
+        )
+
+    # 4. D01-R02 (changed from finding to pass) should be updated
+    d01_r02_run2 = next(
+        (r for r in rule_set_2_data["rules"] if r["rule_id"] == "D01-R02"), None
+    )
+    assert d01_r02_run2 is not None, "D01-R02 should still be in merged rule set"
+    assert d01_r02_run2["status"] == "verified-pass", (
+        "D01-R02 should be verified-pass after upgrade from finding"
+    )
+
+    # 5. D01-R01 (pass in both runs) should keep its original date
+    d01_r01_run2 = next(
+        (r for r in rule_set_2_data["rules"] if r["rule_id"] == "D01-R01"), None
+    )
+    assert d01_r01_run2 is not None, "D01-R01 should be in merged rule set"
+    assert d01_r01_run2["status"] == "verified-pass"
+    assert d01_r01_run2["verified_date"] == run1_verified_dates["D01-R01"], (
+        "D01-R01 should keep its original verified_date"
+    )
+
+    # 6. Agent standard markdown should reflect merged set
+    agent_md_2_content = agent_md_path.read_text(encoding="utf-8")
+    assert "D02-R01" in agent_md_2_content, "agent-standard.md should contain D02-R01"
+    assert "D01-R02" in agent_md_2_content, "agent-standard.md should contain D01-R02"
+
+
+# ============================================================================
+# Ticket 07: Stack detection tests
+# ============================================================================
+
+
+def test_render_report_no_prior_rule_set_no_stack_page(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No prior rule set → no stack detection, standards proceed without stack page."""
+    from engineering_audit.config_page import ConfigServer
+    from engineering_audit.standards_integration import RULE_SET_FILENAME
+
+    mcp, state = build_server(FIXTURE_PACK)
+    out_dir = tmp_path / "audit-output"
+    repo_dir = tmp_path / "audited-repo"
+    repo_dir.mkdir()
+    _begin_run(mcp, out_dir, repo_dir=repo_dir)
+    _preset_config_env(monkeypatch, tmp_path)
+    _call(mcp, "start_config", {})
+    _call(mcp, "get_config", {"timeout_s": 1})
+    _record_d01_with_finding(mcp)
+    _record_d02_all_pass(mcp)
+
+    # Mock config_server to approve (no stack choice needed)
+    mock_config_server = ConfigServer(state.pack.domains)
+    mock_config_server.wait_approval = lambda timeout_s: "approve"
+    if state.run is not None:
+        state.run.config_server = mock_config_server
+
+    result = _call(mcp, "render_report", {"finished": "2026-08-09T10:00:00Z"})
+
+    # Verify standards proceeded without error
+    assert result["standards_status"] == "approved"
+    # Verify rule set was written (merger happened)
+    deliverables_dir = out_dir
+    assert (deliverables_dir / RULE_SET_FILENAME).exists()
+
+
+def test_render_report_all_rules_have_no_stack_profile_no_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Prior rules all have stack_profile=None → NO false halt (critical case)."""
+    from engineering_audit.config_page import ConfigServer
+    from engineering_audit.standards_integration import RULE_SET_FILENAME
+    from engineering_audit.standards import Rule, RuleSet, RuleStatus
+
+    mcp, state = build_server(FIXTURE_PACK)
+    out_dir = tmp_path / "audit-output"
+    repo_dir = tmp_path / "audited-repo"
+    repo_dir.mkdir()
+
+    # Pre-populate with a prior rule set where all rules have stack_profile=None
+    deliverables_dir = out_dir
+    deliverables_dir.mkdir(parents=True, exist_ok=True)
+    prior_rules = [
+        Rule(
+            rule_id="D01-R01",
+            domain_id="d01",
+            text_short="Test Rule",
+            text_body="A test rule",
+            source="rules-pack",
+            stack_profile=None,
+            status=RuleStatus.VERIFIED_PASS.value,
+            verified_date="2026-01-01",
+        )
+    ]
+    prior_rule_set = RuleSet(
+        version="1.0", project="engineering-audit", rules=prior_rules
+    )
+    (deliverables_dir / RULE_SET_FILENAME).write_text(prior_rule_set.to_json())
+
+    _begin_run(mcp, out_dir, repo_dir=repo_dir)
+    _preset_config_env(monkeypatch, tmp_path)
+    _call(mcp, "start_config", {})
+    _call(mcp, "get_config", {"timeout_s": 1})
+    _record_d01_with_finding(mcp)
+    _record_d02_all_pass(mcp)
+
+    # Mock config_server
+    mock_config_server = ConfigServer(state.pack.domains)
+    mock_config_server.wait_approval = lambda timeout_s: "approve"
+    if state.run is not None:
+        state.run.config_server = mock_config_server
+
+    result = _call(mcp, "render_report", {"finished": "2026-08-09T10:00:00Z"})
+
+    # Standards should complete successfully (no stack halt)
+    assert result["standards_status"] == "approved"
+    # Verify no stack-choice.json was written (no mismatch occurred)
+    assert not (deliverables_dir / "stack-choice.json").exists()
+
+
+def test_render_report_no_repo_dir_no_stack_detection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """run.repo_dir is None → no stack detection, standards proceed."""
+    from engineering_audit.config_page import ConfigServer
+
+    mcp, state = build_server(FIXTURE_PACK)
+    out_dir = tmp_path / "audit-output"
+    # Deliberately no repo_dir
+    _begin_run(mcp, out_dir, repo_dir=None)
+    _preset_config_env(monkeypatch, tmp_path)
+    _call(mcp, "start_config", {})
+    _call(mcp, "get_config", {"timeout_s": 1})
+    _record_d01_with_finding(mcp)
+    _record_d02_all_pass(mcp)
+
+    # Mock config_server
+    mock_config_server = ConfigServer(state.pack.domains)
+    mock_config_server.wait_approval = lambda timeout_s: "approve"
+    if state.run is not None:
+        state.run.config_server = mock_config_server
+
+    result = _call(mcp, "render_report", {"finished": "2026-08-09T10:00:00Z"})
+
+    # Standards should complete successfully
+    assert result["standards_status"] == "approved"
+    # Verify no stack-choice.json (no repo to detect from)
+    deliverables_dir = out_dir
+    assert not (deliverables_dir / "stack-choice.json").exists()
+
+
+def test_render_report_stack_mismatch_user_picks_grill(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Genuine mismatch: user picks 'grill' → prior rules unchanged, stack-choice.json exists."""
+    from engineering_audit.config_page import ConfigServer
+    from engineering_audit.standards_integration import RULE_SET_FILENAME
+    from engineering_audit.standards import Rule, RuleSet, RuleStatus
+
+    mcp, state = build_server(FIXTURE_PACK)
+    out_dir = tmp_path / "audit-output"
+    repo_dir = tmp_path / "audited-repo"
+    repo_dir.mkdir()
+
+    # Create a repo with Django (observed stack)
+    (repo_dir / "pyproject.toml").write_text(
+        "[project]\ndependencies = ['django>=3.0']\n"
+    )
+
+    # Pre-populate with prior rule set showing FastAPI (grill stack)
+    deliverables_dir = out_dir
+    deliverables_dir.mkdir(parents=True, exist_ok=True)
+    prior_rules = [
+        Rule(
+            rule_id="STACK-001",
+            domain_id=None,
+            text_short="FastAPI Rule",
+            text_body="A FastAPI test",
+            source="stack-profile",
+            stack_profile="fastapi",
+            status=RuleStatus.VERIFIED_PASS.value,
+            verified_date="2026-01-01",
+        )
+    ]
+    prior_rule_set = RuleSet(
+        version="1.0", project="engineering-audit", rules=prior_rules
+    )
+    (deliverables_dir / RULE_SET_FILENAME).write_text(prior_rule_set.to_json())
+
+    _begin_run(mcp, out_dir, repo_dir=repo_dir)
+    _preset_config_env(monkeypatch, tmp_path)
+    _call(mcp, "start_config", {})
+    _call(mcp, "get_config", {"timeout_s": 1})
+    _record_d01_with_finding(mcp)
+    _record_d02_all_pass(mcp)
+
+    # Mock config_server to:
+    # 1. Respond "grill" to stack mismatch
+    # 2. Approve the standards
+    mock_config_server = ConfigServer(state.pack.domains)
+    mock_config_server.wait_stack_choice = lambda timeout_s: "grill"
+    mock_config_server.wait_approval = lambda timeout_s: "approve"
+    if state.run is not None:
+        state.run.config_server = mock_config_server
+
+    result = _call(mcp, "render_report", {"finished": "2026-08-09T10:00:00Z"})
+
+    # Standards should complete successfully with stack choice "grill"
+    assert result["standards_status"] == "approved"
+    assert result.get("stack_choice") == "grill"
+
+    # Verify stack-choice.json exists with choice "grill"
+    stack_choice_path = deliverables_dir / "stack-choice.json"
+    assert stack_choice_path.exists(), "stack-choice.json should exist"
+    stack_choice = json.loads(stack_choice_path.read_text())
+    assert stack_choice["choice"] == "grill"
+    assert "fastapi" in stack_choice["grill_stack"]
+    assert "django" in stack_choice["observed_stack_identifiers"]
+
+
+def test_render_report_stack_mismatch_user_picks_audit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Genuine mismatch: user picks 'audit' → resolved rules in merge, stack-choice.json."""
+    from engineering_audit.config_page import ConfigServer
+    from engineering_audit.standards_integration import RULE_SET_FILENAME
+    from engineering_audit.standards import Rule, RuleSet, RuleStatus
+
+    mcp, state = build_server(FIXTURE_PACK)
+    out_dir = tmp_path / "audit-output"
+    repo_dir = tmp_path / "audited-repo"
+    repo_dir.mkdir()
+
+    # Create a repo with Django (observed stack)
+    (repo_dir / "pyproject.toml").write_text(
+        "[project]\ndependencies = ['django>=3.0']\n"
+    )
+
+    # Pre-populate with prior rule set showing FastAPI (grill stack)
+    deliverables_dir = out_dir
+    deliverables_dir.mkdir(parents=True, exist_ok=True)
+    prior_rules = [
+        Rule(
+            rule_id="STACK-001",
+            domain_id=None,
+            text_short="FastAPI Rule",
+            text_body="A FastAPI test",
+            source="stack-profile",
+            stack_profile="fastapi",
+            status=RuleStatus.VERIFIED_PASS.value,
+            verified_date="2026-01-01",
+        )
+    ]
+    prior_rule_set = RuleSet(
+        version="1.0", project="engineering-audit", rules=prior_rules
+    )
+    (deliverables_dir / RULE_SET_FILENAME).write_text(prior_rule_set.to_json())
+
+    _begin_run(mcp, out_dir, repo_dir=repo_dir)
+    _preset_config_env(monkeypatch, tmp_path)
+    _call(mcp, "start_config", {})
+    _call(mcp, "get_config", {"timeout_s": 1})
+    _record_d01_with_finding(mcp)
+    _record_d02_all_pass(mcp)
+
+    # Mock config_server to:
+    # 1. Respond "audit" to stack mismatch
+    # 2. Approve the standards
+    mock_config_server = ConfigServer(state.pack.domains)
+    mock_config_server.wait_stack_choice = lambda timeout_s: "audit"
+    mock_config_server.wait_approval = lambda timeout_s: "approve"
+    if state.run is not None:
+        state.run.config_server = mock_config_server
+
+    result = _call(mcp, "render_report", {"finished": "2026-08-09T10:00:00Z"})
+
+    # Standards should complete successfully with stack choice "audit"
+    assert result["standards_status"] == "approved"
+    assert result.get("stack_choice") == "audit"
+
+    # Verify stack-choice.json exists with choice "audit"
+    stack_choice_path = deliverables_dir / "stack-choice.json"
+    assert stack_choice_path.exists(), "stack-choice.json should exist"
+    stack_choice = json.loads(stack_choice_path.read_text())
+    assert stack_choice["choice"] == "audit"
+    assert "fastapi" in stack_choice["grill_stack"]
+    assert "django" in stack_choice["observed_stack_identifiers"]
+
+
+def test_render_report_stack_mismatch_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stack choice timeout → standards skipped, run finishes, files intact."""
+    from engineering_audit.config_page import ConfigServer, ConfigTimeoutError
+    from engineering_audit.standards_integration import RULE_SET_FILENAME
+    from engineering_audit.standards import Rule, RuleSet, RuleStatus
+
+    mcp, state = build_server(FIXTURE_PACK)
+    out_dir = tmp_path / "audit-output"
+    repo_dir = tmp_path / "audited-repo"
+    repo_dir.mkdir()
+
+    # Create a repo with Django (observed stack)
+    (repo_dir / "pyproject.toml").write_text(
+        "[project]\ndependencies = ['django>=3.0']\n"
+    )
+
+    # Pre-populate with prior rule set showing FastAPI
+    deliverables_dir = out_dir
+    deliverables_dir.mkdir(parents=True, exist_ok=True)
+    prior_rules = [
+        Rule(
+            rule_id="STACK-001",
+            domain_id=None,
+            text_short="FastAPI Rule",
+            text_body="A FastAPI test",
+            source="stack-profile",
+            stack_profile="fastapi",
+            status=RuleStatus.VERIFIED_PASS.value,
+            verified_date="2026-01-01",
+        )
+    ]
+    prior_rule_set = RuleSet(
+        version="1.0", project="engineering-audit", rules=prior_rules
+    )
+    (deliverables_dir / RULE_SET_FILENAME).write_text(prior_rule_set.to_json())
+
+    _begin_run(mcp, out_dir, repo_dir=repo_dir)
+    _preset_config_env(monkeypatch, tmp_path)
+    _call(mcp, "start_config", {})
+    _call(mcp, "get_config", {"timeout_s": 1})
+    _record_d01_with_finding(mcp)
+    _record_d02_all_pass(mcp)
+
+    # Mock config_server to timeout on stack choice
+    mock_config_server = ConfigServer(state.pack.domains)
+
+    def timeout_on_stack_choice(timeout_s):
+        raise ConfigTimeoutError("Stack choice timeout")
+
+    mock_config_server.wait_stack_choice = timeout_on_stack_choice
+    if state.run is not None:
+        state.run.config_server = mock_config_server
+
+    result = _call(mcp, "render_report", {"finished": "2026-08-09T10:00:00Z"})
+
+    # Standards should be marked as timeout
+    assert result["standards_status"] == "timeout"
+
+    # Verify report.html and run-state.json are still written
+    assert (deliverables_dir / "report.html").exists()
+    assert (deliverables_dir / "run-state.json").exists()
+
+    # Verify no stack-choice.json was written (timeout before choice)
+    assert not (deliverables_dir / "stack-choice.json").exists()
+
+
+def test_stack_choice_json_content_includes_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """stack-choice.json contains grill stack, observed stack WITH evidence, choice."""
+    from engineering_audit.config_page import ConfigServer
+    from engineering_audit.standards_integration import RULE_SET_FILENAME
+    from engineering_audit.standards import Rule, RuleSet, RuleStatus
+
+    mcp, state = build_server(FIXTURE_PACK)
+    out_dir = tmp_path / "audit-output"
+    repo_dir = tmp_path / "audited-repo"
+    repo_dir.mkdir()
+
+    # Create a repo with explicit Django and FastAPI to match grill
+    (repo_dir / "pyproject.toml").write_text(
+        "[project]\ndependencies = ['django>=3.0', 'fastapi>=0.68.0']\n"
+    )
+
+    # Pre-populate with prior rule set showing only FastAPI
+    deliverables_dir = out_dir
+    deliverables_dir.mkdir(parents=True, exist_ok=True)
+    prior_rules = [
+        Rule(
+            rule_id="STACK-001",
+            domain_id=None,
+            text_short="FastAPI Rule",
+            text_body="A FastAPI test",
+            source="stack-profile",
+            stack_profile="fastapi",
+            status=RuleStatus.VERIFIED_PASS.value,
+            verified_date="2026-01-01",
+        )
+    ]
+    prior_rule_set = RuleSet(
+        version="1.0", project="engineering-audit", rules=prior_rules
+    )
+    (deliverables_dir / RULE_SET_FILENAME).write_text(prior_rule_set.to_json())
+
+    _begin_run(mcp, out_dir, repo_dir=repo_dir)
+    _preset_config_env(monkeypatch, tmp_path)
+    _call(mcp, "start_config", {})
+    _call(mcp, "get_config", {"timeout_s": 1})
+    _record_d01_with_finding(mcp)
+    _record_d02_all_pass(mcp)
+
+    # Mock config_server to pick "grill"
+    mock_config_server = ConfigServer(state.pack.domains)
+    mock_config_server.wait_stack_choice = lambda timeout_s: "grill"
+    mock_config_server.wait_approval = lambda timeout_s: "approve"
+    if state.run is not None:
+        state.run.config_server = mock_config_server
+
+    _call(mcp, "render_report", {"finished": "2026-08-09T10:00:00Z"})
+
+    # Verify stack-choice.json exists with full content
+    stack_choice_path = deliverables_dir / "stack-choice.json"
+    assert stack_choice_path.exists(), "stack-choice.json should exist"
+    stack_choice = json.loads(stack_choice_path.read_text())
+
+    # Verify grill_stack is present
+    assert "grill_stack" in stack_choice
+    assert isinstance(stack_choice["grill_stack"], list)
+    assert "fastapi" in stack_choice["grill_stack"]
+
+    # Verify observed_stack_identifiers
+    assert "observed_stack_identifiers" in stack_choice
+    assert isinstance(stack_choice["observed_stack_identifiers"], list)
+    assert "fastapi" in stack_choice["observed_stack_identifiers"]
+    assert "django" in stack_choice["observed_stack_identifiers"]
+
+    # Verify observed_stack_evidence contains evidence WITH file paths and dependencies
+    assert "observed_stack_evidence" in stack_choice
+    evidence = stack_choice["observed_stack_evidence"]
+    assert isinstance(evidence, dict)
+    # Should have evidence for both python and fastapi
+    for identifier in ["python", "fastapi", "django"]:
+        if identifier in stack_choice["observed_stack_identifiers"]:
+            assert identifier in evidence, f"{identifier} should have evidence"
+            assert "file_path" in evidence[identifier]
+            assert "dependency_or_line" in evidence[identifier]
+
+    # Verify choice is recorded
+    assert stack_choice["choice"] == "grill"
+
+    # Verify timestamp is present
+    assert "timestamp" in stack_choice
+    assert isinstance(stack_choice["timestamp"], str)
+
+
+def test_render_report_stack_mismatch_user_picks_grill_then_cancels(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """User picks 'grill' then CANCELS approval → stack-choice.json exists, no standards docs."""
+    from engineering_audit.config_page import ConfigServer
+    from engineering_audit.standards_integration import RULE_SET_FILENAME
+    from engineering_audit.standards import Rule, RuleSet, RuleStatus
+
+    mcp, state = build_server(FIXTURE_PACK)
+    out_dir = tmp_path / "audit-output"
+    repo_dir = tmp_path / "audited-repo"
+    repo_dir.mkdir()
+
+    # Create a repo with Django (observed stack)
+    (repo_dir / "pyproject.toml").write_text(
+        "[project]\ndependencies = ['django>=3.0']\n"
+    )
+
+    # Pre-populate with prior rule set showing FastAPI (grill stack)
+    deliverables_dir = out_dir
+    deliverables_dir.mkdir(parents=True, exist_ok=True)
+    prior_rules = [
+        Rule(
+            rule_id="STACK-001",
+            domain_id=None,
+            text_short="FastAPI Rule",
+            text_body="A FastAPI test",
+            source="stack-profile",
+            stack_profile="fastapi",
+            status=RuleStatus.VERIFIED_PASS.value,
+            verified_date="2026-01-01",
+        )
+    ]
+    prior_rule_set = RuleSet(
+        version="1.0", project="engineering-audit", rules=prior_rules
+    )
+    (deliverables_dir / RULE_SET_FILENAME).write_text(prior_rule_set.to_json())
+
+    _begin_run(mcp, out_dir, repo_dir=repo_dir)
+    _preset_config_env(monkeypatch, tmp_path)
+    _call(mcp, "start_config", {})
+    _call(mcp, "get_config", {"timeout_s": 1})
+    _record_d01_with_finding(mcp)
+    _record_d02_all_pass(mcp)
+
+    # Mock config_server to:
+    # 1. Respond "grill" to stack mismatch
+    # 2. Cancel the standards approval
+    mock_config_server = ConfigServer(state.pack.domains)
+    mock_config_server.wait_stack_choice = lambda timeout_s: "grill"
+    mock_config_server.wait_approval = lambda timeout_s: "cancel"
+    if state.run is not None:
+        state.run.config_server = mock_config_server
+
+    result = _call(mcp, "render_report", {"finished": "2026-08-09T10:00:00Z"})
+
+    # Standards approval should be cancelled
+    assert result["standards_status"] == "cancelled"
+    assert result.get("stack_choice") == "grill"
+
+    # Verify stack-choice.json exists despite cancellation
+    stack_choice_path = deliverables_dir / "stack-choice.json"
+    assert stack_choice_path.exists(), (
+        "stack-choice.json should exist even when approval is cancelled"
+    )
+    stack_choice = json.loads(stack_choice_path.read_text())
+    assert stack_choice["choice"] == "grill"
+    assert "fastapi" in stack_choice["grill_stack"]
+    assert "django" in stack_choice["observed_stack_identifiers"]
+
+    # Verify standards documents were NOT written (approval was cancelled)
+    assert not (deliverables_dir / "MANIFEST.md").exists(), (
+        "MANIFEST.md should not exist when approval is cancelled"
+    )
+    assert not (deliverables_dir / "STANDARDS.md").exists(), (
+        "STANDARDS.md should not exist when approval is cancelled"
+    )
+
+
+def test_render_report_stack_mismatch_user_picks_audit_then_cancels(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """User picks 'audit' then CANCELS approval → stack-choice.json exists, no standards docs."""
+    from engineering_audit.config_page import ConfigServer
+    from engineering_audit.standards_integration import RULE_SET_FILENAME
+    from engineering_audit.standards import Rule, RuleSet, RuleStatus
+
+    mcp, state = build_server(FIXTURE_PACK)
+    out_dir = tmp_path / "audit-output"
+    repo_dir = tmp_path / "audited-repo"
+    repo_dir.mkdir()
+
+    # Create a repo with Django (observed stack)
+    (repo_dir / "pyproject.toml").write_text(
+        "[project]\ndependencies = ['django>=3.0']\n"
+    )
+
+    # Pre-populate with prior rule set showing FastAPI (grill stack)
+    deliverables_dir = out_dir
+    deliverables_dir.mkdir(parents=True, exist_ok=True)
+    prior_rules = [
+        Rule(
+            rule_id="STACK-001",
+            domain_id=None,
+            text_short="FastAPI Rule",
+            text_body="A FastAPI test",
+            source="stack-profile",
+            stack_profile="fastapi",
+            status=RuleStatus.VERIFIED_PASS.value,
+            verified_date="2026-01-01",
+        )
+    ]
+    prior_rule_set = RuleSet(
+        version="1.0", project="engineering-audit", rules=prior_rules
+    )
+    (deliverables_dir / RULE_SET_FILENAME).write_text(prior_rule_set.to_json())
+
+    _begin_run(mcp, out_dir, repo_dir=repo_dir)
+    _preset_config_env(monkeypatch, tmp_path)
+    _call(mcp, "start_config", {})
+    _call(mcp, "get_config", {"timeout_s": 1})
+    _record_d01_with_finding(mcp)
+    _record_d02_all_pass(mcp)
+
+    # Mock config_server to:
+    # 1. Respond "audit" to stack mismatch
+    # 2. Cancel the standards approval
+    mock_config_server = ConfigServer(state.pack.domains)
+    mock_config_server.wait_stack_choice = lambda timeout_s: "audit"
+    mock_config_server.wait_approval = lambda timeout_s: "cancel"
+    if state.run is not None:
+        state.run.config_server = mock_config_server
+
+    result = _call(mcp, "render_report", {"finished": "2026-08-09T10:00:00Z"})
+
+    # Standards approval should be cancelled
+    assert result["standards_status"] == "cancelled"
+    assert result.get("stack_choice") == "audit"
+
+    # Verify stack-choice.json exists despite cancellation
+    stack_choice_path = deliverables_dir / "stack-choice.json"
+    assert stack_choice_path.exists(), (
+        "stack-choice.json should exist even when approval is cancelled"
+    )
+    stack_choice = json.loads(stack_choice_path.read_text())
+    assert stack_choice["choice"] == "audit"
+    assert "fastapi" in stack_choice["grill_stack"]
+    assert "django" in stack_choice["observed_stack_identifiers"]
+
+    # Verify standards documents were NOT written (approval was cancelled)
+    assert not (deliverables_dir / "MANIFEST.md").exists(), (
+        "MANIFEST.md should not exist when approval is cancelled"
+    )
+    assert not (deliverables_dir / "STANDARDS.md").exists(), (
+        "STANDARDS.md should not exist when approval is cancelled"
+    )

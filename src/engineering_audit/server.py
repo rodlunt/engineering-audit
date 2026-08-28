@@ -92,6 +92,26 @@ from engineering_audit.run_state_io import (
     load_run_progress_file,
     save_run_progress,
 )
+from engineering_audit.stack_detection import (
+    describe_stack_difference,
+    detect_stack,
+    grill_stack_from_rule_set,
+    stacks_differ,
+)
+from engineering_audit.link_standards import link_standards_in_project_documents
+from engineering_audit.standards import Rule as StandardsRule, RuleSet
+from engineering_audit.standards_integration import (
+    audit_rules_from_domain_results,
+    build_diffs,
+    build_stack_choice_decision,
+    derive_summary_counts,
+    load_prior_rule_set,
+    render_all,
+    resolve_stack_choice,
+    verdicts_from_domain_results,
+    write_standards,
+)
+from engineering_audit.standards_merge import merge_rule_set
 from engineering_audit.schema import (
     RUN_STATE_SCHEMA_VERSION,
     AuditConfig,
@@ -868,6 +888,31 @@ def _resume_offer(prior: PriorRun, repo_name: str) -> dict[str, Any]:
             "audit work that has already been done."
         ),
     }
+
+
+def _persist_stack_choice(
+    run: RunTracker, deliverables_dir: Path, decision: dict[str, Any]
+) -> None:
+    """Write the stack choice decision to disk as a sibling to run-state.json.
+
+    The decision is persisted to stack-choice.json so the user can revisit the
+    decision later if the code changes. Never raises: failures are queued as
+    warnings but do not interrupt the run, consistent with other persistence
+    failures in this module (see _persist_run, _remove_progress_file).
+    """
+    stack_choice_path = deliverables_dir / "stack-choice.json"
+    try:
+        atomic_write_text(stack_choice_path, json.dumps(decision, indent=2))
+    except Exception as exc:
+        # Queue warning rather than print to stderr, for consistency with
+        # _persist_run and other non-fatal persistence failures. The warning
+        # travels in the render_report response and is visible to the caller.
+        _queue_persist_warning(
+            run,
+            f"Could not write stack choice decision to {stack_choice_path}: {exc}. The run "
+            "is unaffected and its results are still on disk, but the stack choice decision "
+            "record will not be available. Tell the user.",
+        )
 
 
 def _require_run(state: AppState) -> RunTracker:
@@ -2397,6 +2442,215 @@ def _register_feedback_tools(mcp: MCPServer, state: AppState) -> None:
         }
 
 
+def _register_grill_tools(mcp: MCPServer, state: AppState) -> None:
+    """Grill-side provisional standards generation.
+
+    At the end of the grill Hot Seat step, after the user confirms the shared
+    understanding, the grill skill calls write_grill_standards_artefacts to
+    generate a rule set from the grill's captured rules, marked provisional,
+    and render and write the three standards documents.
+    """
+
+    @mcp.tool()
+    def write_grill_standards_artefacts(
+        grill_rules: str,
+        output_dir: str,
+        project_dir: str,
+    ) -> dict[str, Any]:
+        """Generate provisional standards artefacts from grill-captured rules.
+
+        Called at the end of the grill Hot Seat step after the user confirms the
+        shared understanding. Generates a rule set from the grill's captured rules,
+        marks all rules as provisional with today's date, renders the three
+        standards documents with provisional annotations, and writes them to disk
+        using managed-block markers. No user approval is required; documents are
+        written immediately.
+
+        Args:
+            grill_rules: JSON array of rule objects captured from the grill, each
+                with rule_id, domain_id, text_short, text_body, source, and optionally
+                stack_profile. All rules will be marked provisional with today's date.
+            output_dir: Path to the directory where rule-set.json will be written
+                (typically the project's audit-output directory).
+            project_dir: Required path to the project root directory. The three
+                standards documents are written to project_dir/docs/ as per the
+                spec's file placement requirement.
+
+        Returns:
+            Dictionary with keys:
+            - success: Boolean indicating successful write
+            - rule_set_path: Path to the written rule-set.json
+            - document_paths: Dict mapping document names to their written paths
+            - rules_count: Number of rules in the rule set
+            - created_date: ISO date string when the rule set was created
+            - errors: List of error messages if success is False
+        """
+        try:
+            # Validate project_dir is provided and exists
+            if not project_dir:
+                return {
+                    "success": False,
+                    "errors": [
+                        "project_dir is required. Standards documents must be written to the project's configured paths (docs/). "
+                        "Provide the path to the project root directory where the grill will record standards."
+                    ],
+                }
+
+            project_path = Path(project_dir)
+            if not project_path.exists():
+                return {
+                    "success": False,
+                    "errors": [
+                        f"project_dir does not exist: {project_dir}. "
+                        "Please provide a valid path to an existing project directory."
+                    ],
+                }
+            if not project_path.is_dir():
+                return {
+                    "success": False,
+                    "errors": [
+                        f"project_dir is not a directory: {project_dir}. "
+                        "Please provide a path to a valid project directory, not a file."
+                    ],
+                }
+
+            # Parse grill rules from JSON
+            rules_data = json.loads(grill_rules)
+            if not isinstance(rules_data, list):
+                return {
+                    "success": False,
+                    "errors": ["grill_rules must be a JSON array of rule objects"],
+                }
+
+            # Convert to Rule objects with provisional status
+            today = datetime.now().date().isoformat()
+            rules: list[StandardsRule] = []
+
+            for rule_data in rules_data:
+                try:
+                    # Create a Rule object with provisional status
+                    rule = StandardsRule(
+                        rule_id=rule_data["rule_id"],
+                        domain_id=rule_data.get("domain_id"),
+                        text_short=rule_data["text_short"],
+                        text_body=rule_data["text_body"],
+                        source=rule_data["source"],
+                        stack_profile=rule_data.get("stack_profile"),
+                        status="provisional",
+                        verified_date=today,
+                        grill_intent_note=rule_data.get(
+                            "grill_intent_note",
+                            "Recorded from engineering-grill intent.",
+                        ),
+                    )
+                    rules.append(rule)
+                except (KeyError, ValueError) as exc:
+                    field_hint = ""
+                    if isinstance(exc, KeyError):
+                        field_hint = f" Missing required field: {exc.args[0]}"
+                    return {
+                        "success": False,
+                        "errors": [
+                            f"Rule object invalid or missing required fields (rule_id, text_short, text_body, source).{field_hint}"
+                        ],
+                    }
+
+            # Create provisional rule set
+            rule_set = RuleSet(
+                version="1.0",
+                project="engineering-audit",
+                rules=rules,
+            )
+
+            # Render all three documents
+            rendered = render_all(rule_set)
+
+            # Determine directories
+            output_path = Path(output_dir)
+
+            # Write standards and rule set
+            try:
+                write_standards(output_path, rendered, rule_set, project_path)
+            except Exception as exc:
+                return {
+                    "success": False,
+                    "errors": [f"Failed to write standards documents: {exc}"],
+                }
+
+            # Compute document paths for response
+            document_paths = {
+                "agent-standard": str(
+                    project_path / "docs" / "coding-standard.agent.md"
+                ),
+                "human-standard": str(
+                    project_path / "docs" / "engineering-standard.md"
+                ),
+                "engineering-policy": str(
+                    project_path / "docs" / "engineering-policy.md"
+                ),
+            }
+
+            return {
+                "success": True,
+                "rule_set_path": str(output_path / "rule-set.json"),
+                "document_paths": document_paths,
+                "rules_count": len(rules),
+                "created_date": today,
+            }
+
+        except json.JSONDecodeError as exc:
+            return {
+                "success": False,
+                "errors": [
+                    f"Malformed JSON in grill_rules: {exc}. Check the JSON syntax and ensure the input is properly formatted."
+                ],
+            }
+        except Exception as exc:
+            return {
+                "success": False,
+                "errors": [f"Unexpected error: {type(exc).__name__}: {exc}"],
+            }
+
+    @mcp.tool()
+    def link_standards_in_documents(
+        project_dir: str,
+        target_files: list[str],
+    ) -> dict[str, Any]:
+        """Add links to standards documents in specified project files.
+
+        After generating provisional standards artefacts, this tool adds links
+        to the three standards documents in specified project files (CLAUDE.md,
+        AGENTS.md, README.md, or custom files). The tool is idempotent: running
+        it twice produces identical results, preserving hand-edited content
+        outside its managed block.
+
+        Args:
+            project_dir: Path to the project root directory. Must exist and be
+                a directory. The three standards documents are expected to be in
+                project_dir/docs/ relative to this directory.
+            target_files: List of file names or relative paths to update. Files
+                must exist. Only these files will be touched. Examples:
+                ["CLAUDE.md"], ["AGENTS.md", "README.md"], ["docs/standards.md"].
+                The list can be empty (no changes needed).
+
+        Returns:
+            Dictionary with keys:
+            - success: Boolean indicating success.
+            - updated_files: List of file paths that were successfully updated
+              (if success=True).
+            - errors: List of error message strings (if success=False).
+
+        Notes:
+            The tool uses a managed block with id='standards-links' to mark
+            the section where it adds links, enabling idempotency and hand-edit
+            preservation.
+        """
+        return link_standards_in_project_documents(
+            project_dir=project_dir,
+            target_files=target_files,
+        )
+
+
 def _register_report_tools(mcp: MCPServer, state: AppState) -> None:
     """Finishing a run: rendering and writing out its report."""
 
@@ -2496,6 +2750,105 @@ def _register_report_tools(mcp: MCPServer, state: AppState) -> None:
         _persist_run(run, completed=True)
         _remove_progress_file(run)
 
+        # Standards generation and approval (after report is written, before run teardown)
+        standards_status = "skipped"
+        stack_choice_decision = None
+        try:
+            if run.config_server is not None:
+                # Only process standards if there's a config server (interactive mode)
+                verdicts = verdicts_from_domain_results(run.domain_results)
+                audit_rules = audit_rules_from_domain_results(
+                    run.domain_results, state.pack
+                )
+                prior_rule_set = load_prior_rule_set(deliverables_dir)
+
+                # Stack mismatch stop: compare grill stack to observed stack (ticket 07)
+                # Must happen before the merge step, as per ticket 06 specification.
+                used_rule_set = prior_rule_set
+                if run.repo_dir is not None and prior_rule_set is not None:
+                    # Detect observed stack from repo_dir
+                    observed_stack = detect_stack(run.repo_dir)
+
+                    # Extract grill stack from prior_rule_set (convert frozenset to tuple)
+                    grill_stack = tuple(
+                        sorted(grill_stack_from_rule_set(prior_rule_set))
+                    )
+
+                    # Check if stacks differ AND grill stack is not empty
+                    # Empty grill stack is normal (no prior rules exist for stacks yet);
+                    # it must never halt an audit.
+                    if grill_stack and stacks_differ(grill_stack, observed_stack):
+                        # Stacks differ and grill stack is non-empty: present to user
+                        difference = describe_stack_difference(
+                            grill_stack, observed_stack
+                        )
+                        run.config_server.set_stack_mismatch_data(
+                            grill_stack, observed_stack, difference
+                        )
+
+                        # Wait for user choice with timeout
+                        stack_timeout_s = 3600  # 1 hour, same as approval timeout
+                        try:
+                            choice = run.config_server.wait_stack_choice(
+                                stack_timeout_s
+                            )
+                            # Apply choice to get the resolved rule set
+                            used_rule_set = resolve_stack_choice(
+                                prior_rule_set,
+                                state.pack.root,
+                                grill_stack,
+                                observed_stack.identifiers,
+                                choice,
+                            )
+                            # Record the choice for output
+                            stack_choice_decision = build_stack_choice_decision(
+                                grill_stack, observed_stack, choice
+                            )
+                        except ConfigTimeoutError:
+                            # User did not respond in time: skip standards generation
+                            standards_status = "timeout"
+                            # Leave used_rule_set as prior_rule_set (no merge happens)
+
+                # Persist stack choice decision as soon as it's made, independent of approval
+                if stack_choice_decision is not None:
+                    _persist_stack_choice(run, deliverables_dir, stack_choice_decision)
+
+                # Proceed to merge only if not already timed out
+                if standards_status != "timeout":
+                    merged = merge_rule_set(used_rule_set, verdicts, audit_rules)
+                    rendered = render_all(merged, state.pack)
+                    diffs = build_diffs(deliverables_dir, rendered, run.repo_dir)
+                    summary_counts = derive_summary_counts(prior_rule_set, merged)
+
+                    # Present for approval
+                    run.config_server.set_approval_data(diffs, summary_counts)
+
+                    # Wait for user approval with a timeout
+                    approval_timeout_s = 3600  # 1 hour
+                    try:
+                        action = run.config_server.wait_approval(approval_timeout_s)
+                        if action == "approve":
+                            write_standards(
+                                deliverables_dir, rendered, merged, run.repo_dir
+                            )
+                            standards_status = "approved"
+                        else:
+                            standards_status = "cancelled"
+                    except ConfigTimeoutError:
+                        standards_status = "timeout"
+
+            else:
+                # No config server means non-interactive; skip standards
+                standards_status = "skipped"
+        except Exception as e:
+            # Standards failures must not corrupt the run; log but continue
+            standards_status = f"error: {type(e).__name__}: {str(e)}"
+            _queue_persist_warning(
+                run,
+                f"Standards generation failed: {standards_status}. "
+                f"Review the standards_status field in the response for details.",
+            )
+
         all_findings = [f for r in run.domain_results.values() for f in r.findings]
         severity_counts = Counter(f.severity.value for f in all_findings)
         findings_summary = {
@@ -2522,7 +2875,12 @@ def _register_report_tools(mcp: MCPServer, state: AppState) -> None:
             "run_state_path": str(run_state_path),
             "findings_summary": findings_summary,
             "rules_fetched": rules_fetch_summary,
+            "standards_status": standards_status,
         }
+
+        # Include stack choice info if a choice was made
+        if stack_choice_decision is not None:
+            response["stack_choice"] = stack_choice_decision.get("choice")
         unsupported = rules_fetch_summary["verdicts_without_rules_fetched_domain_ids"]
         if unsupported:
             response["warnings"] = [
@@ -2647,6 +3005,7 @@ def build_server(
     _register_result_tools(mcp, state)
     _register_issue_tools(mcp, state)
     _register_feedback_tools(mcp, state)
+    _register_grill_tools(mcp, state)
     _register_report_tools(mcp, state)
 
     return mcp, state

@@ -19,10 +19,15 @@ from http import HTTPStatus
 from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from pydantic import ValidationError
 
+if TYPE_CHECKING:
+    from engineering_audit.stack_detection import DetectedStack
+
+from engineering_audit.managed_blocks import get_document_title
 from engineering_audit.output_location import (
     UnresolvableOutputLocation,
     existing_deliverables_warning,
@@ -31,11 +36,20 @@ from engineering_audit.output_location import (
 )
 from engineering_audit.rules import Domain
 from engineering_audit.schema import AuditConfig, TelemetryConsent
+from engineering_audit.standards_approval import (
+    DiffModel,
+    SummaryCount,
+    highlight_managed_block_markers,
+)
 
 __all__ = ["ConfigServer", "ConfigTimeoutError"]
 
 _TEMPLATE_PATH = Path(__file__).parent / "templates" / "config-page.html"
 _SUBMITTED_TEMPLATE_PATH = Path(__file__).parent / "templates" / "config-submitted.html"
+_APPROVAL_TEMPLATE_PATH = Path(__file__).parent / "templates" / "approval-page.html"
+_STACK_MISMATCH_TEMPLATE_PATH = (
+    Path(__file__).parent / "templates" / "stack-mismatch-page.html"
+)
 
 # The path the page's heartbeat polls. Deliberately its own route rather than
 # a HEAD of "/": it answers with no body and no work, so a poll every few
@@ -155,6 +169,19 @@ class _ConfigDraft:
 
     selected_domain_ids: set[str]
     issue_mode: str
+
+
+@dataclass
+class _ApprovalData:
+    """Data for the standards approval page.
+
+    Attributes:
+        diffs: List of DiffModel objects for the three documents (agent, human, policy).
+        summary_counts: Summary counts derived from the rule set.
+    """
+
+    diffs: list[DiffModel]
+    summary_counts: SummaryCount
 
 
 def _parse_draft_cookie(
@@ -301,6 +328,24 @@ class ConfigServer:
         self._lock = threading.Lock()
         self._config: AuditConfig | None = None
         self._submitted = threading.Event()
+        self._approval_data: _ApprovalData | None = None
+        self._approval_template_text = (
+            _APPROVAL_TEMPLATE_PATH.read_text(encoding="utf-8")
+            if _APPROVAL_TEMPLATE_PATH.exists()
+            else None
+        )
+        # Approval flow for standards documents
+        self._approval_submitted = threading.Event()
+        self._approval_action: str | None = None  # "approve" or "cancel"
+        # Stack mismatch flow
+        self._stack_mismatch_data: dict | None = None
+        self._stack_mismatch_template_text = (
+            _STACK_MISMATCH_TEMPLATE_PATH.read_text(encoding="utf-8")
+            if _STACK_MISMATCH_TEMPLATE_PATH.exists()
+            else None
+        )
+        self._stack_choice_submitted = threading.Event()
+        self._stack_choice: str | None = None
 
     def start(self) -> str:
         if self._httpd is not None:
@@ -337,6 +382,9 @@ class ConfigServer:
                     return
                 if split.path == _CHECK_OUTPUT_LOCATION_PATH:
                     self._serve_output_location_check(split.query)
+                    return
+                if split.path == "/stack-mismatch":
+                    self._serve_stack_mismatch_page()
                     return
                 if split.path not in ("/", ""):
                     self.send_error(HTTPStatus.NOT_FOUND)
@@ -419,7 +467,153 @@ class ConfigServer:
                 self.end_headers()
                 self.wfile.write(body)
 
+            def _serve_approval_page(self) -> None:
+                """Serve the standards approval page.
+
+                This is a read-only preview page showing diffs of the three
+                standards documents before they are written to disk. It must
+                not write anything to disk.
+                """
+                if (
+                    server._approval_data is None
+                    or server._approval_template_text is None
+                ):
+                    self.send_error(HTTPStatus.NOT_FOUND, "Approval data not available")
+                    return
+
+                self._script_nonce = secrets.token_urlsafe(16)
+                body = server._render_approval_page(self._script_nonce).encode("utf-8")
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def _handle_standards_submission(self) -> None:
+                """Handle Approve/Cancel from the standards approval page."""
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                except ValueError:
+                    self.send_error(
+                        HTTPStatus.BAD_REQUEST, "Invalid Content-Length header"
+                    )
+                    return
+                if length > _MAX_BODY_BYTES:
+                    self.send_error(
+                        HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "Request body too large"
+                    )
+                    return
+                raw_body = self.rfile.read(length).decode("utf-8")
+                fields = parse_qs(raw_body, keep_blank_values=True)
+
+                # Check CSRF token
+                token = fields.get("csrf_token", [None])[0]
+                if token is None or not secrets.compare_digest(
+                    token, server._csrf_token
+                ):
+                    self.send_error(
+                        HTTPStatus.FORBIDDEN, "Missing or invalid CSRF token"
+                    )
+                    return
+
+                # Get the action (approve or cancel)
+                action = fields.get("action", [None])[0]
+                if action not in ("approve", "cancel"):
+                    self.send_error(HTTPStatus.BAD_REQUEST, "Invalid action")
+                    return
+
+                with server._lock:
+                    server._approval_action = action
+                server._approval_submitted.set()
+
+                # Return a confirmation page
+                body = b"<html><body><p>Standards update processed. You can close this window.</p></body></html>"
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def _serve_stack_mismatch_page(self) -> None:
+                """Serve the stack mismatch choice page.
+
+                This page shows the grill stack and the observed stack with
+                evidence, and asks the user which one is correct.
+                """
+                if (
+                    server._stack_mismatch_data is None
+                    or server._stack_mismatch_template_text is None
+                ):
+                    self.send_error(
+                        HTTPStatus.NOT_FOUND, "Stack mismatch data not available"
+                    )
+                    return
+
+                self._script_nonce = secrets.token_urlsafe(16)
+                body = server._render_stack_mismatch_page(self._script_nonce).encode(
+                    "utf-8"
+                )
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def _handle_stack_choice_submission(self) -> None:
+                """Handle stack choice submission (grill or audit)."""
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                except ValueError:
+                    self.send_error(
+                        HTTPStatus.BAD_REQUEST, "Invalid Content-Length header"
+                    )
+                    return
+                if length > _MAX_BODY_BYTES:
+                    self.send_error(
+                        HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "Request body too large"
+                    )
+                    return
+                raw_body = self.rfile.read(length).decode("utf-8")
+                fields = parse_qs(raw_body, keep_blank_values=True)
+
+                # Check CSRF token
+                token = fields.get("csrf_token", [None])[0]
+                if token is None or not secrets.compare_digest(
+                    token, server._csrf_token
+                ):
+                    self.send_error(
+                        HTTPStatus.FORBIDDEN, "Missing or invalid CSRF token"
+                    )
+                    return
+
+                # Get the action (grill or audit)
+                action = fields.get("action", [None])[0]
+                if action not in ("grill", "audit"):
+                    self.send_error(HTTPStatus.BAD_REQUEST, "Invalid action")
+                    return
+
+                with server._lock:
+                    server._stack_choice = action
+                server._stack_choice_submitted.set()
+
+                # Return a confirmation page
+                body = b"<html><body><p>Stack choice recorded. You can close this window.</p></body></html>"
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
             def do_POST(self) -> None:  # noqa: N802 - stdlib handler method name
+                if self.path == "/approve-standards":
+                    self._serve_approval_page()
+                    return
+                if self.path == "/submit-standards":
+                    self._handle_standards_submission()
+                    return
+                if self.path == "/submit-stack-choice":
+                    self._handle_stack_choice_submission()
+                    return
                 if self.path != "/submit":
                     self.send_error(HTTPStatus.NOT_FOUND)
                     return
@@ -771,6 +965,65 @@ class ConfigServer:
                 )
             return self._config
 
+    def wait_approval(self, timeout_s: float) -> str:
+        """Block for up to timeout_s seconds for approval or cancellation.
+
+        Returns:
+            "approve" if the user clicked Approve, "cancel" if they clicked Cancel.
+
+        Raises ConfigTimeoutError on expiry.
+        """
+        if not self._approval_submitted.wait(timeout=timeout_s):
+            raise ConfigTimeoutError(
+                f"No approval decision submitted within {timeout_s} seconds."
+            )
+        with self._lock:
+            if self._approval_action is None:
+                raise RuntimeError(
+                    "approval_submitted event set but no action stored: internal bug"
+                )
+            return self._approval_action
+
+    def set_stack_mismatch_data(
+        self,
+        grill_stack: frozenset[str] | tuple[str, ...],
+        observed_stack: DetectedStack,
+        difference: dict[str, Any],
+    ) -> None:
+        """Set the stack mismatch data for the /stack-mismatch endpoint.
+
+        Args:
+            grill_stack: The stack recorded at grill time (frozenset or tuple of identifiers).
+            observed_stack: The stack detected during audit (DetectedStack object).
+            difference: Dict describing the stack difference.
+        """
+        with self._lock:
+            self._stack_mismatch_data = {
+                "grill_stack": grill_stack,
+                "observed_stack": observed_stack,
+                "difference": difference,
+            }
+
+    def wait_stack_choice(self, timeout_s: float) -> str:
+        """Block for up to timeout_s seconds for a stack choice.
+
+        Returns:
+            "grill" if the user chose to use the grill stack,
+            "audit" if the user chose to use the audit stack.
+
+        Raises ConfigTimeoutError on expiry.
+        """
+        if not self._stack_choice_submitted.wait(timeout=timeout_s):
+            raise ConfigTimeoutError(
+                f"No stack choice submitted within {timeout_s} seconds."
+            )
+        with self._lock:
+            if self._stack_choice is None:
+                raise RuntimeError(
+                    "stack_choice_submitted event set but no choice stored: internal bug"
+                )
+            return self._stack_choice
+
     def shutdown(self) -> None:
         if self._httpd is not None:
             self._httpd.shutdown()
@@ -779,3 +1032,160 @@ class ConfigServer:
         if self._thread is not None:
             self._thread.join(timeout=5)
             self._thread = None
+
+    def set_approval_data(
+        self, diffs: list[DiffModel], summary_counts: SummaryCount
+    ) -> None:
+        """Set the approval data for the /approve-standards endpoint.
+
+        Args:
+            diffs: List of DiffModel objects (one per document).
+            summary_counts: SummaryCount object with rule counts.
+        """
+        with self._lock:
+            self._approval_data = _ApprovalData(
+                diffs=diffs, summary_counts=summary_counts
+            )
+
+    def _render_approval_page(self, script_nonce: str = "") -> str:
+        """Render the approval page showing diffs of the three documents.
+
+        Args:
+            script_nonce: CSP nonce for inline scripts.
+
+        Returns:
+            HTML string ready to send to the client.
+        """
+        if self._approval_data is None or self._approval_template_text is None:
+            return "<html><body>Approval data not available</body></html>"
+
+        # Build HTML for each diff
+        diffs_html = []
+        for diff in self._approval_data.diffs:
+            current = diff.current_content or "(File does not exist yet)"
+            # Escape content first, then apply marker highlighting
+            escaped_current = html.escape(current)
+            highlighted_current = highlight_managed_block_markers(escaped_current)
+            escaped_proposed = html.escape(diff.proposed_content)
+            highlighted_proposed = highlight_managed_block_markers(escaped_proposed)
+            diffs_html.append(
+                f"""
+    <div class="document-diff" data-document-id="{html.escape(diff.document_id)}">
+        <h3>{html.escape(get_document_title(diff.document_id))}</h3>
+        <div class="diff-container">
+            <div class="diff-side current-side">
+                <h4>Current</h4>
+                <pre>{highlighted_current}</pre>
+            </div>
+            <div class="diff-side proposed-side">
+                <h4>Proposed</h4>
+                <pre>{highlighted_proposed}</pre>
+            </div>
+        </div>
+    </div>
+                """
+            )
+
+        summary = self._approval_data.summary_counts
+        summary_html = f"""
+    <div class="summary">
+        <h2>Summary of Changes</h2>
+        <ul>
+            <li><strong>New rules:</strong> {summary.new_rules}</li>
+            <li><strong>Verified (passed):</strong> {summary.upgraded_to_verified}</li>
+            <li><strong>Findings recorded:</strong> {summary.findings_recorded}</li>
+            <li><strong>Not applicable:</strong> {summary.not_applicable}</li>
+        </ul>
+    </div>
+        """
+
+        template = string.Template(self._approval_template_text)
+        return template.substitute(
+            csp_nonce=html.escape(script_nonce),
+            summary=summary_html,
+            diffs="\n".join(diffs_html),
+            csrf_token=html.escape(self._csrf_token),
+        )
+
+    def _render_stack_mismatch_page(self, script_nonce: str = "") -> str:
+        """Render the stack mismatch choice page.
+
+        Args:
+            script_nonce: CSP nonce for inline scripts.
+
+        Returns:
+            HTML string ready to send to the client.
+        """
+        if (
+            self._stack_mismatch_data is None
+            or self._stack_mismatch_template_text is None
+        ):
+            return "<html><body>Stack mismatch data not available</body></html>"
+
+        data = self._stack_mismatch_data
+        grill_stack = data["grill_stack"]
+        observed_stack = data["observed_stack"]
+
+        # Build HTML for grill stack evidence
+        grill_html = self._format_stack_evidence(grill_stack, observed_stack, "grill")
+
+        # Build HTML for observed stack evidence
+        observed_html = self._format_stack_evidence(
+            grill_stack, observed_stack, "observed"
+        )
+
+        template = string.Template(self._stack_mismatch_template_text)
+        return template.substitute(
+            csp_nonce=html.escape(script_nonce),
+            grill_stack_html=grill_html,
+            observed_stack_html=observed_html,
+            csrf_token=html.escape(self._csrf_token),
+        )
+
+    def _format_stack_evidence(
+        self, grill_stack, observed_stack, stack_type: str
+    ) -> str:
+        """Format stack evidence as HTML, escaping all values.
+
+        Args:
+            grill_stack: Frozenset or tuple of grill stack identifiers.
+            observed_stack: DetectedStack object from stack_detection.
+            stack_type: "grill" or "observed".
+
+        Returns:
+            HTML string with the stack and its evidence.
+        """
+        if stack_type == "grill":
+            identifiers = grill_stack
+            evidence_dict: dict[
+                str, Any
+            ] = {}  # Grill stack doesn't have evidence, just identifiers
+        else:
+            # Observed stack has the evidence
+            identifiers = observed_stack.identifiers if observed_stack else ()
+            evidence_dict = observed_stack.evidence if observed_stack else {}
+
+        # Build list of identifiers
+        identifier_html = []
+        for identifier in sorted(identifiers):
+            if stack_type == "grill":
+                # Grill stack: just list identifiers
+                identifier_html.append(f"<li>{html.escape(identifier)}</li>")
+            else:
+                # Observed stack: list identifier with evidence
+                if identifier in evidence_dict:
+                    evidence = evidence_dict[identifier]
+                    file_path = html.escape(evidence.file_path)
+                    dependency_or_line = html.escape(evidence.dependency_or_line)
+                    identifier_html.append(
+                        f"<li>{html.escape(identifier)}<br>"
+                        f'<span class="evidence">Found in: {file_path}</span><br>'
+                        f'<span class="evidence">Evidence: {dependency_or_line}</span></li>'
+                    )
+                else:
+                    identifier_html.append(f"<li>{html.escape(identifier)}</li>")
+
+        if not identifier_html:
+            identifier_html.append("<li>(no stack identifiers detected)</li>")
+
+        return "<ul>" + "\n".join(identifier_html) + "</ul>"
