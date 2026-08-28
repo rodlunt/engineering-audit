@@ -391,13 +391,20 @@ On success, the tool returns a dictionary with keys: `success` (Boolean, value T
 
 If `success` is False, report the `errors` list to the user. Do not silently continue; a tool failure prevents document writing and must be surfaced.
 
-Next, ask whether to add links to the three standards documents in the project's CLAUDE.md, AGENTS.md, or README. If the user agrees, add them to an appropriate section (e.g. "Engineering standards and policies"). Example text to add:
+**Offer to link standards in project documents**
 
-```
-See [Agent Coding Standard](docs/coding-standard.agent.md), [Engineering Standard](docs/engineering-standard.md), and [Engineering Policy](docs/engineering-policy.md) for the standards this project is committed to.
-```
+Ask whether the user wants to add links to the three standards documents in the project's CLAUDE.md, AGENTS.md, README.md, or other documentation files. The user decides which files to update (if any). If the user declines, the grill is finished.
 
-Add the links and confirm completion, then the grill is finished.
+If the user agrees, build a list of target files they named and call `link_standards_in_documents` with:
+
+- `project_dir` (string, required): the project root directory (same as above).
+- `target_files` (list of strings, required): the file names or relative paths the user approved. Examples: `["CLAUDE.md"]`, `["CLAUDE.md", "AGENTS.md"]`, `["docs/standards.md"]`. If the user declined, pass an empty list.
+
+On success, the tool returns a dictionary with keys: `success` (Boolean, value True) and `updated_files` (list of file paths successfully updated). On failure, it returns `success` (Boolean, value False) and `errors` (list of error message strings).
+
+The tool adds links to the standards documents in a managed-block section (id=`standards-links`). The section is marked with "## Engineering Standards and Policies" and includes links to the three documents using relative paths from each target file to `docs/`. The tool is idempotent: running it twice produces identical results, preserving any hand-edited content outside the managed block.
+
+Report the result to the user: which files were updated, or which errors occurred. Then the grill is finished.
 
 ## Host notes
 

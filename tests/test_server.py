@@ -348,7 +348,7 @@ def test_strip_otel_middleware_raises_if_a_lookalike_survives_the_isinstance_fil
     assert not any(isinstance(m, OpenTelemetryMiddleware) for m in mcp.middleware)
 
 
-def test_tool_surface_is_the_eleven_tools_with_their_documented_parameters() -> None:
+def test_tool_surface_is_the_twelve_tools_with_their_documented_parameters() -> None:
     # build_server composes multiple registration functions; the protocol
     # surface they produce between them is what clients and AUDIT.md depend on,
     # so it is pinned here rather than left to be noticed later by a client
@@ -358,6 +358,7 @@ def test_tool_surface_is_the_eleven_tools_with_their_documented_parameters() -> 
     # the only way an agent can accept or decline continuing an interrupted
     # run, so it has to be on the wire. No tool was added or removed since then.
     # write_grill_standards_artefacts was added for grill-side standards generation.
+    # link_standards_in_documents was added to link standards in project files.
     mcp, _state = build_server(FIXTURE_PACK)
     tools = asyncio.run(mcp.list_tools())
 
@@ -372,6 +373,7 @@ def test_tool_surface_is_the_eleven_tools_with_their_documented_parameters() -> 
         "file_issues",
         "submit_feedback",
         "write_grill_standards_artefacts",
+        "link_standards_in_documents",
         "render_report",
     ]
 
@@ -413,6 +415,10 @@ def test_tool_surface_is_the_eleven_tools_with_their_documented_parameters() -> 
         "write_grill_standards_artefacts": (
             ["grill_rules", "output_dir", "project_dir"],
             ["grill_rules", "output_dir", "project_dir"],
+        ),
+        "link_standards_in_documents": (
+            ["project_dir", "target_files"],
+            ["project_dir", "target_files"],
         ),
         "render_report": (["finished"], ["finished"]),
     }

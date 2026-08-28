@@ -98,6 +98,7 @@ from engineering_audit.stack_detection import (
     grill_stack_from_rule_set,
     stacks_differ,
 )
+from engineering_audit.link_standards import link_standards_in_project_documents
 from engineering_audit.standards import Rule as StandardsRule, RuleSet
 from engineering_audit.standards_integration import (
     audit_rules_from_domain_results,
@@ -2609,6 +2610,45 @@ def _register_grill_tools(mcp: MCPServer, state: AppState) -> None:
                 "success": False,
                 "errors": [f"Unexpected error: {type(exc).__name__}: {exc}"],
             }
+
+    @mcp.tool()
+    def link_standards_in_documents(
+        project_dir: str,
+        target_files: list[str],
+    ) -> dict[str, Any]:
+        """Add links to standards documents in specified project files.
+
+        After generating provisional standards artefacts, this tool adds links
+        to the three standards documents in specified project files (CLAUDE.md,
+        AGENTS.md, README.md, or custom files). The tool is idempotent: running
+        it twice produces identical results, preserving hand-edited content
+        outside its managed block.
+
+        Args:
+            project_dir: Path to the project root directory. Must exist and be
+                a directory. The three standards documents are expected to be in
+                project_dir/docs/ relative to this directory.
+            target_files: List of file names or relative paths to update. Files
+                must exist. Only these files will be touched. Examples:
+                ["CLAUDE.md"], ["AGENTS.md", "README.md"], ["docs/standards.md"].
+                The list can be empty (no changes needed).
+
+        Returns:
+            Dictionary with keys:
+            - success: Boolean indicating success.
+            - updated_files: List of file paths that were successfully updated
+              (if success=True).
+            - errors: List of error message strings (if success=False).
+
+        Notes:
+            The tool uses a managed block with id='standards-links' to mark
+            the section where it adds links, enabling idempotency and hand-edit
+            preservation.
+        """
+        return link_standards_in_project_documents(
+            project_dir=project_dir,
+            target_files=target_files,
+        )
 
 
 def _register_report_tools(mcp: MCPServer, state: AppState) -> None:
