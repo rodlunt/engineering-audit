@@ -32,6 +32,13 @@ _coverage_template_match = re.search(
 )
 assert _coverage_template_match is not None, "engineering coverage template is missing"
 COVERAGE_TEMPLATE = _coverage_template_match.group("template")
+_adr_template_match = re.search(
+    r"##\s+Architecture decision record.*?```markdown\n(?P<template>.*?)\n```",
+    FORMATS,
+    flags=re.MULTILINE | re.DOTALL,
+)
+assert _adr_template_match is not None, "ADR template is missing"
+ADR_TEMPLATE = _adr_template_match.group("template")
 
 
 def _section(document: str, heading: str) -> str:
@@ -539,3 +546,148 @@ def test_bail_out_offers_handoff_or_mvp_split() -> None:
         hot_seat,
         flags=re.IGNORECASE | re.DOTALL,
     ), "The Hot Seat must offer these after the record is written"
+
+
+def test_adr_grouping_requires_shared_context_decision_and_tradeoff() -> None:
+    """Grouped ADRs require all three parts of a coherent decision context."""
+    assert re.search(
+        r"group(?:ed|ing)?.{0,120}share(?:s|d)?\s+context",
+        FORMATS,
+        flags=re.IGNORECASE | re.DOTALL,
+    ), "ADR guidance must require grouped decisions to share context"
+    assert re.search(
+        r"group(?:ed|ing)?.{0,120}decided\s+together",
+        FORMATS,
+        flags=re.IGNORECASE | re.DOTALL,
+    ), "ADR guidance must require grouped decisions to be decided together"
+    assert re.search(
+        r"group(?:ed|ing)?.{0,300}share(?:s|d)?\s+(?:the\s+)?main\s+trade[- ]off",
+        FORMATS,
+        flags=re.IGNORECASE | re.DOTALL,
+    ), "ADR guidance must require grouped decisions to share the main trade-off"
+
+
+def test_adr_guidance_splits_decisions_with_independent_boundaries() -> None:
+    """Independent alternatives and ownership boundaries force separate ADRs."""
+    for boundary in (
+        "independent alternatives",
+        "independent owners",
+        "independent lifecycles",
+        "independent reversal paths",
+    ):
+        assert re.search(
+            rf"{boundary}.{{0,180}}(?:split|separate)",
+            FORMATS,
+            flags=re.IGNORECASE | re.DOTALL,
+        ), f"ADR guidance must split decisions with {boundary}"
+
+
+def test_grouped_adr_template_keeps_rationale_and_each_consequence_visible() -> None:
+    """A grouped record has one rationale and a repeatable per-decision shape."""
+    grouped_template_match = re.search(
+        r"For\s+a\s+grouped\s+ADR,.*?```markdown\n(?P<template>.*?)\n```",
+        FORMATS,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    assert grouped_template_match is not None, "grouped ADR template is missing"
+    grouped_template = grouped_template_match.group("template")
+
+    assert re.search(r"^##\s+Grouping rationale\s*$", grouped_template, re.MULTILINE)
+    assert re.search(r"^##\s+Decisions\s*$", grouped_template, re.MULTILINE)
+    assert re.search(r"^###\s+Decision\s+\d+", grouped_template, re.MULTILINE)
+    assert re.search(r"\*\*Decision:\*\*", grouped_template)
+    assert re.search(r"\*\*Consequences:\*\*", grouped_template)
+
+
+def test_grouped_adrs_apply_qualification_bar_to_each_decision() -> None:
+    """Grouping does not lower the hard-to-reverse ADR qualification bar."""
+    assert re.search(r"^##\s+Decision\s*$", ADR_TEMPLATE, re.MULTILINE)
+    assert re.search(r"^##\s+Alternatives considered\s*$", ADR_TEMPLATE, re.MULTILINE)
+    assert re.search(r"^##\s+Consequences\s*$", ADR_TEMPLATE, re.MULTILINE)
+    assert re.search(
+        r"group(?:ed|ing).{0,240}(?:each|every|individual)\s+decision"
+        r".{0,240}hard[- ]to[- ]reverse.{0,240}surprising.{0,240}real\s+trade[- ]off",
+        FORMATS,
+        flags=re.IGNORECASE | re.DOTALL,
+    ), "grouped ADR guidance must apply the full qualification bar to every decision"
+    assert re.search(
+        r"single[- ]decision\s+form.{0,160}(?:one|single)\s+decision",
+        FORMATS,
+        flags=re.IGNORECASE | re.DOTALL,
+    ), "ADR guidance must preserve a clear single-decision form"
+
+
+def test_adr_numbering_is_append_only_and_uses_next_number() -> None:
+    """New ADRs follow the existing sequence without rewriting its history."""
+    assert re.search(
+        r"next(?:\s+available)?\s+(?:ADR\s+)?number.{0,100}"
+        r"highest\s+(?:existing\s+)?ADR",
+        FORMATS,
+        flags=re.IGNORECASE | re.DOTALL,
+    ), "ADR guidance must use the next number after the highest existing ADR"
+    assert re.search(r"append[- ]only", FORMATS, flags=re.IGNORECASE)
+    assert re.search(
+        r"(?:never|do\s+not).{0,80}(?:renumber|overwrite|replace).{0,80}"
+        r"existing",
+        FORMATS,
+        flags=re.IGNORECASE | re.DOTALL,
+    ), "ADR guidance must protect existing records from renumbering or overwrite"
+
+
+def test_skill_applies_adr_grouping_rules_when_capturing_decisions() -> None:
+    """The assistant workflow carries the ADR grouping contract into project records."""
+    capture = _section(SKILL, "Capture confirmed decisions")
+
+    assert re.search(
+        r"group(?:ed|ing)?.{0,180}share(?:s|d)?\s+context",
+        capture,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    assert re.search(
+        r"group(?:ed|ing)?.{0,260}decided\s+together",
+        capture,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    assert re.search(
+        r"group(?:ed|ing)?.{0,320}share(?:s|d)?\s+(?:the\s+)?main\s+trade[- ]off",
+        capture,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    assert re.search(
+        r"(?:split|separate).{0,180}independent\s+"
+        r"(?:alternatives|owners|lifecycles|reversal\s+paths)",
+        capture,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    assert re.search(r"grouping\s+rationale", capture, flags=re.IGNORECASE)
+    assert re.search(
+        r"each\s+(?:individual\s+)?decision.{0,160}consequence",
+        capture,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    assert re.search(r"append[- ]only", capture, flags=re.IGNORECASE)
+    assert re.search(
+        r"next(?:\s+available)?\s+(?:ADR\s+)?number",
+        capture,
+        flags=re.IGNORECASE,
+    )
+
+
+def test_readme_explains_grouped_adrs_and_append_only_history() -> None:
+    """The integration overview names the grouped-record behaviour for users."""
+    produces = _section(README, "What it produces")
+
+    assert re.search(
+        r"group(?:ed|ing)?.{0,240}ADR", produces, flags=re.IGNORECASE | re.DOTALL
+    )
+    assert re.search(
+        r"group(?:ed|ing)?.{0,260}(?:rationale|each\s+decision|consequence)",
+        produces,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    assert re.search(
+        r"independent.{0,180}(?:split|separate)",
+        produces,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    assert re.search(r"append[- ]only", produces, flags=re.IGNORECASE)

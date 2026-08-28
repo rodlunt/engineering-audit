@@ -149,6 +149,21 @@ Keep implementation details, requirements, and design decisions out of this file
 Create `docs/adr/NNNN-short-title.md` only when the decision is hard to reverse, surprising
 without its history, and the result of a real trade-off:
 
+One ADR may group decisions only when they share context, were decided together in one
+confirmed design discussion (not necessarily the same interview round), and share the main
+trade-off.
+
+Split decisions into separate ADRs when they have independent alternatives, independent owners,
+independent lifecycles, or independent reversal paths. Any one of these boundaries is enough to
+force a split.
+
+Apply the qualification bar to every individual decision in a grouped ADR. Each decision must be
+hard to reverse, surprising without its history, and the result of a real trade-off. Grouping does
+not lower this bar. Use the single-decision form above when the record contains one decision.
+
+Before creating an ADR, inspect the existing records and use the next ADR number after the highest
+existing ADR. ADR numbering is append-only. Never renumber, overwrite, or replace existing ADRs.
+
 ```markdown
 # ADR NNNN: <decision title>
 
@@ -171,6 +186,31 @@ without its history, and the result of a real trade-off:
 ## Consequences
 
 - <Benefit, cost, limitation, or follow-up obligation.>
+```
+
+For a grouped ADR, keep the same metadata and context, then make the grouping rationale and each
+decision visible with a repeatable section for its own consequences:
+
+```markdown
+## Grouping rationale
+
+<Why these decisions share context, were decided together, and share the main trade-off.>
+
+## Decisions
+
+### Decision 1: <decision title>
+
+- **Decision:** <what was chosen>
+- **Alternatives considered:** <alternatives considered for this decision>
+- **Consequences:**
+  - <Benefit, cost, limitation, or follow-up obligation for this decision.>
+
+### Decision 2: <decision title>
+
+- **Decision:** <what was chosen>
+- **Alternatives considered:** <alternatives considered for this decision>
+- **Consequences:**
+  - <Benefit, cost, limitation, or follow-up obligation for this decision.>
 ```
 
 Do not copy domain documents, rule prose, source footers, or verification trails into project

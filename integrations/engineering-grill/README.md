@@ -51,6 +51,15 @@ documents, checks them against the conversation, and continues ADR numbering. It
 them blindly. The grill does not write project code, start an audit, make pass/fail claims, or
 file GitHub issues.
 
+A grouped ADR is used only when its decisions share context, were decided together in one
+confirmed design discussion, and share the main trade-off. The record keeps the grouping
+rationale, each decision, and each decision's consequences visible. If decisions have
+independent alternatives, independent owners, independent lifecycles, or independent reversal
+paths, split them into separate ADRs.
+Every grouped decision must still be hard to reverse, surprising without its history, and the
+result of a real trade-off. New ADRs use the next number after the highest existing record, and
+ADR history is append-only.
+
 ## Progress and stopping
 
 During a grill session, the assistant records six counts at every checkpoint, on completion, and

@@ -360,6 +360,16 @@ Read [the documentation formats](references/documentation-formats.md) before wri
 - an ADR under `docs/adr/` only for a hard-to-reverse, surprising decision made through a real
   trade-off.
 
+When several qualifying decisions are recorded in one ADR, group them only when they share
+context, were decided together in one confirmed design discussion (not necessarily the same
+interview round), and share the main trade-off. Split the record when any decision has independent
+alternatives, independent owners, independent lifecycles, or independent reversal paths. Keep the
+single-decision form when these conditions are not all true. A grouped record must show an explicit
+grouping rationale and each individual decision with its own consequence section. Apply the
+hard-to-reverse, surprising, and real-trade-off qualification bar to every grouped decision.
+Before writing, inspect `docs/adr/` and use the next ADR number after the highest existing record.
+Keep numbering append-only without renumbering or overwriting existing records.
+
 **A later grill reads and updates existing documents, checks them against the conversation, and
 continues ADR numbering. It does not replace them blindly.** A second run appends rather than
 overwriting; never destroy an earlier session's record to write this one.
