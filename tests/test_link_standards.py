@@ -9,10 +9,12 @@ and provides actionable validation error messages.
 from __future__ import annotations
 
 import os
+import stat
 from pathlib import Path
 
 import pytest
 
+from engineering_audit import run_state_io
 from engineering_audit.link_standards import link_standards_in_project_documents
 
 
@@ -301,6 +303,60 @@ class TestPreservationOfHandEdits:
         content_after = claude_path.read_text(encoding="utf-8")
         assert "Additional Resources" in content_after
         assert "custom resources" in content_after
+
+
+class TestAtomicWrite:
+    """Tests that appending the standards-links block is crash-safe."""
+
+    def test_write_failure_leaves_previous_content_intact(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A write that fails partway through appending the managed block
+        must not corrupt or truncate the target file already on disk: the
+        last good content must survive, not a torn or empty file, and no
+        temp-file litter should be left behind."""
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+
+        claude_path = project_dir / "CLAUDE.md"
+        original_content = "# Claude Instructions\n\nSome content here.\n"
+        claude_path.write_text(original_content)
+
+        def _explode(_src: object, _dst: object) -> None:
+            raise OSError("no space left on device")
+
+        monkeypatch.setattr(run_state_io.os, "replace", _explode)
+
+        result = link_standards_in_project_documents(
+            project_dir=str(project_dir),
+            target_files=["CLAUDE.md"],
+        )
+
+        assert result["success"] is False
+        assert claude_path.read_text(encoding="utf-8") == original_content
+        assert [p.name for p in project_dir.iterdir()] == ["CLAUDE.md"]
+
+    def test_preserves_file_mode_when_appending_standards_block(
+        self, tmp_path: Path
+    ) -> None:
+        """Appending the standards-links block to a file with no existing
+        markers must not change that file's permissions: a user's own chmod
+        choices on their own project files must survive, not be silently
+        overwritten by atomic_write_text's 0600 temp-file default."""
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+
+        claude_path = project_dir / "CLAUDE.md"
+        claude_path.write_text("# Claude Instructions\n\nSome content here.\n")
+        claude_path.chmod(0o664)
+
+        result = link_standards_in_project_documents(
+            project_dir=str(project_dir),
+            target_files=["CLAUDE.md"],
+        )
+
+        assert result["success"] is True
+        assert stat.S_IMODE(claude_path.stat().st_mode) == 0o664
 
 
 class TestValidationErrors:

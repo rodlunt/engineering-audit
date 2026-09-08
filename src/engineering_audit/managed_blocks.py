@@ -10,9 +10,13 @@ specific, actionable error messages.
 from __future__ import annotations
 
 import logging
+import os
 import re
+import stat
 from datetime import date
 from pathlib import Path
+
+from engineering_audit.run_state_io import atomic_write_text
 
 __all__ = [
     "write_managed_block",
@@ -23,6 +27,7 @@ __all__ = [
     "get_escaped_opening_marker_pattern_any_id",
     "get_escaped_closing_marker_pattern",
     "get_document_title",
+    "write_document_preserving_mode",
 ]
 
 logger = logging.getLogger(__name__)
@@ -107,6 +112,56 @@ def wrap_managed_block(content: str, block_id: str) -> str:
     return f"{opening}\n{content}\n{closing}"
 
 
+def _default_new_file_mode() -> int:
+    """The permissions Path.write_text would give a brand-new file: 0666
+    reduced by the process umask. os.umask has no read-only form, so the
+    standard way to read it is to set it and immediately put it back.
+    """
+    current_umask = os.umask(0)
+    os.umask(current_umask)
+    return 0o666 & ~current_umask
+
+
+def write_document_preserving_mode(file_path: Path, text: str) -> None:
+    """Atomically write a human-facing document without silently changing
+    who can read it.
+
+    atomic_write_text's temp file is always created at mode 0600
+    (tempfile.mkstemp hardcodes that), and os.replace does not carry over the
+    mode of the file it overwrites. A bare atomic_write_text call would
+    therefore downgrade an existing document to owner-only on every run, and
+    create a brand-new one unreadable by anyone but its owner. Both are wrong
+    for the standards documents this is used for: they are meant to be read
+    by humans, hand-edited outside the managed block, committed to git, and
+    possibly read by CI or a docs site.
+
+    For an existing file, the previous mode is captured before the write and
+    restored after, so the user's own chmod choices survive an audit run.
+    For a new file, the mode is reset to what Path.write_text would have
+    produced: the umask default, not 0600.
+
+    Raises OSError if the write itself fails; atomic_write_text leaves the
+    previous contents of file_path, if any, untouched in that case. A
+    failure to restore the mode afterwards is logged and swallowed rather
+    than raised: the content was written correctly, and treating a chmod
+    failure as a write failure would misreport a successful write as
+    unwritten.
+    """
+    previous_mode: int | None = None
+    if file_path.exists():
+        previous_mode = stat.S_IMODE(os.stat(file_path).st_mode)
+
+    atomic_write_text(file_path, text)
+
+    target_mode = (
+        previous_mode if previous_mode is not None else _default_new_file_mode()
+    )
+    try:
+        os.chmod(file_path, target_mode)
+    except OSError as exc:
+        logger.warning(f"Could not restore permissions on {file_path}: {exc}")
+
+
 def write_managed_block(file_path: Path, content: str, block_id: str) -> bool:
     """Write content to a managed block in a file, preserving hand edits outside.
 
@@ -163,7 +218,7 @@ def _create_file_with_managed_block(
 
     try:
         file_path.parent.mkdir(parents=True, exist_ok=True)
-        file_path.write_text(file_content, encoding="utf-8")
+        write_document_preserving_mode(file_path, file_content)
         return True
     except OSError as exc:
         logger.error(f"Could not create file {file_path}: {exc}")
@@ -226,7 +281,14 @@ def _update_managed_block_in_existing_file(
     new_file_content = f"{before}{wrapped_content}{after}"
 
     try:
-        file_path.write_text(new_file_content, encoding="utf-8")
+        # atomic_write_text renames a new temp file over file_path, which
+        # only requires write permission on the *directory*, not on
+        # file_path itself; a plain write_text would have failed outright on
+        # a read-only file, so check that explicitly to preserve that
+        # protection rather than silently clobbering it.
+        if not os.access(file_path, os.W_OK):
+            raise PermissionError(f"Permission denied: {file_path} is not writable")
+        write_document_preserving_mode(file_path, new_file_content)
         return True
     except OSError as exc:
         logger.error(f"Could not write file {file_path}: {exc}")

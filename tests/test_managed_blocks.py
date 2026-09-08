@@ -6,10 +6,13 @@ comments that the tool rewrites. Hand edits outside the blocks are preserved.
 
 from __future__ import annotations
 
+import os
+import stat
 from pathlib import Path
 
 import pytest
 
+from engineering_audit import run_state_io
 from engineering_audit.managed_blocks import (
     get_document_title,
     wrap_managed_block,
@@ -331,6 +334,110 @@ class TestWriteManagedBlock:
         assert isinstance(test_file, Path)
         result = write_managed_block(test_file, "New", "block")
         assert result is True
+
+    def test_write_failure_on_existing_file_leaves_previous_content_intact(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A write that fails partway through updating an existing file must
+        not corrupt or truncate the document already on disk: the last good
+        content must survive, not a torn or empty file, and no temp-file
+        litter should be left behind."""
+        test_file = tmp_path / "test.md"
+        original_text = (
+            "# My Document\n\n"
+            '<!-- audit:start id="agent-standard" -->\n'
+            "Old content\n"
+            "<!-- audit:end -->\n\n"
+            "Hand-edited section below\n"
+        )
+        test_file.write_text(original_text)
+
+        def _explode(_src: object, _dst: object) -> None:
+            raise OSError("no space left on device")
+
+        monkeypatch.setattr(run_state_io.os, "replace", _explode)
+
+        result = write_managed_block(test_file, "New content", "agent-standard")
+
+        assert result is False
+        assert test_file.read_text(encoding="utf-8") == original_text
+        assert [p.name for p in tmp_path.iterdir()] == ["test.md"]
+
+    def test_write_failure_creating_new_file_leaves_no_partial_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A write that fails partway through creating a brand-new file must
+        not leave a partial or empty file behind, nor any temp-file litter."""
+        test_file = tmp_path / "new_standard.md"
+        assert not test_file.exists()
+
+        def _explode(_src: object, _dst: object) -> None:
+            raise OSError("no space left on device")
+
+        monkeypatch.setattr(run_state_io.os, "replace", _explode)
+
+        result = write_managed_block(test_file, "Initial content", "agent-standard")
+
+        assert result is False
+        assert not test_file.exists()
+        assert list(tmp_path.iterdir()) == []
+
+    def test_returns_false_when_existing_file_is_not_writable(
+        self, tmp_path: Path
+    ) -> None:
+        """A read-only existing file is not silently overwritten: the write
+        must fail and the read-only file's content must be untouched.
+
+        atomic_write_text renames a temp file over the target, which only
+        requires write permission on the containing directory, not on the
+        target file itself; this guards against that rename silently
+        clobbering a file the caller has deliberately made read-only.
+        """
+        if os.geteuid() == 0:
+            pytest.skip("Cannot test write protection when running as root")
+
+        test_file = tmp_path / "test.md"
+        original_text = '<!-- audit:start id="block" -->\nOld\n<!-- audit:end -->\n'
+        test_file.write_text(original_text)
+        test_file.chmod(0o444)
+
+        try:
+            result = write_managed_block(test_file, "New", "block")
+        finally:
+            test_file.chmod(0o644)
+
+        assert result is False
+        assert test_file.read_text(encoding="utf-8") == original_text
+
+    def test_preserves_existing_file_mode_after_update(self, tmp_path: Path) -> None:
+        """Updating a managed block in an existing document must not change
+        its permissions: a user's own chmod choices on their standards
+        documents must survive an audit run, not be silently overwritten by
+        atomic_write_text's 0600 temp-file default."""
+        test_file = tmp_path / "test.md"
+        original_text = '<!-- audit:start id="block" -->\nOld\n<!-- audit:end -->\n'
+        test_file.write_text(original_text)
+        test_file.chmod(0o664)
+
+        result = write_managed_block(test_file, "New content", "block")
+
+        assert result is True
+        assert stat.S_IMODE(test_file.stat().st_mode) == 0o664
+
+    def test_new_file_is_group_and_world_readable(self, tmp_path: Path) -> None:
+        """A brand-new standards document must land at the umask default
+        (group/world readable), the same as the old plain write_text would
+        have produced, not at atomic_write_text's temp-file default of 0600
+        owner-only."""
+        test_file = tmp_path / "new_standard.md"
+        assert not test_file.exists()
+
+        result = write_managed_block(test_file, "Initial content", "block")
+
+        assert result is True
+        mode = stat.S_IMODE(test_file.stat().st_mode)
+        assert mode & 0o044 != 0, f"expected group/world readable, got {oct(mode)}"
+        assert mode != 0o600
 
     def test_handles_whitespace_in_markers(self, tmp_path: Path) -> None:
         """Markers with extra whitespace are handled correctly."""

@@ -9,11 +9,13 @@ it twice produces identical results.
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
 from engineering_audit.managed_blocks import (
     wrap_managed_block,
+    write_document_preserving_mode,
     write_managed_block,
 )
 
@@ -233,7 +235,14 @@ def _update_file_with_standards_block(file_path: Path, standards_content: str) -
         new_content = file_text.rstrip() + "\n\n" + wrapped_content + "\n"
 
         try:
-            file_path.write_text(new_content, encoding="utf-8")
+            # atomic_write_text renames a new temp file over file_path, which
+            # only requires write permission on the *directory*, not on
+            # file_path itself; a plain write_text would have failed outright
+            # on a read-only file, so check that explicitly to preserve that
+            # protection rather than silently clobbering it.
+            if not os.access(file_path, os.W_OK):
+                raise PermissionError(f"Permission denied: {file_path} is not writable")
+            write_document_preserving_mode(file_path, new_content)
             return True
         except OSError as exc:
             logger.error(f"Could not write file {file_path}: {exc}")
