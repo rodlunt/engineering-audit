@@ -17,6 +17,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
+from engineering_audit.run_state_io import atomic_write_text
+
 __all__ = [
     "RuleStatus",
     "RuleSource",
@@ -208,10 +210,12 @@ class RuleSet(BaseModel):
     def write(self, path: Path) -> None:
         """Write the rule set to a JSON file.
 
-        Creates parent directories if needed. Overwrites existing file.
+        Creates parent directories if needed. Overwrites existing file
+        atomically, so a process crash or full disk mid-write leaves the
+        previous file intact rather than a truncated one.
         """
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(self.to_json(), encoding="utf-8")
+        atomic_write_text(path, self.to_json())
 
     @classmethod
     def load(cls, path: Path) -> "RuleSet":

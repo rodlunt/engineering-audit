@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from engineering_audit import run_state_io
 from engineering_audit.standards import RuleSet, Rule
 
 
@@ -672,3 +673,29 @@ class TestRuleSetFileIO:
         assert rule2.fix_due == "2026-09-15"
         assert rule2.ownership == "Backend team"
         assert rule2.revisit_trigger == "Once the fix is merged"
+
+    def test_ruleset_write_failure_leaves_previous_file_intact(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A write that fails partway through must not corrupt or truncate
+        the rule set already on disk: the last good state must survive, not
+        a torn or empty file."""
+        rule_set_file = tmp_path / "rule-set.json"
+        original = RuleSet(version="1.0", project="original-project", rules=[])
+        original.write(rule_set_file)
+        previous_contents = rule_set_file.read_text(encoding="utf-8")
+
+        def _explode(_src, _dst):
+            raise OSError("no space left on device")
+
+        monkeypatch.setattr(run_state_io.os, "replace", _explode)
+
+        new_ruleset = RuleSet(version="1.0", project="new-project", rules=[])
+        with pytest.raises(OSError, match="no space left"):
+            new_ruleset.write(rule_set_file)
+
+        assert rule_set_file.read_text(encoding="utf-8") == previous_contents
+        reloaded = RuleSet.load(rule_set_file)
+        assert reloaded.project == "original-project"
+        # The failed write must not leave temp-file litter behind either.
+        assert [p.name for p in tmp_path.iterdir()] == ["rule-set.json"]
