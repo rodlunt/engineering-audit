@@ -7,14 +7,17 @@ verdicts, and managing the approval workflow.
 
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 
 import pytest
 
+from engineering_audit.rendering import render_agent_standard, render_human_standard
 from engineering_audit.rules import load_pack
 from engineering_audit.schema import (
     DomainResult,
     Finding,
+    ReportedConflict,
     RuleVerdict,
     Severity,
     Verdict,
@@ -33,6 +36,7 @@ from engineering_audit.standards_integration import (
     verdicts_from_domain_results,
     write_standards,
 )
+from engineering_audit.standards_merge import merge_rule_set
 
 FIXTURE_PACK = Path(__file__).parent / "fixture_pack"
 
@@ -425,6 +429,131 @@ class TestAuditRulesFromDomainResults:
         assert "D01-R02" in agent_standard
         assert "Never assign two gnomes to the same garden bed" in agent_standard
         assert "shared-bed flag" in agent_standard
+
+
+class TestAuditRulesFromDomainResultsConflicts:
+    """Tests for reported_conflicts flowing into audit_rules_from_domain_results."""
+
+    def test_reported_conflict_populates_rule_conflict_fields(self) -> None:
+        """A reported conflict lands on the matching rule's conflict fields,
+        with conflict_resolution recording that the rules pack wins."""
+        domain_results = {
+            "d01": DomainResult(
+                domain_id="d01",
+                status="completed",
+                rule_verdicts=[
+                    RuleVerdict(rule_id="D01-R01", verdict=Verdict.pass_),
+                ],
+                findings=[],
+                uninspected_evidence=[],
+                reported_conflicts=[
+                    ReportedConflict(
+                        rule_id="D01-R01",
+                        stack_rule_text=(
+                            "The stack profile allows any hat colour scheme."
+                        ),
+                        issue=(
+                            "The rules-pack rule requires a recorded hat colour "
+                            "before assigning a garden bed; the stack profile "
+                            "rule leaves hat colour unconstrained. Both address "
+                            "gnome record-keeping, worded differently."
+                        ),
+                    )
+                ],
+            )
+        }
+
+        class MockRulesPack:
+            def get_domain(self, domain_id):
+                class MockRule:
+                    id = "D01-R01"
+                    title = "Hat colour"
+
+                class MockDomain:
+                    id = domain_id
+                    rules = [MockRule()]
+
+                return MockDomain()
+
+        audit_rules = audit_rules_from_domain_results(domain_results, MockRulesPack())
+
+        rule = audit_rules["D01-R01"]
+        assert rule.conflict_with_stack_profile is not None
+        assert (
+            rule.conflict_with_stack_profile["stack_rule_text"]
+            == "The stack profile allows any hat colour scheme."
+        )
+        assert "gnome record-keeping" in rule.conflict_with_stack_profile["issue"]
+        assert rule.conflict_resolution is not None
+        assert "rules-pack" in rule.conflict_resolution.lower()
+
+    def test_rule_without_a_reported_conflict_has_no_conflict_fields(self) -> None:
+        """A rule with no reported conflict keeps both conflict fields null."""
+        domain_results = {
+            "d01": DomainResult(
+                domain_id="d01",
+                status="completed",
+                rule_verdicts=[
+                    RuleVerdict(rule_id="D01-R01", verdict=Verdict.pass_),
+                ],
+                findings=[],
+                uninspected_evidence=[],
+            )
+        }
+
+        class MockRulesPack:
+            def get_domain(self, domain_id):
+                class MockRule:
+                    id = "D01-R01"
+                    title = "Hat colour"
+
+                class MockDomain:
+                    id = domain_id
+                    rules = [MockRule()]
+
+                return MockDomain()
+
+        audit_rules = audit_rules_from_domain_results(domain_results, MockRulesPack())
+
+        rule = audit_rules["D01-R01"]
+        assert rule.conflict_with_stack_profile is None
+        assert rule.conflict_resolution is None
+
+    def test_reported_conflict_renders_in_agent_standard(self) -> None:
+        """A reported conflict shows up in the rendered agent standard."""
+        pack = load_pack(FIXTURE_PACK)
+
+        domain_results = {
+            "d01": DomainResult(
+                domain_id="d01",
+                status="completed",
+                rule_verdicts=[
+                    RuleVerdict(rule_id="D01-R01", verdict=Verdict.pass_),
+                ],
+                findings=[],
+                uninspected_evidence=[],
+                reported_conflicts=[
+                    ReportedConflict(
+                        rule_id="D01-R01",
+                        stack_rule_text="Stack profile wording of the same rule.",
+                        issue="Both rules require the same thing, worded differently.",
+                    )
+                ],
+            )
+        }
+
+        audit_rules = audit_rules_from_domain_results(domain_results, pack)
+        rule_set = RuleSet(
+            version="1.0", project="test", rules=list(audit_rules.values())
+        )
+
+        rendered = render_all(rule_set)
+        agent_standard = rendered["agent-standard"]
+
+        assert "Stack profile wording of the same rule." in agent_standard
+        assert "Both rules require the same thing, worded differently." in (
+            agent_standard
+        )
 
 
 class TestLoadPriorRuleSet:
@@ -1204,3 +1333,122 @@ class TestStackChoiceDecisionRecord:
         assert restored["observed_stack_identifiers"] == list(
             observed_stack.identifiers
         )
+
+
+class TestReportedConflictSurvivesWholeChain:
+    """Proves a reported conflict survives the whole pipeline in one test.
+
+    Each adjacent step (domain result to Rule, Rule to merged rule set,
+    rule set to JSON and back, conflict fields surviving a merge) has its
+    own test elsewhere in this module and in test_standards_merge.py. None
+    of them proves the conflict is still there, in the shape the renderers
+    can read, after the full chain runs end to end. This test is that
+    missing link.
+    """
+
+    def test_conflict_survives_domain_result_to_rendered_documents(
+        self, tmp_path: Path
+    ) -> None:
+        """A reported conflict is still intact, and still renders, after two
+        merges with a JSON round trip between them, even though the second
+        audit run does not re-report it."""
+        pack = load_pack(FIXTURE_PACK)
+
+        stack_rule_text = "The stack profile allows any hat colour scheme."
+        issue_text = (
+            "The rules-pack rule requires a recorded hat colour before "
+            "assigning a garden bed; the stack profile rule leaves hat "
+            "colour unconstrained. Both address gnome record-keeping, "
+            "worded differently."
+        )
+
+        # Step 1: a DomainResult carrying a ReportedConflict, from the first
+        # audit run. The rule is verdicted a finding so the merge later has
+        # something more than a bare pass to preserve the conflict through.
+        first_run_result = DomainResult(
+            domain_id="d01",
+            status="completed",
+            rule_verdicts=[
+                RuleVerdict(rule_id="D01-R01", verdict=Verdict.FINDING),
+            ],
+            findings=[
+                Finding(
+                    rule_id="D01-R01",
+                    severity=Severity.HIGH,
+                    title="Gnome missing a recorded hat colour",
+                    location="src/garden.py:10",
+                    body_md="A gnome was assigned without a recorded hat colour.",
+                    issue_title="Record the gnome's hat colour",
+                    issue_body="Record the hat colour before assigning a bed.",
+                    precondition="The project assigns gnomes to garden beds.",
+                )
+            ],
+            uninspected_evidence=[],
+            reported_conflicts=[
+                ReportedConflict(
+                    rule_id="D01-R01",
+                    stack_rule_text=stack_rule_text,
+                    issue=issue_text,
+                )
+            ],
+        )
+
+        # Step 2: audit_rules_from_domain_results builds Rule objects.
+        first_audit_rules = audit_rules_from_domain_results(
+            {"d01": first_run_result}, pack
+        )
+        first_verdicts = verdicts_from_domain_results({"d01": first_run_result})
+
+        # Step 3: merge_rule_set merges into a (first) rule set.
+        first_merged = merge_rule_set(
+            None, first_verdicts, first_audit_rules, today=date(2026, 9, 1)
+        )
+
+        # Step 4: serialise to JSON and load it back via the module's own
+        # real save/load functions, not a hand-rolled dump.
+        rule_set_path = tmp_path / "rule-set.json"
+        first_merged.write(rule_set_path)
+        reloaded = RuleSet.load(rule_set_path)
+
+        # Step 5: merge a second audit run into the reloaded rule set. This
+        # run fixes the finding (verdict pass) and does NOT re-report the
+        # conflict.
+        second_run_result = DomainResult(
+            domain_id="d01",
+            status="completed",
+            rule_verdicts=[
+                RuleVerdict(rule_id="D01-R01", verdict=Verdict.pass_),
+            ],
+            findings=[],
+            uninspected_evidence=[],
+        )
+        second_audit_rules = audit_rules_from_domain_results(
+            {"d01": second_run_result}, pack
+        )
+        second_verdicts = verdicts_from_domain_results({"d01": second_run_result})
+
+        second_merged = merge_rule_set(
+            reloaded, second_verdicts, second_audit_rules, today=date(2026, 9, 5)
+        )
+
+        # Step 6: the conflict data is still intact after all of that.
+        merged_rule = next(
+            rule for rule in second_merged.rules if rule.rule_id == "D01-R01"
+        )
+        assert merged_rule.status == "verified-pass"
+        assert merged_rule.conflict_with_stack_profile == {
+            "stack_rule_text": stack_rule_text,
+            "issue": issue_text,
+        }
+        assert merged_rule.conflict_resolution is not None
+        assert "rules-pack" in merged_rule.conflict_resolution.lower()
+
+        # Step 7: render the reloaded rule set and prove the conflict text
+        # is still readable in the shape the renderers expect.
+        agent_standard = render_agent_standard(second_merged)
+        human_standard = render_human_standard(second_merged)
+
+        assert stack_rule_text in agent_standard
+        assert issue_text in agent_standard
+        assert stack_rule_text in human_standard
+        assert issue_text in human_standard

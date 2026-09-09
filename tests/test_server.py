@@ -1909,6 +1909,58 @@ def test_record_domain_result_accepts_consulted_sources_on_a_could_not_run_domai
     assert response["status"] == "could-not-run"
 
 
+def _reported_conflict(**overrides) -> dict:
+    defaults = dict(
+        rule_id="D01-R01",
+        stack_rule_text="The stack profile allows any hat colour scheme.",
+        issue=(
+            "The rules-pack rule requires a recorded hat colour before "
+            "assigning a garden bed; the stack profile rule leaves hat "
+            "colour unconstrained. Both address gnome record-keeping, "
+            "worded differently."
+        ),
+    )
+    defaults.update(overrides)
+    return defaults
+
+
+def test_record_domain_result_accepts_a_reported_conflict_for_a_verdicted_rule(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mcp, _state = build_server(FIXTURE_PACK)
+    _configured_run(mcp, tmp_path, monkeypatch)
+
+    result = {
+        "domain_id": "d01",
+        "status": "completed",
+        "uninspected_evidence": [],
+        "rule_verdicts": _all_pass_verdicts(_domain(mcp, "d01")),
+        "reported_conflicts": [_reported_conflict(rule_id="D01-R01")],
+    }
+    response = _call(mcp, "record_domain_result", {"result": result})
+    assert response["status"] == "completed"
+
+
+def test_record_domain_result_rejects_a_reported_conflict_for_an_unverdicted_rule_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mcp, _state = build_server(FIXTURE_PACK)
+    _configured_run(mcp, tmp_path, monkeypatch)
+
+    result = {
+        "domain_id": "d01",
+        "status": "completed",
+        "uninspected_evidence": [],
+        "rule_verdicts": _all_pass_verdicts(_domain(mcp, "d01")),
+        # D01-R99 was never verdicted above, so it has nowhere to attach.
+        "reported_conflicts": [_reported_conflict(rule_id="D01-R99")],
+    }
+    with pytest.raises(ToolError) as excinfo:
+        _call(mcp, "record_domain_result", {"result": result})
+    assert "D01-R99" in str(excinfo.value)
+    assert "D01-R01" in str(excinfo.value)
+
+
 # ---------------------------------------------------------------------------
 # run_status
 # ---------------------------------------------------------------------------

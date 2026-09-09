@@ -383,6 +383,62 @@ class TestMergeNewRulesFromAudit:
         assert new_rule.verified_date == "2026-08-25"
         assert new_rule.severity == "medium"
 
+    def test_new_rule_added_to_existing_prior_set_stamps_injected_today(self) -> None:
+        """A new rule added to an existing prior rule set is stamped with the
+        injected today, not the verified_date already carried on the audit rule."""
+        prior_rule_set = RuleSet(
+            version="1.0",
+            project="test-project",
+            rules=[
+                Rule(
+                    rule_id="D06-R02",
+                    domain_id="d06",
+                    text_short="API documentation",
+                    text_body="Document every endpoint.",
+                    source="rules-pack",
+                    stack_profile=None,
+                    status="verified-pass",
+                    verified_date="2026-08-10",
+                    severity=None,
+                    finding_details=None,
+                    conflict_with_stack_profile=None,
+                    conflict_resolution=None,
+                    source_url=None,
+                )
+            ],
+        )
+        audit_verdicts = {
+            "D06-R01": "pass",
+        }
+        audit_rules = {
+            "D06-R01": Rule(
+                rule_id="D06-R01",
+                domain_id="d06",
+                text_short="Type hints",
+                text_body="Use type hints.",
+                source="rules-pack",
+                stack_profile=None,
+                status="verified-pass",
+                verified_date="2026-08-20",
+                severity=None,
+                finding_details=None,
+                conflict_with_stack_profile=None,
+                conflict_resolution=None,
+                source_url=None,
+            )
+        }
+        today = date(2026, 8, 25)
+
+        result = merge_rule_set(
+            prior_rule_set,
+            audit_verdicts,
+            audit_rules,
+            today=today,
+        )
+
+        new_rule = next(r for r in result.rules if r.rule_id == "D06-R01")
+        assert new_rule.verified_date == "2026-08-25"
+
 
 class TestMergeConflictHandling:
     """Rules-pack and stack-profile rule conflicts are recorded with rules-pack winning."""
@@ -563,6 +619,73 @@ class TestMergeIdempotency:
             assert rule_1.severity == rule_2.severity
             assert rule_1.finding_details == rule_2.finding_details
 
+    def test_re_merging_on_a_later_date_does_not_re_date_verified_pass_rules(
+        self,
+    ) -> None:
+        """Merging the result again on a later date does not re-date rules that
+        are already verified-pass with a pass verdict."""
+        prior_rule_set = RuleSet(
+            version="1.0",
+            project="test-project",
+            rules=[
+                Rule(
+                    rule_id="D06-R01",
+                    domain_id="d06",
+                    text_short="Type hints",
+                    text_body="Use type hints.",
+                    source="rules-pack",
+                    stack_profile=None,
+                    status="provisional",
+                    verified_date="2026-08-20",
+                    severity=None,
+                    finding_details=None,
+                    conflict_with_stack_profile=None,
+                    conflict_resolution=None,
+                    source_url=None,
+                ),
+            ],
+        )
+        audit_verdicts = {
+            "D06-R01": "pass",
+        }
+        audit_rules = {
+            "D06-R01": Rule(
+                rule_id="D06-R01",
+                domain_id="d06",
+                text_short="Type hints",
+                text_body="Use type hints.",
+                source="rules-pack",
+                stack_profile=None,
+                status="verified-pass",
+                verified_date="2026-08-25",
+                severity=None,
+                finding_details=None,
+                conflict_with_stack_profile=None,
+                conflict_resolution=None,
+                source_url=None,
+            ),
+        }
+
+        # First merge, on 2026-08-25
+        result_1 = merge_rule_set(
+            prior_rule_set,
+            audit_verdicts,
+            audit_rules,
+            today=date(2026, 8, 25),
+        )
+
+        # Merge the result again with the same verdicts, but a day later
+        result_2 = merge_rule_set(
+            result_1,
+            audit_verdicts,
+            audit_rules,
+            today=date(2026, 8, 26),
+        )
+
+        merged_rule = next(r for r in result_2.rules if r.rule_id == "D06-R01")
+        assert merged_rule.status == "verified-pass"
+        assert merged_rule.verified_date == "2026-08-25"
+
 
 class TestMergeNoPriorRuleSet:
     """When no prior rule set exists, create a new one from audit verdicts."""
@@ -602,6 +725,41 @@ class TestMergeNoPriorRuleSet:
         assert len(result.rules) == 1
         assert result.rules[0].rule_id == "D06-R01"
         assert result.rules[0].status == "verified-pass"
+        assert result.rules[0].verified_date == "2026-08-25"
+
+    def test_no_prior_ruleset_stamps_injected_today_not_rules_own_date(self) -> None:
+        """With no prior rule set, the new rule is stamped with the injected today,
+        not the verified_date already carried on the audit rule."""
+        audit_verdicts = {
+            "D06-R01": "pass",
+        }
+        audit_rules = {
+            "D06-R01": Rule(
+                rule_id="D06-R01",
+                domain_id="d06",
+                text_short="Type hints",
+                text_body="Use type hints.",
+                source="rules-pack",
+                stack_profile=None,
+                status="verified-pass",
+                verified_date="2026-08-20",
+                severity=None,
+                finding_details=None,
+                conflict_with_stack_profile=None,
+                conflict_resolution=None,
+                source_url=None,
+            )
+        }
+        today = date(2026, 8, 25)
+
+        result = merge_rule_set(
+            None,
+            audit_verdicts,
+            audit_rules,
+            today=today,
+        )
+
+        assert len(result.rules) == 1
         assert result.rules[0].verified_date == "2026-08-25"
 
 

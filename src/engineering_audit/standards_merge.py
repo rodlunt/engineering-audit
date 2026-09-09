@@ -93,7 +93,9 @@ def merge_rule_set(
     if prior_rule_set is None:
         new_rules = []
         for rule_id, rule in audit_rules.items():
-            new_rules.append(deepcopy(rule))
+            new_rule = deepcopy(rule)
+            new_rule.verified_date = today.isoformat()
+            new_rules.append(new_rule)
         return RuleSet(
             version="1.0",
             project="engineering-audit",
@@ -115,7 +117,9 @@ def merge_rule_set(
 
         if prior_rule is None:
             # New rule from this audit
-            merged_rules_list.append(deepcopy(audit_rule))
+            new_rule = deepcopy(audit_rule)
+            new_rule.verified_date = today.isoformat()
+            merged_rules_list.append(new_rule)
         else:
             # Existing rule; apply merge logic
             merged_rule = _merge_single_rule(prior_rule, audit_rule, verdict, today)

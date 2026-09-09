@@ -217,6 +217,14 @@ def audit_rules_from_domain_results(
     for domain_result in domain_results.values():
         domain_id = domain_result.domain_id
 
+        # Build a map of rule_id -> ReportedConflict for this domain result.
+        # DomainResult's own validation already guarantees every rule_id here
+        # is one of this domain result's own verdicted rules, so it is safe
+        # to attach directly to the Rule built for that rule_id below.
+        reported_conflicts_by_rule_id = {
+            conflict.rule_id: conflict for conflict in domain_result.reported_conflicts
+        }
+
         for rule_verdict in domain_result.rule_verdicts:
             rule_id = rule_verdict.rule_id
             verdict_str = rule_verdict.verdict.value
@@ -283,6 +291,26 @@ def audit_rules_from_domain_results(
             elif verdict_str == "could-not-evaluate":
                 status = RuleStatus.PROVISIONAL.value
 
+            # Look up a conflict the auditing agent reported for this rule.
+            # Deciding two differently-worded rules express the same
+            # requirement needs reading comprehension, so this dict only
+            # ever holds what the agent itself reported; nothing here
+            # attempts to match rule text. Per fixed policy the rules-pack
+            # rule always wins the rendered output, so conflict_resolution
+            # records that rather than any per-case choice.
+            conflict_with_stack_profile: dict[str, object] | None = None
+            conflict_resolution: str | None = None
+            reported_conflict = reported_conflicts_by_rule_id.get(rule_id)
+            if reported_conflict is not None:
+                conflict_with_stack_profile = {
+                    "stack_rule_text": reported_conflict.stack_rule_text,
+                    "issue": reported_conflict.issue,
+                }
+                conflict_resolution = (
+                    "The rules-pack rule wins the rendered output; the "
+                    "stack-profile wording above is retained here for reference."
+                )
+
             # Create Rule object
             rule = Rule(
                 rule_id=rule_id,
@@ -294,6 +322,8 @@ def audit_rules_from_domain_results(
                 verified_date=today,
                 severity=severity,
                 finding_details=finding_details,
+                conflict_with_stack_profile=conflict_with_stack_profile,
+                conflict_resolution=conflict_resolution,
             )
 
             audit_rules[rule_id] = rule

@@ -23,6 +23,7 @@ from engineering_audit.schema import (
     DomainResult,
     Finding,
     IncompleteResultError,
+    ReportedConflict,
     RuleVerdict,
     RunMeta,
     RunProgress,
@@ -819,6 +820,69 @@ def test_validate_consulted_sources_runs_independently_of_domain_result_status()
         consulted_sources=[_consulted_source(rule_id="D01-R01")],
     )
     validate_consulted_sources(d01, result)  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# ReportedConflict and DomainResult.reported_conflicts (src/engineering_audit/schema.py)
+# ---------------------------------------------------------------------------
+
+
+def _reported_conflict(**overrides) -> ReportedConflict:
+    defaults = dict(
+        rule_id="D01-R01",
+        stack_rule_text="The stack profile says logs may be written in any format.",
+        issue=(
+            "The rules-pack rule requires structured JSON logging; the stack "
+            "profile rule allows free-text logging. Both address the same "
+            "requirement (log format) worded differently."
+        ),
+    )
+    defaults.update(overrides)
+    return ReportedConflict(**defaults)
+
+
+@pytest.mark.parametrize("blank_field", ["stack_rule_text", "issue"])
+def test_reported_conflict_rejects_a_blank_field(blank_field: str) -> None:
+    with pytest.raises(ValidationError, match="must not be blank"):
+        _reported_conflict(**{blank_field: "   "})
+
+
+def test_domain_result_defaults_to_no_reported_conflicts() -> None:
+    # Backward compatible with data written before this field existed: a
+    # DomainResult built or parsed with no reported_conflicts key at all
+    # gets an empty list, not a missing-field error.
+    result = DomainResult(domain_id="d01", status="completed", uninspected_evidence=[])
+    assert result.reported_conflicts == []
+
+
+def test_domain_result_accepts_a_reported_conflict_for_a_verdicted_rule() -> None:
+    result = DomainResult(
+        domain_id="d01",
+        status="completed",
+        uninspected_evidence=[],
+        rule_verdicts=[RuleVerdict(rule_id="D01-R01", verdict=Verdict.pass_)],
+        reported_conflicts=[_reported_conflict(rule_id="D01-R01")],
+    )
+    assert result.reported_conflicts[0].rule_id == "D01-R01"
+
+
+def test_domain_result_rejects_a_reported_conflict_for_an_unverdicted_rule_id() -> None:
+    # A conflict has to land on a Rule that audit_rules_from_domain_results
+    # will actually build, which only happens for a rule_id this domain
+    # result verdicted. A rule_id it never verdicted has nowhere for the
+    # conflict to attach, so it is rejected here rather than silently
+    # dropped later.
+    with pytest.raises(ValidationError) as excinfo:
+        DomainResult(
+            domain_id="d01",
+            status="completed",
+            uninspected_evidence=[],
+            rule_verdicts=[RuleVerdict(rule_id="D01-R01", verdict=Verdict.pass_)],
+            reported_conflicts=[_reported_conflict(rule_id="D01-R99")],
+        )
+    message = str(excinfo.value)
+    assert "D01-R99" in message
+    assert "D01-R01" in message
 
 
 # ---------------------------------------------------------------------------
