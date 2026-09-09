@@ -15,6 +15,7 @@ import secrets
 import string
 import threading
 from dataclasses import dataclass
+from enum import Enum, auto
 from http import HTTPStatus
 from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -191,6 +192,24 @@ class _ApprovalData:
     summary_counts: SummaryCount
 
 
+class _ApprovalWindowState(Enum):
+    """The standards-approval window's lifecycle, as a genuinely three-way
+    state rather than a single nullable "closed reason" field.
+
+    A nullable reason alone cannot tell "the window has never opened" apart
+    from "the window is open right now": both read as None. That collapse
+    is what let a decision POSTed with the page's long-lived CSRF token,
+    sent any time after the config server starts and before
+    ``set_approval_data`` is ever called, be accepted as if it were a real
+    decision from a page the user had actually seen. Making "not opened
+    yet" its own state, distinct from "open", closes that gap.
+    """
+
+    NOT_YET_OPEN = auto()
+    OPEN = auto()
+    CLOSED = auto()
+
+
 def _parse_draft_cookie(
     header_value: str | None, known_domain_ids: set[str]
 ) -> _ConfigDraft | None:
@@ -344,13 +363,18 @@ class ConfigServer:
         # Approval flow for standards documents
         self._approval_submitted = threading.Event()
         self._approval_action: str | None = None  # "approve" or "cancel"
-        # None while the approval window is open (a decision is still
-        # meaningful); set by wait_approval, under _lock, the moment it can
-        # no longer be, either because it timed out or because the one
-        # decision it was waiting for has already been consumed. Everything
-        # that could make a late decision look like it succeeded
-        # (/approval-ready, /approve-standards, /submit-standards) reads
-        # this before doing anything else. See wait_approval.
+        # Three distinct states, not a nullable "closed reason" alone: the
+        # window has never opened yet (this state), is open (set by
+        # set_approval_data), or is closed with a reason (set by
+        # wait_approval). Everything that could make a decision look like
+        # it succeeded when it should not (/approval-ready,
+        # /approve-standards, /submit-standards) reads this before doing
+        # anything else. See set_approval_data and wait_approval.
+        self._approval_window_state = _ApprovalWindowState.NOT_YET_OPEN
+        # Only meaningful once _approval_window_state is CLOSED; None in
+        # the other two states. Set by wait_approval, under _lock, the
+        # moment the window closes, either because it timed out or because
+        # the one decision it was waiting for has already been consumed.
         self._approval_closed_reason: str | None = None
         # Stack mismatch flow
         self._stack_mismatch_data: dict | None = None
@@ -573,25 +597,59 @@ class ConfigServer:
                     self.send_error(HTTPStatus.BAD_REQUEST, "Invalid action")
                     return
 
-                # The check (is the window still open?) and the act (record
-                # the decision) must happen inside the same critical
-                # section. Reading closed_reason and writing
+                # The check (is the window open, and has it ever been?) and
+                # the act (record the decision) must happen inside the same
+                # critical section. Reading state and writing
                 # _approval_action under two separate lock acquisitions left
                 # an unlocked gap between them: wait_approval could close
                 # the window in that gap, and this handler, having already
-                # captured closed_reason as None, would sail past the guard
-                # below and record a decision for a window that was no
-                # longer open, then answer with the same "processed"
-                # message a real decision gets. Collapsing both into one
+                # seen the window as open, would sail past the guard below
+                # and record a decision for a window that was no longer
+                # open, then answer with the same "processed" message a
+                # real decision gets. Collapsing both into one
                 # `with server._lock:` block makes that interleaving
                 # impossible: whichever of this handler or wait_approval
                 # gets the lock first decides the outcome, and the other
                 # sees it.
                 with server._lock:
+                    window_state = server._approval_window_state
                     closed_reason = server._approval_closed_reason
-                    if closed_reason is None:
+                    # Checked independently of window_state, even though
+                    # OPEN should always imply this is set: the two are
+                    # logically separate guards, and a decision must never
+                    # be recorded against approval data that is not there.
+                    accepted = (
+                        window_state is _ApprovalWindowState.OPEN
+                        and server._approval_data is not None
+                    )
+                    if accepted:
                         server._approval_action = action
-                if closed_reason is not None:
+
+                if window_state is _ApprovalWindowState.NOT_YET_OPEN or (
+                    window_state is _ApprovalWindowState.OPEN and not accepted
+                ):
+                    # The CSRF token is handed out on the very first page
+                    # load, long before any audit run has produced anything
+                    # to review. A decision arriving before set_approval_data
+                    # has ever been called cannot have been made by someone
+                    # who actually saw the approval page and its diffs, so
+                    # this must be a clear rejection, never anything that
+                    # could be read as "processed": that is exactly the
+                    # false success this endpoint used to hand out.
+                    body = (
+                        b"<html><body><p>The standards review window is "
+                        b"not open yet: no decision can be recorded until "
+                        b"the review page is ready. Please wait and try "
+                        b"again.</p></body></html>"
+                    )
+                    self.send_response(HTTPStatus.CONFLICT)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+
+                if window_state is _ApprovalWindowState.CLOSED:
                     # wait_approval already closed this window, either
                     # because it timed out or because the one decision it
                     # was waiting for has already been recorded. Answering
@@ -601,7 +659,7 @@ class ConfigServer:
                     # response has to say that plainly rather than imply the
                     # click did something.
                     body = (
-                        f"<html><body><p>{html.escape(closed_reason)}</p></body></html>"
+                        f"<html><body><p>{html.escape(closed_reason or '')}</p></body></html>"
                     ).encode("utf-8")
                     self.send_response(HTTPStatus.GONE)
                     self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -611,7 +669,7 @@ class ConfigServer:
                     return
 
                 # _approval_action was already written above, inside the
-                # same critical section as the closed_reason check. The
+                # same critical section as the window_state check. The
                 # event and the response are deliberately left outside the
                 # lock: never hold a lock while writing to a socket.
                 server._approval_submitted.set()
@@ -1098,6 +1156,7 @@ class ConfigServer:
         if not self._approval_submitted.wait(timeout=timeout_s):
             with self._lock:
                 self._approval_data = None
+                self._approval_window_state = _ApprovalWindowState.CLOSED
                 self._approval_closed_reason = (
                     "The standards review window has closed: no decision "
                     "arrived within the time allowed, so the audit run "
@@ -1115,6 +1174,7 @@ class ConfigServer:
                 )
             action = self._approval_action
             self._approval_data = None
+            self._approval_window_state = _ApprovalWindowState.CLOSED
             self._approval_closed_reason = (
                 "The standards review window has closed: a decision for "
                 "this run has already been recorded, and the audit run has "
@@ -1184,6 +1244,7 @@ class ConfigServer:
             self._approval_data = _ApprovalData(
                 diffs=diffs, summary_counts=summary_counts
             )
+            self._approval_window_state = _ApprovalWindowState.OPEN
 
     def _render_approval_page(self, script_nonce: str = "") -> str:
         """Render the approval page showing diffs of the three documents.

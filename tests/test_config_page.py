@@ -2090,6 +2090,10 @@ class TestSubmitStandardsEndpoint:
         srv = ConfigServer(domains)
         try:
             url = srv.start()
+            # The approval window must genuinely be open for this decision
+            # to be a real one: see TestSubmitStandardsRejectsPreWindowSubmission
+            # for the case where it is not.
+            _set_approval_data(srv)
             result: dict[str, object] = {}
 
             def waiter() -> None:
@@ -2117,6 +2121,7 @@ class TestSubmitStandardsEndpoint:
         srv = ConfigServer(domains)
         try:
             url = srv.start()
+            _set_approval_data(srv)
             result: dict[str, object] = {}
 
             def waiter() -> None:
@@ -2132,6 +2137,79 @@ class TestSubmitStandardsEndpoint:
             thread.join(timeout=5)
             assert not thread.is_alive()
             assert result["action"] == "cancel"
+        finally:
+            srv.shutdown()
+
+
+class TestSubmitStandardsRejectsPreWindowSubmission:
+    """A decision that arrives after the CSRF token is handed out (page
+    load, at `/`) but before `set_approval_data` has ever been called must
+    not be accepted: at that point there is no approval page to have shown
+    the user anything, so recording a decision here would let the whole
+    approval flow be skipped, silently, by a request that simply arrives
+    early. Before this fix, `_approval_closed_reason` being `None` in this
+    state was indistinguishable from the window being genuinely open, so
+    the handler accepted it, said "processed", and the later real
+    `wait_approval` call returned that stale decision instantly instead of
+    ever serving the approval page.
+    """
+
+    def test_pre_window_post_is_rejected_and_wait_approval_still_blocks_for_real_decision(
+        self, domains
+    ) -> None:
+        srv = ConfigServer(domains)
+        try:
+            url = srv.start()
+
+            # No call to set_approval_data yet: the window has never opened.
+            status, body = _post_standards_decision(
+                url, {"action": "approve", "csrf_token": srv._csrf_token}
+            )
+            assert status not in (200, 201, 202, 203, 204)
+            assert "processed" not in body.lower()
+            assert (
+                "not open" in body.lower()
+                or "not ready" in body.lower()
+                or "has not opened" in body.lower()
+            )
+            assert srv._approval_action is None
+
+            # Now the window genuinely opens, and wait_approval must serve
+            # a real approval page and block for a real decision rather
+            # than returning the rejected submission above.
+            _set_approval_data(srv)
+
+            result: dict[str, object] = {}
+            started = threading.Event()
+
+            def waiter() -> None:
+                started.set()
+                result["action"] = srv.wait_approval(timeout_s=5.0)
+
+            thread = threading.Thread(target=waiter)
+            thread.start()
+            started.wait(timeout=5)
+            # Give wait_approval every chance to return instantly with a
+            # stale decision, if one had been recorded; it must not have.
+            thread.join(timeout=0.3)
+            assert thread.is_alive(), (
+                "wait_approval returned immediately instead of genuinely "
+                "blocking for a decision made while the window is open"
+            )
+
+            with urllib.request.urlopen(url + "approve-standards", timeout=5) as resp:
+                assert resp.status == 200
+                assert "Review Standards Documents" in resp.read().decode("utf-8")
+
+            status2, body2 = _post_standards_decision(
+                url, {"action": "approve", "csrf_token": srv._csrf_token}
+            )
+            assert status2 == 200
+            assert "Standards update processed" in body2
+
+            thread.join(timeout=5)
+            assert not thread.is_alive()
+            assert result["action"] == "approve"
         finally:
             srv.shutdown()
 
