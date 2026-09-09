@@ -343,3 +343,45 @@ def test_stack_mismatch_page_explains_consequences(domains) -> None:
         assert "Use Audit Stack" in page or "use audit" in page.lower()
     finally:
         srv.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Reachability: /stack-mismatch-ready plus the poller on config-submitted.html
+# (issue 07's trailing note; mirrors issue 05's /approval-ready fix)
+# ---------------------------------------------------------------------------
+
+
+def test_stack_mismatch_ready_endpoint_answers_404_before_data_is_set(
+    domains,
+) -> None:
+    """Same shape as /approval-ready: a poller needs a cheap way to ask
+    "is there a mismatch waiting for me" without rendering the (larger)
+    stack-mismatch page itself."""
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        try:
+            urllib.request.urlopen(url + "stack-mismatch-ready", timeout=5)
+            pytest.fail("Expected HTTPError")
+        except urllib.error.HTTPError as e:
+            assert e.code == 404
+    finally:
+        srv.shutdown()
+
+
+def test_stack_mismatch_ready_endpoint_answers_204_once_data_is_set(
+    domains,
+) -> None:
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        srv.set_stack_mismatch_data(
+            frozenset(("python", "fastapi")),
+            MockDetectedStack(),
+            {},
+        )
+        with urllib.request.urlopen(url + "stack-mismatch-ready", timeout=5) as resp:
+            assert resp.status == 204
+            assert resp.read() == b""
+    finally:
+        srv.shutdown()

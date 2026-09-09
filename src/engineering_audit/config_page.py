@@ -65,6 +65,14 @@ _ALIVE_PATH = "/alive"
 # (much larger) approval page itself just to ask whether one exists yet.
 _APPROVAL_READY_PATH = "/approval-ready"
 
+# The path the "configuration received" page polls to find out whether a
+# stack mismatch has been detected and is waiting for the user's choice.
+# Mirrors _APPROVAL_READY_PATH exactly, and for the same reason: the poll
+# runs every few seconds for as long as the audit is running, so it must
+# never have to render the stack-mismatch page itself just to answer
+# "is there one yet".
+_STACK_MISMATCH_READY_PATH = "/stack-mismatch-ready"
+
 # The path the page's custom-output-location field checks against as the user
 # types, so the resolved absolute path (and any problem with it) is shown
 # before the user ever submits the form, not after. Read-only and
@@ -438,6 +446,9 @@ class ConfigServer:
                 if split.path == _APPROVAL_READY_PATH:
                     self._serve_approval_ready()
                     return
+                if split.path == _STACK_MISMATCH_READY_PATH:
+                    self._serve_stack_mismatch_ready()
+                    return
                 if split.path not in ("/", ""):
                     self.send_error(HTTPStatus.NOT_FOUND)
                     return
@@ -495,6 +506,27 @@ class ConfigServer:
                     self.end_headers()
                 else:
                     self.send_error(HTTPStatus.NOT_FOUND, "No approval pending")
+
+            def _serve_stack_mismatch_ready(self) -> None:
+                """Answer the submitted page's stack-mismatch-readiness poll:
+                204 once mismatch data has been set, 404 until then.
+
+                Mirrors _serve_approval_ready exactly, and for the same
+                reason: no body either way, so this exists only so the page
+                can decide whether to navigate itself to /stack-mismatch,
+                never to carry any of the mismatch data itself. A 204 here
+                must be a genuine "the page is ready", never a default or a
+                fallback response that happens to share its status code.
+                """
+                with server._lock:
+                    ready = server._stack_mismatch_data is not None
+                if ready:
+                    self.send_response(HTTPStatus.NO_CONTENT)
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                else:
+                    self.send_error(HTTPStatus.NOT_FOUND, "No stack mismatch pending")
 
             def _serve_output_location_check(self, query: str) -> None:
                 """Answer the custom-output-location field's live preview:
@@ -1040,11 +1072,13 @@ class ConfigServer:
         """Render the "configuration received" page shown after /submit.
 
         This is the one tab a human still has open while the audit runs, so
-        it carries a script that polls _APPROVAL_READY_PATH (see
-        config-submitted.html) and navigates itself to /approve-standards
-        the moment there is something to review. Without that script this
-        page is a dead end: nothing else ever tells a real browser that the
-        approval page exists.
+        it carries two independent pollers: one for _APPROVAL_READY_PATH and
+        one for _STACK_MISMATCH_READY_PATH (see config-submitted.html), each
+        navigating itself to its own destination page the moment there is
+        something to review. Without those scripts this page is a dead end:
+        nothing else ever tells a real browser that either page exists.
+        Either poller can fire first, since either a standards approval or a
+        stack mismatch may come up first depending on the run.
         """
         template = string.Template(self._submitted_text)
         return template.substitute(
@@ -1052,6 +1086,9 @@ class ConfigServer:
             approval_ready_path=_APPROVAL_READY_PATH,
             approval_page_path="/approve-standards",
             approval_poll_interval_ms=str(_HEARTBEAT_INTERVAL_MS),
+            stack_mismatch_ready_path=_STACK_MISMATCH_READY_PATH,
+            stack_mismatch_page_path="/stack-mismatch",
+            stack_mismatch_poll_interval_ms=str(_HEARTBEAT_INTERVAL_MS),
         )
 
     def _parse_submission(self, fields: dict[str, list[str]]) -> AuditConfig:

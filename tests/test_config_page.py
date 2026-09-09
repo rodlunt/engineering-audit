@@ -802,6 +802,37 @@ def test_submitted_page_carries_a_script_that_polls_for_approval_readiness(
         srv.shutdown()
 
 
+def test_submitted_page_carries_a_script_that_polls_for_stack_mismatch_readiness(
+    domains,
+) -> None:
+    """The submitted page is also the only tab a human still has open if a
+    stack mismatch is detected mid-run; it must poll for that readiness too,
+    alongside (not instead of) the approval poll, since either window can
+    become ready first (issue 07's trailing note)."""
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        token = _fetch_csrf_token(url)
+        payload = urlencode(
+            {
+                "domain": ["d01"],
+                "issue_mode": "report",
+                "csrf_token": token,
+            },
+            doseq=True,
+        ).encode("utf-8")
+        request = urllib.request.Request(url + "submit", data=payload, method="POST")
+        with urllib.request.urlopen(request, timeout=5) as resp:
+            body = resp.read().decode("utf-8")
+        assert "stack-mismatch-ready" in body
+        assert "stack-mismatch" in body
+        # Both pollers must coexist: neither should have replaced the other.
+        assert "approval-ready" in body
+        assert "approve-standards" in body
+    finally:
+        srv.shutdown()
+
+
 def test_page_carries_the_heartbeat_script_and_the_dead_banner(domains) -> None:
     srv = ConfigServer(domains)
     try:
