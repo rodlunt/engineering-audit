@@ -385,3 +385,206 @@ def test_stack_mismatch_ready_endpoint_answers_204_once_data_is_set(
             assert resp.read() == b""
     finally:
         srv.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# The stack-choice window state guard (mirrors 51f7cbb's approval-side fix)
+# and the handoff into a standards-approval step that always follows a
+# resolved stack mismatch in the same run.
+# ---------------------------------------------------------------------------
+
+
+def _give_approval_data(srv: ConfigServer) -> None:
+    """Mirrors test_config_page.py's _set_approval_data: gives a
+    ConfigServer some approval data the same way server.py does before
+    calling wait_approval, so a test can exercise the stack-choice ->
+    approval handoff inside a single run."""
+    from engineering_audit.standards import RuleSet
+    from engineering_audit.standards_approval import (
+        build_diff_model,
+        derive_summary_counts,
+    )
+
+    rule_set = RuleSet(version="1.0", project="test", rules=[])
+    proposed_content = (
+        '<!-- audit:start id="agent-standard" -->\nContent\n<!-- audit:end -->'
+    )
+    diffs = [
+        build_diff_model(None, proposed_content, "agent-standard"),
+        build_diff_model(None, proposed_content, "human-standard"),
+        build_diff_model(None, proposed_content, "engineering-policy"),
+    ]
+    counts = derive_summary_counts(rule_set)
+    srv.set_approval_data(diffs, counts)
+
+
+def test_stack_choice_then_approval_handoff_page_has_poller_not_close_invitation(
+    domains,
+) -> None:
+    """The important regression test: a resolved (non-timeout) stack
+    mismatch is always followed by a standards-approval step in the same
+    run (see server.py's ordering around wait_stack_choice /
+    set_approval_data / wait_approval). The mismatch page navigation that
+    got the user here unloads config-submitted.html, killing both of its
+    pollers, so the page served after a valid stack-choice POST must carry
+    its own approval-readiness poller and navigation target, and must never
+    invite the user to close the tab while a review may still be coming.
+    """
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        srv.set_stack_mismatch_data(
+            frozenset(("python",)),
+            MockDetectedStack(),
+            {},
+        )
+        token = _fetch_csrf_token_from_stack_mismatch(url)
+        status, body = _post_stack_choice(url, {"action": "grill", "csrf_token": token})
+
+        assert status == 200
+        assert "close this window" not in body.lower()
+        assert "approval-ready" in body
+        assert "approve-standards" in body
+
+        choice = srv.wait_stack_choice(timeout_s=1.0)
+        assert choice == "grill"
+
+        # Same run: a standards approval step follows immediately, exactly
+        # as server.py does it.
+        _give_approval_data(srv)
+        with urllib.request.urlopen(url + "approval-ready", timeout=5) as resp:
+            assert resp.status == 204
+        with urllib.request.urlopen(url + "approve-standards", timeout=5) as resp:
+            assert resp.status == 200
+    finally:
+        srv.shutdown()
+
+
+def test_stack_mismatch_ready_endpoint_not_ready_once_choice_consumed(
+    domains,
+) -> None:
+    """Same shape as the approval-ready equivalent: once wait_stack_choice
+    has consumed the one decision it was waiting for, the readiness poll
+    must stop telling a browser there is still something to navigate to."""
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        srv.set_stack_mismatch_data(
+            frozenset(("python",)),
+            MockDetectedStack(),
+            {},
+        )
+        with urllib.request.urlopen(url + "stack-mismatch-ready", timeout=5) as resp:
+            assert resp.status == 204
+
+        token = _fetch_csrf_token_from_stack_mismatch(url)
+        status, _body = _post_stack_choice(
+            url, {"action": "grill", "csrf_token": token}
+        )
+        assert status == 200
+        assert srv.wait_stack_choice(timeout_s=1.0) == "grill"
+
+        try:
+            urllib.request.urlopen(url + "stack-mismatch-ready", timeout=5)
+            pytest.fail("Expected HTTPError")
+        except urllib.error.HTTPError as e:
+            assert e.code == 404
+    finally:
+        srv.shutdown()
+
+
+def test_stack_mismatch_ready_endpoint_not_ready_after_timeout(domains) -> None:
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        srv.set_stack_mismatch_data(
+            frozenset(("python",)),
+            MockDetectedStack(),
+            {},
+        )
+        with pytest.raises(ConfigTimeoutError):
+            srv.wait_stack_choice(timeout_s=0.2)
+        try:
+            urllib.request.urlopen(url + "stack-mismatch-ready", timeout=5)
+            pytest.fail("Expected HTTPError")
+        except urllib.error.HTTPError as e:
+            assert e.code == 404
+    finally:
+        srv.shutdown()
+
+
+def test_stack_choice_post_before_window_open_is_rejected(domains) -> None:
+    """A choice POSTed with the page's long-lived CSRF token, before
+    set_stack_mismatch_data has ever been called, cannot have come from
+    someone who actually saw the stack-mismatch page. It must be rejected
+    with a non-2xx status and an honest body, and must not record a
+    choice."""
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        # No call to set_stack_mismatch_data: the window has never opened.
+        status, body = _post_stack_choice(
+            url, {"action": "grill", "csrf_token": srv._csrf_token}
+        )
+
+        assert status not in (200, 201, 202, 203, 204)
+        # The success page's own heading, not merely the word "recorded"
+        # (the honest rejection body legitimately uses that word too, as in
+        # "no choice can be recorded until...").
+        assert "stack choice recorded</h1>" not in body.lower()
+        assert "not open" in body.lower()
+        assert srv._stack_choice is None
+    finally:
+        srv.shutdown()
+
+
+def test_stack_choice_post_after_first_consumed_is_rejected(domains) -> None:
+    """A second stack-choice POST arriving after wait_stack_choice has
+    already consumed the decision (a reloaded tab, or a second click) must
+    not be told it succeeded: nothing was applied and nothing ever will be
+    for this submission."""
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        srv.set_stack_mismatch_data(
+            frozenset(("python",)),
+            MockDetectedStack(),
+            {},
+        )
+        token = _fetch_csrf_token_from_stack_mismatch(url)
+        status, _body = _post_stack_choice(
+            url, {"action": "grill", "csrf_token": token}
+        )
+        assert status == 200
+        assert srv.wait_stack_choice(timeout_s=1.0) == "grill"
+
+        status2, body2 = _post_stack_choice(
+            url, {"action": "audit", "csrf_token": token}
+        )
+        assert status2 == 410
+        assert "was not recorded" in body2.lower()
+        assert "closed" in body2.lower()
+    finally:
+        srv.shutdown()
+
+
+def test_stack_choice_post_after_timeout_is_rejected(domains) -> None:
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        srv.set_stack_mismatch_data(
+            frozenset(("python",)),
+            MockDetectedStack(),
+            {},
+        )
+        with pytest.raises(ConfigTimeoutError):
+            srv.wait_stack_choice(timeout_s=0.2)
+
+        status, body = _post_stack_choice(
+            url, {"action": "grill", "csrf_token": srv._csrf_token}
+        )
+        assert status == 410
+        assert "was not recorded" in body.lower()
+        assert "closed" in body.lower()
+    finally:
+        srv.shutdown()

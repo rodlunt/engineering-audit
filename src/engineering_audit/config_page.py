@@ -51,6 +51,16 @@ _APPROVAL_TEMPLATE_PATH = Path(__file__).parent / "templates" / "approval-page.h
 _STACK_MISMATCH_TEMPLATE_PATH = (
     Path(__file__).parent / "templates" / "stack-mismatch-page.html"
 )
+# Served in place of a static "you can close this window" byte string once a
+# stack choice has been recorded: a standards-approval step always follows a
+# resolved (non-timeout) stack mismatch in the same run (see server.py), and
+# the mismatch page navigation that got the user here already unloaded
+# config-submitted.html, killing both of its pollers. This page picks the
+# approval poll back up so the one tab the user has open keeps working
+# without ever inviting them to close it while a review may still be coming.
+_STACK_CHOICE_RECORDED_TEMPLATE_PATH = (
+    Path(__file__).parent / "templates" / "stack-choice-recorded.html"
+)
 
 # The path the page's heartbeat polls. Deliberately its own route rather than
 # a HEAD of "/": it answers with no body and no work, so a poll every few
@@ -200,17 +210,23 @@ class _ApprovalData:
     summary_counts: SummaryCount
 
 
-class _ApprovalWindowState(Enum):
-    """The standards-approval window's lifecycle, as a genuinely three-way
-    state rather than a single nullable "closed reason" field.
+class _WindowState(Enum):
+    """The lifecycle of a one-shot decision window (standards approval, or
+    a stack-mismatch choice), as a genuinely three-way state rather than a
+    single nullable "closed reason" field.
 
     A nullable reason alone cannot tell "the window has never opened" apart
     from "the window is open right now": both read as None. That collapse
     is what let a decision POSTed with the page's long-lived CSRF token,
-    sent any time after the config server starts and before
-    ``set_approval_data`` is ever called, be accepted as if it were a real
-    decision from a page the user had actually seen. Making "not opened
-    yet" its own state, distinct from "open", closes that gap.
+    sent any time after the config server starts and before the window's
+    data-setter (``set_approval_data`` / ``set_stack_mismatch_data``) is
+    ever called, be accepted as if it were a real decision from a page the
+    user had actually seen. Making "not opened yet" its own state, distinct
+    from "open", closes that gap. Shared between the two flows rather than
+    duplicated: both need exactly the same three states, transitioned by
+    exactly the same two events (a setter opens it, a wait_* call closes
+    it, whether by timeout or by consuming the one decision it was waiting
+    for).
     """
 
     NOT_YET_OPEN = auto()
@@ -378,7 +394,7 @@ class ConfigServer:
         # it succeeded when it should not (/approval-ready,
         # /approve-standards, /submit-standards) reads this before doing
         # anything else. See set_approval_data and wait_approval.
-        self._approval_window_state = _ApprovalWindowState.NOT_YET_OPEN
+        self._approval_window_state = _WindowState.NOT_YET_OPEN
         # Only meaningful once _approval_window_state is CLOSED; None in
         # the other two states. Set by wait_approval, under _lock, the
         # moment the window closes, either because it timed out or because
@@ -393,6 +409,22 @@ class ConfigServer:
         )
         self._stack_choice_submitted = threading.Event()
         self._stack_choice: str | None = None
+        # Same three-state guard as _approval_window_state, and for the same
+        # reason: a nullable "closed reason" alone cannot tell "never
+        # opened" apart from "open", and the CSRF token this page's POST
+        # handler checks is handed out long before set_stack_mismatch_data
+        # is ever called. Opened by set_stack_mismatch_data, closed by
+        # wait_stack_choice in both its terminal cases. See
+        # _handle_stack_choice_submission.
+        self._stack_choice_window_state = _WindowState.NOT_YET_OPEN
+        # Only meaningful once _stack_choice_window_state is CLOSED; None in
+        # the other two states. Mirrors _approval_closed_reason exactly.
+        self._stack_choice_closed_reason: str | None = None
+        self._stack_choice_recorded_template_text = (
+            _STACK_CHOICE_RECORDED_TEMPLATE_PATH.read_text(encoding="utf-8")
+            if _STACK_CHOICE_RECORDED_TEMPLATE_PATH.exists()
+            else None
+        )
 
     def start(self) -> str:
         if self._httpd is not None:
@@ -651,14 +683,14 @@ class ConfigServer:
                     # logically separate guards, and a decision must never
                     # be recorded against approval data that is not there.
                     accepted = (
-                        window_state is _ApprovalWindowState.OPEN
+                        window_state is _WindowState.OPEN
                         and server._approval_data is not None
                     )
                     if accepted:
                         server._approval_action = action
 
-                if window_state is _ApprovalWindowState.NOT_YET_OPEN or (
-                    window_state is _ApprovalWindowState.OPEN and not accepted
+                if window_state is _WindowState.NOT_YET_OPEN or (
+                    window_state is _WindowState.OPEN and not accepted
                 ):
                     # The CSRF token is handed out on the very first page
                     # load, long before any audit run has produced anything
@@ -681,7 +713,7 @@ class ConfigServer:
                     self.wfile.write(body)
                     return
 
-                if window_state is _ApprovalWindowState.CLOSED:
+                if window_state is _WindowState.CLOSED:
                     # wait_approval already closed this window, either
                     # because it timed out or because the one decision it
                     # was waiting for has already been recorded. Answering
@@ -772,12 +804,84 @@ class ConfigServer:
                     self.send_error(HTTPStatus.BAD_REQUEST, "Invalid action")
                     return
 
+                # Check-then-act inside the same critical section, mirroring
+                # _handle_standards_submission exactly and for the same
+                # reason: reading window_state and writing _stack_choice
+                # under two separate lock acquisitions would leave an
+                # unlocked gap in which wait_stack_choice could close the
+                # window between the check and the write, letting this
+                # handler record a choice for a window it had already seen
+                # as open, then answer with the same "recorded" message a
+                # real choice gets.
                 with server._lock:
-                    server._stack_choice = action
+                    window_state = server._stack_choice_window_state
+                    closed_reason = server._stack_choice_closed_reason
+                    accepted = (
+                        window_state is _WindowState.OPEN
+                        and server._stack_mismatch_data is not None
+                    )
+                    if accepted:
+                        server._stack_choice = action
+
+                if window_state is _WindowState.NOT_YET_OPEN or (
+                    window_state is _WindowState.OPEN and not accepted
+                ):
+                    # The CSRF token is handed out on the very first page
+                    # load, long before any audit run has detected a stack
+                    # mismatch. A choice arriving before
+                    # set_stack_mismatch_data has ever been called cannot
+                    # have come from someone who actually saw the
+                    # stack-mismatch page, so this must be a clear
+                    # rejection, never anything that could be read as
+                    # "recorded".
+                    body = (
+                        b"<html><body><p>The stack-choice window is not "
+                        b"open yet: no choice can be recorded until a "
+                        b"stack mismatch has actually been detected. "
+                        b"Please wait and try again.</p></body></html>"
+                    )
+                    self.send_response(HTTPStatus.CONFLICT)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+
+                if window_state is _WindowState.CLOSED:
+                    # wait_stack_choice already closed this window, either
+                    # because it timed out or because the one choice it was
+                    # waiting for has already been recorded. Answering this
+                    # with the same "recorded" message given to a real
+                    # choice would be a false success: nothing was applied
+                    # and nothing ever will be for this submission.
+                    body = (
+                        f"<html><body><p>{html.escape(closed_reason or '')}</p></body></html>"
+                    ).encode("utf-8")
+                    self.send_response(HTTPStatus.GONE)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+
+                # _stack_choice was already written above, inside the same
+                # critical section as the window_state check. The event and
+                # the response are deliberately left outside the lock:
+                # never hold a lock while writing to a socket.
                 server._stack_choice_submitted.set()
 
-                # Return a confirmation page
-                body = b"<html><body><p>Stack choice recorded. You can close this window.</p></body></html>"
+                # Return a confirmation page that keeps the user connected
+                # to the flow, rather than a static "you can close this
+                # window" byte string: a resolved (non-timeout) stack
+                # mismatch is always followed by a standards-approval step
+                # in the same run (see server.py), and the navigation to
+                # /stack-mismatch that got the user here already unloaded
+                # config-submitted.html, killing both of its pollers. This
+                # page picks the approval poll back up in the same tab.
+                self._script_nonce = secrets.token_urlsafe(16)
+                body = server._render_stack_choice_recorded_page(
+                    self._script_nonce
+                ).encode("utf-8")
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
@@ -1091,6 +1195,31 @@ class ConfigServer:
             stack_mismatch_poll_interval_ms=str(_HEARTBEAT_INTERVAL_MS),
         )
 
+    def _render_stack_choice_recorded_page(self, script_nonce: str = "") -> str:
+        """Render the page shown after a valid POST to /submit-stack-choice.
+
+        The mismatch page that got the user here already navigated their
+        one open tab away from config-submitted.html, unloading both of
+        its pollers. A resolved (non-timeout) stack mismatch is always
+        followed by a standards-approval step in the same run (see
+        server.py's ordering), so this page carries the same
+        approval-readiness poller config-submitted.html does -- just the
+        one, since the stack-mismatch choice this page is confirming has
+        already been made -- rather than a static "you can close this
+        window" message that would strand the user exactly when a review
+        may still be coming.
+        """
+        template = string.Template(
+            self._stack_choice_recorded_template_text
+            or "<html><body><p>Stack choice recorded.</p></body></html>"
+        )
+        return template.substitute(
+            csp_nonce=html.escape(script_nonce),
+            approval_ready_path=_APPROVAL_READY_PATH,
+            approval_page_path="/approve-standards",
+            approval_poll_interval_ms=str(_HEARTBEAT_INTERVAL_MS),
+        )
+
     def _parse_submission(self, fields: dict[str, list[str]]) -> AuditConfig:
         selected_domain_ids = fields.get("domain", [])
         issue_mode = fields.get("issue_mode", ["report"])[0]
@@ -1193,7 +1322,7 @@ class ConfigServer:
         if not self._approval_submitted.wait(timeout=timeout_s):
             with self._lock:
                 self._approval_data = None
-                self._approval_window_state = _ApprovalWindowState.CLOSED
+                self._approval_window_state = _WindowState.CLOSED
                 self._approval_closed_reason = (
                     "The standards review window has closed: no decision "
                     "arrived within the time allowed, so the audit run "
@@ -1211,7 +1340,7 @@ class ConfigServer:
                 )
             action = self._approval_action
             self._approval_data = None
-            self._approval_window_state = _ApprovalWindowState.CLOSED
+            self._approval_window_state = _WindowState.CLOSED
             self._approval_closed_reason = (
                 "The standards review window has closed: a decision for "
                 "this run has already been recorded, and the audit run has "
@@ -1238,6 +1367,7 @@ class ConfigServer:
                 "observed_stack": observed_stack,
                 "difference": difference,
             }
+            self._stack_choice_window_state = _WindowState.OPEN
 
     def wait_stack_choice(self, timeout_s: float) -> str:
         """Block for up to timeout_s seconds for a stack choice.
@@ -1247,8 +1377,29 @@ class ConfigServer:
             "audit" if the user chose to use the audit stack.
 
         Raises ConfigTimeoutError on expiry.
+
+        Either way, this call is the one place that knows the stack-choice
+        window is now over, so it is the one place that closes it: on
+        expiry, and again the moment a real choice is read out of
+        _stack_choice, _stack_mismatch_data is cleared and
+        _stack_choice_closed_reason is set to an honest explanation. That
+        mirrors wait_approval exactly (see its own docstring for why this
+        cannot be done anywhere else): it is what makes
+        /stack-mismatch-ready stop pointing a poller at /stack-mismatch,
+        makes /stack-mismatch stop serving the page, and makes a late POST
+        to /submit-stack-choice get told the window is closed instead of a
+        false "recorded" success.
         """
         if not self._stack_choice_submitted.wait(timeout=timeout_s):
+            with self._lock:
+                self._stack_mismatch_data = None
+                self._stack_choice_window_state = _WindowState.CLOSED
+                self._stack_choice_closed_reason = (
+                    "The stack-choice window has closed: no decision "
+                    "arrived within the time allowed, so the audit run "
+                    "moved on without applying a stack choice. This "
+                    "decision was not recorded and cannot be accepted now."
+                )
             raise ConfigTimeoutError(
                 f"No stack choice submitted within {timeout_s} seconds."
             )
@@ -1257,7 +1408,15 @@ class ConfigServer:
                 raise RuntimeError(
                     "stack_choice_submitted event set but no choice stored: internal bug"
                 )
-            return self._stack_choice
+            choice = self._stack_choice
+            self._stack_mismatch_data = None
+            self._stack_choice_window_state = _WindowState.CLOSED
+            self._stack_choice_closed_reason = (
+                "The stack-choice window has closed: a decision for this "
+                "run has already been recorded, and the audit run has "
+                "moved on. This decision was not recorded."
+            )
+            return choice
 
     def shutdown(self) -> None:
         if self._httpd is not None:
@@ -1281,7 +1440,7 @@ class ConfigServer:
             self._approval_data = _ApprovalData(
                 diffs=diffs, summary_counts=summary_counts
             )
-            self._approval_window_state = _ApprovalWindowState.OPEN
+            self._approval_window_state = _WindowState.OPEN
 
     def _render_approval_page(self, script_nonce: str = "") -> str:
         """Render the approval page showing diffs of the three documents.
