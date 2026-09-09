@@ -8,6 +8,8 @@ import os
 import re
 import shutil
 import subprocess
+import threading
+import time
 import urllib.request
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -297,7 +299,7 @@ def test_post_submission_then_poll_returns_config(domains) -> None:
         request = urllib.request.Request(url + "submit", data=payload, method="POST")
         with urllib.request.urlopen(request, timeout=5) as resp:
             assert resp.status == 200
-            assert "close this tab" in resp.read().decode("utf-8")
+            assert "Keep this tab open" in resp.read().decode("utf-8")
 
         config = srv.poll()
         assert config != "pending"
@@ -730,6 +732,74 @@ def test_alive_endpoint_stops_answering_once_the_server_is_shut_down(domains) ->
     srv.shutdown()
     with pytest.raises(URLError):
         urllib.request.urlopen(url + "alive", timeout=5)
+
+
+def test_approval_ready_endpoint_answers_404_before_approval_data_is_set(
+    domains,
+) -> None:
+    """The submitted page's own poll (see config-submitted.html) needs a
+    cheap way to ask "is there something for me to look at yet", separate
+    from actually fetching the approval page itself, which the config
+    server must never render more often than it has to."""
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        try:
+            urllib.request.urlopen(url + "approval-ready", timeout=5)
+            pytest.fail("Expected HTTPError")
+        except urllib.error.HTTPError as e:
+            assert e.code == 404
+    finally:
+        srv.shutdown()
+
+
+def test_approval_ready_endpoint_answers_204_once_approval_data_is_set(
+    domains,
+) -> None:
+    from engineering_audit.standards import RuleSet
+    from engineering_audit.standards_approval import derive_summary_counts
+
+    rule_set = RuleSet(version="1.0", project="test", rules=[])
+    counts = derive_summary_counts(rule_set)
+
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        srv.set_approval_data([], counts)
+        with urllib.request.urlopen(url + "approval-ready", timeout=5) as resp:
+            assert resp.status == 204
+            assert resp.read() == b""
+    finally:
+        srv.shutdown()
+
+
+def test_submitted_page_carries_a_script_that_polls_for_approval_readiness(
+    domains,
+) -> None:
+    """The page left open after configuration is submitted is the only tab
+    a human still has open once the audit starts running; it must find its
+    own way to the approval page once one is ready, since nothing else ever
+    navigates a real browser there (issue 05)."""
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        token = _fetch_csrf_token(url)
+        payload = urlencode(
+            {
+                "domain": ["d01"],
+                "issue_mode": "report",
+                "csrf_token": token,
+            },
+            doseq=True,
+        ).encode("utf-8")
+        request = urllib.request.Request(url + "submit", data=payload, method="POST")
+        with urllib.request.urlopen(request, timeout=5) as resp:
+            body = resp.read().decode("utf-8")
+        assert "approval-ready" in body
+        assert "approve-standards" in body
+        assert re.search(r'<script nonce="[^"]+"', body)
+    finally:
+        srv.shutdown()
 
 
 def test_page_carries_the_heartbeat_script_and_the_dead_banner(domains) -> None:
@@ -1691,7 +1761,9 @@ class TestApprovalPageEndpoint:
     """Tests for the /approve-standards endpoint."""
 
     def test_approve_standards_endpoint_returns_404_when_no_data_set(self, domains):
-        """POST /approve-standards returns 404 when approval data not set."""
+        """GET /approve-standards returns 404 when no approval data has been
+        set, regardless of the fact that GET is now routed: the no-data case
+        is the thing this test asserts, not an unrouted method."""
         srv = ConfigServer(domains)
         try:
             url = srv.start()
@@ -1700,6 +1772,42 @@ class TestApprovalPageEndpoint:
                 pytest.fail("Expected HTTPError")
             except urllib.error.HTTPError as e:
                 assert e.code == 404
+        finally:
+            srv.shutdown()
+
+    def test_approve_standards_endpoint_is_reachable_by_get_once_data_is_set(
+        self, domains
+    ):
+        """A browser navigating to /approve-standards (a plain GET, the only
+        method a browser address bar or a redirect can ever issue) must reach
+        the approval page once approval data has been set. This is the whole
+        point of issue 05: a human sitting at a browser has no way to issue a
+        POST of their own accord."""
+        from engineering_audit.standards import RuleSet
+        from engineering_audit.standards_approval import (
+            build_diff_model,
+            derive_summary_counts,
+        )
+
+        rule_set = RuleSet(version="1.0", project="test", rules=[])
+        proposed_content = (
+            '<!-- audit:start id="agent-standard" -->\nContent\n<!-- audit:end -->'
+        )
+        diffs = [
+            build_diff_model(None, proposed_content, "agent-standard"),
+            build_diff_model(None, proposed_content, "human-standard"),
+            build_diff_model(None, proposed_content, "engineering-policy"),
+        ]
+        counts = derive_summary_counts(rule_set)
+
+        srv = ConfigServer(domains)
+        try:
+            url = srv.start()
+            srv.set_approval_data(diffs, counts)
+            with urllib.request.urlopen(url + "approve-standards", timeout=5) as resp:
+                assert resp.status == 200
+                body = resp.read().decode("utf-8")
+                assert "Review Standards Documents" in body
         finally:
             srv.shutdown()
 
@@ -1902,5 +2010,417 @@ class TestApprovalPageEndpoint:
                 assert "&lt;script&gt;alert(1)&lt;/script&gt;" in body
             finally:
                 conn.close()
+        finally:
+            srv.shutdown()
+
+
+def _post_standards_decision(url: str, fields: dict[str, object]) -> tuple[int, str]:
+    """POST url-encoded fields to /submit-standards and return (status, body)."""
+    payload = urlencode(fields, doseq=True).encode("utf-8")
+    host_port = url[len("http://") :].rstrip("/")
+    host, port_str = host_port.split(":")
+    conn = http.client.HTTPConnection(host, int(port_str), timeout=5)
+    try:
+        conn.putrequest("POST", "/submit-standards")
+        conn.putheader("Content-Type", "application/x-www-form-urlencoded")
+        conn.putheader("Content-Length", str(len(payload)))
+        conn.endheaders()
+        conn.send(payload)
+        resp = conn.getresponse()
+        body = resp.read().decode("utf-8")
+        return resp.status, body
+    finally:
+        conn.close()
+
+
+class TestSubmitStandardsEndpoint:
+    """HTTP-level tests for /submit-standards, which is what the approval
+    page's Approve/Cancel buttons actually POST to. Before this class there
+    was no coverage of this endpoint at all as an HTTP endpoint (only of
+    _render_approval_page via a POST to /approve-standards, which is a
+    different route)."""
+
+    def test_post_without_csrf_token_is_rejected_and_does_not_unblock_wait_approval(
+        self, domains
+    ):
+        srv = ConfigServer(domains)
+        try:
+            url = srv.start()
+            status, body = _post_standards_decision(url, {"action": "approve"})
+            assert status == 403
+            assert "csrf" in body.lower()
+            with pytest.raises(ConfigTimeoutError):
+                srv.wait_approval(timeout_s=0.2)
+        finally:
+            srv.shutdown()
+
+    def test_post_with_wrong_csrf_token_is_rejected_and_does_not_unblock_wait_approval(
+        self, domains
+    ):
+        srv = ConfigServer(domains)
+        try:
+            url = srv.start()
+            status, body = _post_standards_decision(
+                url, {"action": "approve", "csrf_token": "not-the-real-token"}
+            )
+            assert status == 403
+            with pytest.raises(ConfigTimeoutError):
+                srv.wait_approval(timeout_s=0.2)
+        finally:
+            srv.shutdown()
+
+    def test_post_with_invalid_action_is_rejected_and_does_not_unblock_wait_approval(
+        self, domains
+    ):
+        srv = ConfigServer(domains)
+        try:
+            url = srv.start()
+            status, body = _post_standards_decision(
+                url, {"action": "not-a-real-action", "csrf_token": srv._csrf_token}
+            )
+            assert status == 400
+            with pytest.raises(ConfigTimeoutError):
+                srv.wait_approval(timeout_s=0.2)
+        finally:
+            srv.shutdown()
+
+    def test_valid_approve_post_unblocks_a_concurrently_waiting_wait_approval(
+        self, domains
+    ):
+        srv = ConfigServer(domains)
+        try:
+            url = srv.start()
+            result: dict[str, object] = {}
+
+            def waiter() -> None:
+                result["action"] = srv.wait_approval(timeout_s=5.0)
+
+            thread = threading.Thread(target=waiter)
+            thread.start()
+            # Give wait_approval a moment to actually start blocking before
+            # the decision arrives, so this test would fail honestly (a
+            # timeout, not a false pass) if the unblocking wire were broken.
+            time.sleep(0.1)
+            status, _body = _post_standards_decision(
+                url, {"action": "approve", "csrf_token": srv._csrf_token}
+            )
+            assert status == 200
+            thread.join(timeout=5)
+            assert not thread.is_alive()
+            assert result["action"] == "approve"
+        finally:
+            srv.shutdown()
+
+    def test_valid_cancel_post_unblocks_a_concurrently_waiting_wait_approval(
+        self, domains
+    ):
+        srv = ConfigServer(domains)
+        try:
+            url = srv.start()
+            result: dict[str, object] = {}
+
+            def waiter() -> None:
+                result["action"] = srv.wait_approval(timeout_s=5.0)
+
+            thread = threading.Thread(target=waiter)
+            thread.start()
+            time.sleep(0.1)
+            status, _body = _post_standards_decision(
+                url, {"action": "cancel", "csrf_token": srv._csrf_token}
+            )
+            assert status == 200
+            thread.join(timeout=5)
+            assert not thread.is_alive()
+            assert result["action"] == "cancel"
+        finally:
+            srv.shutdown()
+
+
+def _set_approval_data(srv: ConfigServer) -> None:
+    """Give a ConfigServer some approval data to work with, the same way
+    server.py does before calling wait_approval: mirrors
+    test_approve_standards_endpoint_is_reachable_by_get_once_data_is_set."""
+    from engineering_audit.standards import RuleSet
+    from engineering_audit.standards_approval import (
+        build_diff_model,
+        derive_summary_counts,
+    )
+
+    rule_set = RuleSet(version="1.0", project="test", rules=[])
+    proposed_content = (
+        '<!-- audit:start id="agent-standard" -->\nContent\n<!-- audit:end -->'
+    )
+    diffs = [
+        build_diff_model(None, proposed_content, "agent-standard"),
+        build_diff_model(None, proposed_content, "human-standard"),
+        build_diff_model(None, proposed_content, "engineering-policy"),
+    ]
+    counts = derive_summary_counts(rule_set)
+    srv.set_approval_data(diffs, counts)
+
+
+class TestApprovalWindowClosesOnTimeoutOrConsumption:
+    """The approval window (see set_approval_data / wait_approval) must be
+    explicitly closed once it can no longer mean anything: either it timed
+    out, or a decision has already been recorded for it. Before this class,
+    _approval_data was set once and never cleared, so a late decision
+    arriving after either of those was accepted and answered with the same
+    "processed" message as a real one, even though nothing was written and
+    nothing ever would be: a false success, which this project treats as a
+    defect in its own right.
+    """
+
+    def test_approval_ready_reports_not_ready_after_timeout(self, domains) -> None:
+        srv = ConfigServer(domains)
+        try:
+            url = srv.start()
+            _set_approval_data(srv)
+            with urllib.request.urlopen(url + "approval-ready", timeout=5) as resp:
+                assert resp.status == 204
+            with pytest.raises(ConfigTimeoutError):
+                srv.wait_approval(timeout_s=0.2)
+            try:
+                urllib.request.urlopen(url + "approval-ready", timeout=5)
+                pytest.fail("Expected HTTPError")
+            except urllib.error.HTTPError as e:
+                assert e.code == 404
+        finally:
+            srv.shutdown()
+
+    def test_approve_standards_page_not_served_after_timeout(self, domains) -> None:
+        srv = ConfigServer(domains)
+        try:
+            url = srv.start()
+            _set_approval_data(srv)
+            with pytest.raises(ConfigTimeoutError):
+                srv.wait_approval(timeout_s=0.2)
+            try:
+                urllib.request.urlopen(url + "approve-standards", timeout=5)
+                pytest.fail("Expected HTTPError")
+            except urllib.error.HTTPError as e:
+                assert e.code == 404
+        finally:
+            srv.shutdown()
+
+    def test_submit_standards_rejects_late_decision_after_timeout_with_honest_message(
+        self, domains
+    ) -> None:
+        srv = ConfigServer(domains)
+        try:
+            url = srv.start()
+            _set_approval_data(srv)
+            with pytest.raises(ConfigTimeoutError):
+                srv.wait_approval(timeout_s=0.2)
+            status, body = _post_standards_decision(
+                url, {"action": "approve", "csrf_token": srv._csrf_token}
+            )
+            # Never the false-success 200 this endpoint used to send: the
+            # window is gone, so the honest status is that this resource no
+            # longer exists to be acted on.
+            assert status == 410
+            assert "Standards update processed" not in body
+            assert "closed" in body.lower()
+            assert "moved on" in body.lower()
+        finally:
+            srv.shutdown()
+
+    def test_approval_ready_reports_not_ready_after_decision_consumed(
+        self, domains
+    ) -> None:
+        srv = ConfigServer(domains)
+        try:
+            url = srv.start()
+            _set_approval_data(srv)
+            status, _body = _post_standards_decision(
+                url, {"action": "approve", "csrf_token": srv._csrf_token}
+            )
+            assert status == 200
+            assert srv.wait_approval(timeout_s=5.0) == "approve"
+            try:
+                urllib.request.urlopen(url + "approval-ready", timeout=5)
+                pytest.fail("Expected HTTPError")
+            except urllib.error.HTTPError as e:
+                assert e.code == 404
+        finally:
+            srv.shutdown()
+
+    def test_approve_standards_page_not_served_after_decision_consumed(
+        self, domains
+    ) -> None:
+        srv = ConfigServer(domains)
+        try:
+            url = srv.start()
+            _set_approval_data(srv)
+            status, _body = _post_standards_decision(
+                url, {"action": "approve", "csrf_token": srv._csrf_token}
+            )
+            assert status == 200
+            assert srv.wait_approval(timeout_s=5.0) == "approve"
+            try:
+                urllib.request.urlopen(url + "approve-standards", timeout=5)
+                pytest.fail("Expected HTTPError")
+            except urllib.error.HTTPError as e:
+                assert e.code == 404
+        finally:
+            srv.shutdown()
+
+    def test_submit_standards_rejects_second_decision_after_first_consumed(
+        self, domains
+    ) -> None:
+        srv = ConfigServer(domains)
+        try:
+            url = srv.start()
+            _set_approval_data(srv)
+            status, _body = _post_standards_decision(
+                url, {"action": "approve", "csrf_token": srv._csrf_token}
+            )
+            assert status == 200
+            assert srv.wait_approval(timeout_s=5.0) == "approve"
+            # A reload of the submitted page (or a second click) re-submits
+            # after the first decision already unblocked the waiting run.
+            # This one must not be told it succeeded either.
+            status2, body2 = _post_standards_decision(
+                url, {"action": "cancel", "csrf_token": srv._csrf_token}
+            )
+            assert status2 == 410
+            assert "Standards update processed" not in body2
+            assert "closed" in body2.lower()
+            assert "already" in body2.lower()
+        finally:
+            srv.shutdown()
+
+    def test_happy_path_end_to_end_still_works(self, domains) -> None:
+        srv = ConfigServer(domains)
+        try:
+            url = srv.start()
+            _set_approval_data(srv)
+            with urllib.request.urlopen(url + "approval-ready", timeout=5) as resp:
+                assert resp.status == 204
+            with urllib.request.urlopen(url + "approve-standards", timeout=5) as resp:
+                assert resp.status == 200
+                assert "Review Standards Documents" in resp.read().decode("utf-8")
+
+            result: dict[str, object] = {}
+
+            def waiter() -> None:
+                result["action"] = srv.wait_approval(timeout_s=5.0)
+
+            thread = threading.Thread(target=waiter)
+            thread.start()
+            time.sleep(0.1)
+            status, body = _post_standards_decision(
+                url, {"action": "approve", "csrf_token": srv._csrf_token}
+            )
+            assert status == 200
+            assert "Standards update processed" in body
+            thread.join(timeout=5)
+            assert not thread.is_alive()
+            assert result["action"] == "approve"
+        finally:
+            srv.shutdown()
+
+    def test_submit_standards_never_answers_processed_for_a_decision_the_window_did_not_honour(
+        self, domains
+    ) -> None:
+        """Every test above runs wait_approval to completion before ever
+        POSTing, so none of them can land in the one place the old handler
+        was actually broken: before this fix, reading
+        _approval_closed_reason and writing _approval_action happened under
+        two separate lock acquisitions, with no lock held between them. If
+        wait_approval's own timeout ran entirely inside that unlocked gap,
+        the request thread's closed_reason was still the stale None it read
+        before the window closed, so it went on to record the decision and
+        answer 200 "Standards update processed" even though the run had
+        already moved on without it.
+
+        This test drives a request thread into that exact gap rather than
+        hoping real scheduling lands it there: it wraps server._lock in a
+        proxy whose __exit__ sleeps, once, the first time a release happens
+        with this decision not yet recorded (server._approval_action still
+        None). Before this fix that release is the first of the handler's
+        two lock uses, i.e. exactly the read-only check; parking the
+        request thread there for longer than wait_approval's own timeout
+        guarantees wait_approval closes the window while the request thread
+        is mid-air. After the fix, reading closed_reason and (conditionally)
+        writing _approval_action happen together in one critical section, so
+        by the time this same release fires the decision, if the window was
+        still open, has already been recorded atomically: there is no
+        longer a released-but-undecided moment for the sleep to land in.
+        """
+        srv = ConfigServer(domains)
+        try:
+            url = srv.start()
+            _set_approval_data(srv)
+
+            class _PauseInUnlockedGap:
+                """Wraps a real lock so that the first release which
+                happens before this thread's decision has been written to
+                _approval_action is followed by a sleep. That is precisely
+                the unlocked gap the pre-fix handler left between reading
+                _approval_closed_reason and writing _approval_action; once
+                the two are read and written together under one lock (see
+                the fix), no release can ever fire with the decision still
+                unrecorded while the window was open, so this stops
+                pausing anything and the real lock behaves exactly as
+                before.
+                """
+
+                def __init__(
+                    self, real_lock: threading.Lock, server: ConfigServer
+                ) -> None:
+                    self._real_lock = real_lock
+                    self._server = server
+                    self._used = False
+                    self._own_lock = threading.Lock()
+
+                def __enter__(self) -> "_PauseInUnlockedGap":
+                    self._real_lock.acquire()
+                    return self
+
+                def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+                    should_pause = False
+                    with self._own_lock:
+                        if not self._used and self._server._approval_action is None:
+                            self._used = True
+                            should_pause = True
+                    self._real_lock.release()
+                    if should_pause:
+                        time.sleep(0.4)
+
+            srv._lock = _PauseInUnlockedGap(srv._lock, srv)  # type: ignore[assignment]
+
+            result: dict[str, object] = {}
+
+            def poster() -> None:
+                result["status"], result["body"] = _post_standards_decision(
+                    url, {"action": "approve", "csrf_token": srv._csrf_token}
+                )
+
+            thread = threading.Thread(target=poster)
+            thread.start()
+            timed_out = False
+            try:
+                action = srv.wait_approval(timeout_s=0.15)
+            except ConfigTimeoutError:
+                timed_out = True
+            thread.join(timeout=5)
+            assert not thread.is_alive()
+
+            if timed_out:
+                # wait_approval genuinely closed the window before this
+                # decision was recorded: the response must say so plainly,
+                # never the "processed" message a real decision gets. This
+                # is the exact combination the pre-fix handler got wrong:
+                # a genuine ConfigTimeoutError alongside a false 200.
+                assert result["status"] == 410
+                assert "Standards update processed" not in result["body"]
+                assert "closed" in result["body"].lower()
+            else:
+                # The decision was recorded before the window closed, so
+                # wait_approval saw it and returned it: a 200 here is
+                # honest, and it must agree with what wait_approval read.
+                assert action == "approve"
+                assert result["status"] == 200
+                assert "Standards update processed" in result["body"]
         finally:
             srv.shutdown()

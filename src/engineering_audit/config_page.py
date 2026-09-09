@@ -57,6 +57,13 @@ _STACK_MISMATCH_TEMPLATE_PATH = (
 # anything that later reads this handler.
 _ALIVE_PATH = "/alive"
 
+# The path the "configuration received" page polls, from the one tab a human
+# still has open once the audit starts running, to find out whether there is
+# now a standards approval waiting for them. Its own cheap route, mirroring
+# _ALIVE_PATH exactly, so a poll every few seconds never has to render the
+# (much larger) approval page itself just to ask whether one exists yet.
+_APPROVAL_READY_PATH = "/approval-ready"
+
 # The path the page's custom-output-location field checks against as the user
 # types, so the resolved absolute path (and any problem with it) is shown
 # before the user ever submits the form, not after. Read-only and
@@ -337,6 +344,14 @@ class ConfigServer:
         # Approval flow for standards documents
         self._approval_submitted = threading.Event()
         self._approval_action: str | None = None  # "approve" or "cancel"
+        # None while the approval window is open (a decision is still
+        # meaningful); set by wait_approval, under _lock, the moment it can
+        # no longer be, either because it timed out or because the one
+        # decision it was waiting for has already been consumed. Everything
+        # that could make a late decision look like it succeeded
+        # (/approval-ready, /approve-standards, /submit-standards) reads
+        # this before doing anything else. See wait_approval.
+        self._approval_closed_reason: str | None = None
         # Stack mismatch flow
         self._stack_mismatch_data: dict | None = None
         self._stack_mismatch_template_text = (
@@ -386,6 +401,19 @@ class ConfigServer:
                 if split.path == "/stack-mismatch":
                     self._serve_stack_mismatch_page()
                     return
+                if split.path == "/approve-standards":
+                    # The only way a real browser ever reaches this page: an
+                    # address bar, a link, or (see config-submitted.html) a
+                    # script navigating window.location.href all issue GET,
+                    # never POST. The POST route below exists only because
+                    # do_POST used to be this endpoint's sole route; it is
+                    # left in place, unchanged, since existing callers rely
+                    # on it, but it is not how a person ever gets here.
+                    self._serve_approval_page()
+                    return
+                if split.path == _APPROVAL_READY_PATH:
+                    self._serve_approval_ready()
+                    return
                 if split.path not in ("/", ""):
                     self.send_error(HTTPStatus.NOT_FOUND)
                     return
@@ -424,6 +452,25 @@ class ConfigServer:
                 self.send_header("Cache-Control", "no-store")
                 self.send_header("Content-Length", "0")
                 self.end_headers()
+
+            def _serve_approval_ready(self) -> None:
+                """Answer the submitted page's approval-readiness poll: 204
+                once approval data has been set, 404 until then.
+
+                No body either way, matching _serve_heartbeat: this exists
+                only so the page can decide whether to navigate itself to
+                /approve-standards, never to carry any of the approval data
+                itself.
+                """
+                with server._lock:
+                    ready = server._approval_data is not None
+                if ready:
+                    self.send_response(HTTPStatus.NO_CONTENT)
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                else:
+                    self.send_error(HTTPStatus.NOT_FOUND, "No approval pending")
 
             def _serve_output_location_check(self, query: str) -> None:
                 """Answer the custom-output-location field's live preview:
@@ -474,11 +521,15 @@ class ConfigServer:
                 standards documents before they are written to disk. It must
                 not write anything to disk.
                 """
-                if (
-                    server._approval_data is None
-                    or server._approval_template_text is None
-                ):
-                    self.send_error(HTTPStatus.NOT_FOUND, "Approval data not available")
+                with server._lock:
+                    approval_data = server._approval_data
+                    approval_template_text = server._approval_template_text
+                    closed_reason = server._approval_closed_reason
+                if approval_data is None or approval_template_text is None:
+                    self.send_error(
+                        HTTPStatus.NOT_FOUND,
+                        closed_reason or "Approval data not available",
+                    )
                     return
 
                 self._script_nonce = secrets.token_urlsafe(16)
@@ -522,8 +573,47 @@ class ConfigServer:
                     self.send_error(HTTPStatus.BAD_REQUEST, "Invalid action")
                     return
 
+                # The check (is the window still open?) and the act (record
+                # the decision) must happen inside the same critical
+                # section. Reading closed_reason and writing
+                # _approval_action under two separate lock acquisitions left
+                # an unlocked gap between them: wait_approval could close
+                # the window in that gap, and this handler, having already
+                # captured closed_reason as None, would sail past the guard
+                # below and record a decision for a window that was no
+                # longer open, then answer with the same "processed"
+                # message a real decision gets. Collapsing both into one
+                # `with server._lock:` block makes that interleaving
+                # impossible: whichever of this handler or wait_approval
+                # gets the lock first decides the outcome, and the other
+                # sees it.
                 with server._lock:
-                    server._approval_action = action
+                    closed_reason = server._approval_closed_reason
+                    if closed_reason is None:
+                        server._approval_action = action
+                if closed_reason is not None:
+                    # wait_approval already closed this window, either
+                    # because it timed out or because the one decision it
+                    # was waiting for has already been recorded. Answering
+                    # this with the same "processed" message given to a real
+                    # decision would be a false success: nothing was written
+                    # and nothing ever will be for this decision, so the
+                    # response has to say that plainly rather than imply the
+                    # click did something.
+                    body = (
+                        f"<html><body><p>{html.escape(closed_reason)}</p></body></html>"
+                    ).encode("utf-8")
+                    self.send_response(HTTPStatus.GONE)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+
+                # _approval_action was already written above, inside the
+                # same critical section as the closed_reason check. The
+                # event and the response are deliberately left outside the
+                # lock: never hold a lock while writing to a socket.
                 server._approval_submitted.set()
 
                 # Return a confirmation page
@@ -700,7 +790,8 @@ class ConfigServer:
                 with server._lock:
                     server._config = config
                 server._submitted.set()
-                body = server._submitted_text.encode("utf-8")
+                self._script_nonce = secrets.token_urlsafe(16)
+                body = server._render_submitted_page(self._script_nonce).encode("utf-8")
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
@@ -887,6 +978,24 @@ class ConfigServer:
             output_location_path=html.escape(output_location_path or ""),
         )
 
+    def _render_submitted_page(self, script_nonce: str = "") -> str:
+        """Render the "configuration received" page shown after /submit.
+
+        This is the one tab a human still has open while the audit runs, so
+        it carries a script that polls _APPROVAL_READY_PATH (see
+        config-submitted.html) and navigates itself to /approve-standards
+        the moment there is something to review. Without that script this
+        page is a dead end: nothing else ever tells a real browser that the
+        approval page exists.
+        """
+        template = string.Template(self._submitted_text)
+        return template.substitute(
+            csp_nonce=html.escape(script_nonce),
+            approval_ready_path=_APPROVAL_READY_PATH,
+            approval_page_path="/approve-standards",
+            approval_poll_interval_ms=str(_HEARTBEAT_INTERVAL_MS),
+        )
+
     def _parse_submission(self, fields: dict[str, list[str]]) -> AuditConfig:
         selected_domain_ids = fields.get("domain", [])
         issue_mode = fields.get("issue_mode", ["report"])[0]
@@ -972,8 +1081,30 @@ class ConfigServer:
             "approve" if the user clicked Approve, "cancel" if they clicked Cancel.
 
         Raises ConfigTimeoutError on expiry.
+
+        Either way, this call is the one place that knows the approval
+        window is now over, so it is the one place that closes it: on
+        expiry, and again the moment a real decision is read out of
+        _approval_action, _approval_data is cleared and
+        _approval_closed_reason is set to an honest explanation. That is
+        what makes /approval-ready stop pointing a poller here, makes
+        /approve-standards stop serving the page, and makes a late POST to
+        /submit-standards get told the window is closed instead of the
+        false "processed" success it would otherwise still receive. Closing
+        it anywhere else (the server.py call site, say) would miss the
+        second case: nothing there ever runs again once wait_approval has
+        already returned a decision.
         """
         if not self._approval_submitted.wait(timeout=timeout_s):
+            with self._lock:
+                self._approval_data = None
+                self._approval_closed_reason = (
+                    "The standards review window has closed: no decision "
+                    "arrived within the time allowed, so the audit run "
+                    "moved on without writing the standards documents. "
+                    "This decision was not recorded and cannot be accepted "
+                    "now."
+                )
             raise ConfigTimeoutError(
                 f"No approval decision submitted within {timeout_s} seconds."
             )
@@ -982,7 +1113,14 @@ class ConfigServer:
                 raise RuntimeError(
                     "approval_submitted event set but no action stored: internal bug"
                 )
-            return self._approval_action
+            action = self._approval_action
+            self._approval_data = None
+            self._approval_closed_reason = (
+                "The standards review window has closed: a decision for "
+                "this run has already been recorded, and the audit run has "
+                "moved on. This decision was not recorded."
+            )
+            return action
 
     def set_stack_mismatch_data(
         self,
@@ -1056,12 +1194,23 @@ class ConfigServer:
         Returns:
             HTML string ready to send to the client.
         """
-        if self._approval_data is None or self._approval_template_text is None:
+        # Read both under the lock and hold onto the result, rather than
+        # re-reading self._approval_data through the rest of this method:
+        # wait_approval can clear it, concurrently, the instant a decision
+        # arrives or the window times out (see wait_approval), and this
+        # method's own caller (_serve_approval_page) checks for None before
+        # ever calling it. A second, unlocked read here could see None where
+        # the caller saw data, which is exactly the kind of gap that used to
+        # be harmless only because nothing ever cleared this field.
+        with self._lock:
+            approval_data = self._approval_data
+            approval_template_text = self._approval_template_text
+        if approval_data is None or approval_template_text is None:
             return "<html><body>Approval data not available</body></html>"
 
         # Build HTML for each diff
         diffs_html = []
-        for diff in self._approval_data.diffs:
+        for diff in approval_data.diffs:
             current = diff.current_content or "(File does not exist yet)"
             # Escape content first, then apply marker highlighting
             escaped_current = html.escape(current)
@@ -1086,7 +1235,7 @@ class ConfigServer:
                 """
             )
 
-        summary = self._approval_data.summary_counts
+        summary = approval_data.summary_counts
         summary_html = f"""
     <div class="summary">
         <h2>Summary of Changes</h2>
@@ -1099,7 +1248,7 @@ class ConfigServer:
     </div>
         """
 
-        template = string.Template(self._approval_template_text)
+        template = string.Template(approval_template_text)
         return template.substitute(
             csp_nonce=html.escape(script_nonce),
             summary=summary_html,
