@@ -394,6 +394,95 @@ def test_write_grill_standards_artefacts_rejects_project_dir_does_not_exist(
     assert "provide a valid path" in error_message.lower()
 
 
+def test_write_grill_standards_artefacts_happy_path_writes_provisional_standards(
+    tmp_path: Path,
+) -> None:
+    """MCP tool succeeds end-to-end, writing provisional standards artefacts.
+
+    Exercises the tool's own JSON-to-StandardsRule parsing and response
+    assembly on the success path, including the default grill_intent_note
+    fallback for a rule that does not supply one.
+    """
+    mcp, _state = build_server(FIXTURE_PACK)
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+
+    explicit_note = "Team consensus: always use type hints"
+    grill_rules = [
+        {
+            "rule_id": "D06-R01",
+            "domain_id": "d06",
+            "text_short": "Use type hints",
+            "text_body": "Use Python 3.9+ type hints.",
+            "source": "rules-pack",
+            "grill_intent_note": explicit_note,
+        },
+        {
+            "rule_id": "D06-R02",
+            "domain_id": "d06",
+            "text_short": "Avoid bare excepts",
+            "text_body": "Always catch specific exception types.",
+            "source": "rules-pack",
+        },
+    ]
+
+    result = _call(
+        mcp,
+        "write_grill_standards_artefacts",
+        {
+            "grill_rules": json.dumps(grill_rules),
+            "output_dir": str(output_dir),
+            "project_dir": str(project_dir),
+        },
+    )
+
+    assert result["success"] is True
+    assert result["rules_count"] == 2
+    assert result["created_date"] == date.today().isoformat()
+
+    expected_rule_set_path = str(output_dir / "rule-set.json")
+    assert result["rule_set_path"] == expected_rule_set_path
+
+    docs_dir = project_dir / "docs"
+    expected_document_paths = {
+        "agent-standard": str(docs_dir / "coding-standard.agent.md"),
+        "human-standard": str(docs_dir / "engineering-standard.md"),
+        "engineering-policy": str(docs_dir / "engineering-policy.md"),
+    }
+    assert result["document_paths"] == expected_document_paths
+
+    # All artefacts actually exist on disk.
+    rule_set_path = Path(result["rule_set_path"])
+    assert rule_set_path.exists()
+    for doc_path in result["document_paths"].values():
+        assert Path(doc_path).exists()
+
+    # Content spot-checks on the rendered agent document.
+    agent_content = Path(expected_document_paths["agent-standard"]).read_text(
+        encoding="utf-8"
+    )
+    assert '<!-- audit:start id="agent-standard" -->' in agent_content
+    assert "<!-- audit:end -->" in agent_content
+    assert "grill intent only, not yet audited against code" in agent_content
+    assert "Use type hints" in agent_content
+    assert "Avoid bare excepts" in agent_content
+
+    # The persisted rule set carries provisional status and preserves the
+    # explicit note while applying the default-note fallback to the other.
+    loaded = RuleSet.load(rule_set_path)
+    assert len(loaded.rules) == 2
+    rules_by_id = {rule.rule_id: rule for rule in loaded.rules}
+    assert rules_by_id["D06-R01"].status == "provisional"
+    assert rules_by_id["D06-R01"].grill_intent_note == explicit_note
+    assert rules_by_id["D06-R02"].status == "provisional"
+    assert (
+        rules_by_id["D06-R02"].grill_intent_note
+        == "Recorded from engineering-grill intent."
+    )
+
+
 def test_write_grill_standards_artefacts_rejects_project_dir_is_a_file(
     tmp_path: Path,
 ) -> None:
