@@ -625,6 +625,86 @@ class TestRenderHumanStandard:
         assert "D11-R02" not in output
         assert "D06-R01" in output
 
+    def test_render_human_standard_includes_conflict_section_when_conflicted(
+        self,
+    ) -> None:
+        """Conflict section appears for a rule with conflict_with_stack_profile."""
+        rule_set = RuleSet(
+            version="1.0",
+            project="test-project",
+            rules=[
+                Rule(
+                    rule_id="D06-R02",
+                    domain_id="d06",
+                    text_short="API documentation",
+                    text_body="Document all API endpoints.",
+                    source="rules-pack",
+                    stack_profile="fastapi",
+                    status="verified-pass",
+                    verified_date="2026-08-25",
+                    severity=None,
+                    finding_details=None,
+                    conflict_with_stack_profile={
+                        "stack_rule_id": "S-FastAPI-R01",
+                        "stack_rule_text": "Include example requests and responses for every endpoint.",
+                        "issue": "Rules pack says 'document every endpoint'; stack profile says 'include examples'. Stack is stricter.",
+                    },
+                    conflict_resolution="Rules pack wins (per decision #7). Follow stack profile requirement.",
+                    source_url=None,
+                ),
+            ],
+        )
+        output = render_human_standard(rule_set, None)
+        # Verify conflict section structure
+        assert "**Conflict with stack profile:**" in output
+        assert (
+            "Stack profile rule: Include example requests and responses for every endpoint."
+            in output
+        )
+        assert (
+            "Issue: Rules pack says 'document every endpoint'; stack profile says 'include examples'. Stack is stricter."
+            in output
+        )
+        assert (
+            "Resolution: Rules pack wins (per decision #7). Follow stack profile requirement."
+            in output
+        )
+
+    def test_render_human_standard_excludes_conflict_section_when_not_conflicted(
+        self,
+    ) -> None:
+        """No conflict section appears for a rule without conflict_with_stack_profile."""
+        rule_set = RuleSet(
+            version="1.0",
+            project="test-project",
+            rules=[
+                Rule(
+                    rule_id="D06-R01",
+                    domain_id="d06",
+                    text_short="Use type hints",
+                    text_body="Use type hints.",
+                    source="rules-pack",
+                    stack_profile=None,
+                    status="verified-pass",
+                    verified_date="2026-08-25",
+                    severity=None,
+                    finding_details=None,
+                    conflict_with_stack_profile=None,
+                    conflict_resolution=None,
+                    source_url=None,
+                ),
+            ],
+        )
+        output = render_human_standard(rule_set, None)
+        # Rule should be rendered but without any conflict heading
+        assert "D06-R01" in output
+        # Extract just the human standard content (between managed-block markers)
+        start = output.find('<!-- audit:start id="human-standard" -->')
+        end = output.find("<!-- audit:end -->")
+        content = output[start:end]
+        # Count "Conflict with stack profile:" occurrences - should be zero
+        assert content.count("**Conflict with stack profile:**") == 0
+
 
 class TestRenderPolicy:
     """Tests for render_policy function."""
