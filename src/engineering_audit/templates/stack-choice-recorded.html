@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>engineering-audit: stack choice recorded</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 4rem auto; padding: 0 1rem; }
+</style>
+</head>
+<body>
+<h1>Stack choice recorded</h1>
+<p>Keep this tab open. The audit is preparing the standards review; if it
+needs your approval before writing anything, this page will take you there
+automatically.</p>
+
+<script nonce="$csp_nonce">
+// Picks up the approval-readiness poll that config-submitted.html was
+// running before the mismatch page navigated this tab away from it,
+// unloading it (and both of its pollers) in the process. A resolved
+// (non-timeout) stack mismatch is always followed by a standards-approval
+// step in the same run, so without this script the user would be told to
+// close a tab that a review is still about to need.
+(function () {
+  function poll() {
+    fetch("$approval_ready_path", { cache: "no-store" })
+      .then(function (response) {
+        if (response.status === 204) {
+          window.location.href = "$approval_page_path";
+        }
+      })
+      .catch(function () {
+        // Best effort only, same as the other pollers in this app: a
+        // dropped poll here is not a reason to give up on the ones after
+        // it.
+      });
+  }
+  setInterval(poll, $approval_poll_interval_ms);
+})();
+</script>
+</body>
+</html>

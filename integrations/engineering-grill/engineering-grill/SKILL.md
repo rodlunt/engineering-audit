@@ -373,6 +373,39 @@ End with a compact handoff: project intent, active and deferred domains, importa
 build gates, residual risks, and open items. Recommend a post-build engineering audit as the
 verification stage. Start that audit only after a separate user request.
 
+## Generate provisional standards
+
+The grill's rules capture the project's engineering intent before code exists. Generate the three provisional standards documents (agent coding standard, human coding standard, engineering policy) from the captured rules.
+
+Call `write_grill_standards_artefacts` with:
+
+- `grill_rules` (string, required): JSON array of the grill's captured rule objects. Each rule object must have `rule_id`, `text_short`, `text_body`, and `source`. Fields `domain_id`, `stack_profile`, and `grill_intent_note` are optional (if `grill_intent_note` is omitted, the tool sets it to "Recorded from engineering-grill intent."). The tool marks all rules as provisional with today's date.
+- `output_dir` (string, required): the project's audit output directory, typically `audit-output/`, or a configured location if known from a prior audit run or CLAUDE.md.
+- `project_dir` (string, required): the project root directory. The three standards documents are written to `project_dir/docs/` as required by the specification. This directory must exist.
+
+On success, the tool returns a dictionary with keys: `success` (Boolean, value True), `rule_set_path` (string), `document_paths` (dictionary with keys `agent-standard`, `human-standard`, `engineering-policy`), `rules_count` (integer), and `created_date` (ISO date string). On failure, it returns `success` (Boolean, value False) and `errors` (list of error message strings).
+
+**All rules are recorded as provisional.** Each document is annotated "provisional (grill intent only, not yet audited against code)" to signal that no code verification has occurred yet. A later audit run on the same project loads the provisional rule set and merges audit verdicts into it, upgrading provisional rules to verified-pass or verified-finding with evidence. The grill's intent is preserved and evolved with facts.
+
+**No user approval is required at grill time.** The documents are written immediately to their configured paths with managed block markers. The grill is then complete; do not wait for further user review.
+
+If `success` is False, report the `errors` list to the user. Do not silently continue; a tool failure prevents document writing and must be surfaced.
+
+**Offer to link standards in project documents**
+
+Ask whether the user wants to add links to the three standards documents in the project's CLAUDE.md, AGENTS.md, README.md, or other documentation files. The user decides which files to update (if any). If the user declines, the grill is finished.
+
+If the user agrees, build a list of target files they named and call `link_standards_in_documents` with:
+
+- `project_dir` (string, required): the project root directory (same as above).
+- `target_files` (list of strings, required): the file names or relative paths the user approved. Examples: `["CLAUDE.md"]`, `["CLAUDE.md", "AGENTS.md"]`, `["docs/standards.md"]`. If the user declined, pass an empty list.
+
+On success, the tool returns a dictionary with keys: `success` (Boolean, value True) and `updated_files` (list of file paths successfully updated). On failure, it returns `success` (Boolean, value False) and `errors` (list of error message strings).
+
+The tool adds links to the standards documents in a managed-block section (id=`standards-links`). The section is marked with "## Engineering Standards and Policies" and includes links to the three documents using relative paths from each target file to `docs/`. The tool is idempotent: running it twice produces identical results, preserving any hand-edited content outside the managed block.
+
+Report the result to the user: which files were updated, or which errors occurred. Then the grill is finished.
+
 ## Host notes
 
 - **The MCP tools may be deferred.** Load both before starting, and tell any sub-agent to do the

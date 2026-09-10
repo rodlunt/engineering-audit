@@ -30,6 +30,7 @@ __all__ = [
     "SelfAssessment",
     "Coverage",
     "ConsultedSource",
+    "ReportedConflict",
     "DomainResult",
     "RunMeta",
     "TelemetryConsent",
@@ -419,6 +420,39 @@ class ConsultedSource(BaseModel):
         return self
 
 
+class ReportedConflict(BaseModel):
+    """A conflict between a rules-pack rule and a stack-profile rule that
+    express the same requirement differently, reported by the auditing
+    agent that read both rule texts while verdicting this domain.
+
+    Deciding that two differently-worded rules express the same requirement
+    needs reading comprehension, so the agent that reads both texts during
+    the audit is the one that reports it; nothing here attempts to match
+    rule text itself. The rules-pack rule always wins the rendered output,
+    which is why there is no field here to choose otherwise: only the
+    stack-profile rule's text and a description of how the two differ.
+    """
+
+    rule_id: str = Field(
+        description="The rules-pack rule id this conflict is recorded against"
+    )
+    stack_rule_text: str = Field(
+        description="The stack-profile rule's text, worded differently from the rules-pack rule"
+    )
+    issue: str = Field(
+        description="How the two rules express the same requirement differently"
+    )
+
+    @model_validator(mode="after")
+    def _fields_not_blank(self) -> "ReportedConflict":
+        for field_name in ("stack_rule_text", "issue"):
+            if not getattr(self, field_name).strip():
+                raise ValueError(
+                    f"reported conflict for rule {self.rule_id}: {field_name} must not be blank"
+                )
+        return self
+
+
 class DomainResult(BaseModel):
     """The result of auditing one domain against a repository.
 
@@ -443,6 +477,17 @@ class DomainResult(BaseModel):
             "verdicts. Optional and self-reported; see validate_consulted_sources for "
             "the one check applied against it (every rule_id must be one of this "
             "domain's own rules)."
+        ),
+    )
+    reported_conflicts: list[ReportedConflict] = Field(
+        default_factory=list,
+        description=(
+            "Conflicts between a rules-pack rule and a stack-profile rule that "
+            "express the same requirement differently, self-reported by the "
+            "agent that read both texts while verdicting this domain. Optional; "
+            "see _reported_conflicts_reference_verdicted_rules for the one check "
+            "applied against it (every rule_id must be one of this domain "
+            "result's own verdicted rules)."
         ),
     )
     reason: str | None = Field(
@@ -486,6 +531,26 @@ class DomainResult(BaseModel):
             raise ValueError(
                 f"domain {self.domain_id}: duplicate rule_verdict(s) for rule id(s) "
                 f"{duplicates}; each rule may carry at most one verdict per domain result"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _reported_conflicts_reference_verdicted_rules(self) -> "DomainResult":
+        # A reported conflict lands on the Rule that
+        # audit_rules_from_domain_results builds for a rule_id, and that
+        # function only builds one for a rule_id this domain result actually
+        # verdicted. A conflict naming any other rule_id has nowhere to
+        # attach, so it is rejected here rather than silently dropped later.
+        verdicted_rule_ids = {rv.rule_id for rv in self.rule_verdicts}
+        unknown = sorted(
+            {conflict.rule_id for conflict in self.reported_conflicts}
+            - verdicted_rule_ids
+        )
+        if unknown:
+            raise ValueError(
+                f"domain {self.domain_id}: reported_conflicts reference rule id(s) not "
+                f"verdicted in this domain result: {unknown}. Valid rule ids for this "
+                f"domain result: {sorted(verdicted_rule_ids)}."
             )
         return self
 

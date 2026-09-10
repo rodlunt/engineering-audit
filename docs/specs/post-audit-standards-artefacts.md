@@ -577,6 +577,14 @@ The implementation is phased so the merge logic is in place before provisional d
 
 **Mitigation:** The grill and audit workflows are designed to gradually improve coverage. If a domain was never audited, its rules remain provisional, and the document shows "not yet audited" next to them. The user is encouraged to run a full audit eventually.
 
+### Spec gap: Rationale field not available in rules pack (recorded 2026-08-27)
+
+**Issue:** The specification calls for render_human_standard to include rationale fetched from the rules pack. The rules pack Domain schema has no rationale field.
+
+**Current state:** Rationale rendering has been omitted from the implementation. The rules_pack parameter is retained in the signature for future use but is unused. The docstring in rendering.py notes the planned feature.
+
+**To close this gap:** Add a rationale field to the rules pack Domain or Rule schema. Backfill existing domains and rules with rationale text. Update render_human_standard to fetch and render this field when available.
+
 ### Open question: How to handle rules the audit marks not-applicable?
 
 **Decision not yet made, suggested approach:**

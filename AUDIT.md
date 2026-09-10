@@ -334,6 +334,18 @@ For each domain id in `selected_domain_ids`, in order:
    cannot back.** Do this for every rule as you go, not as a memory exercise at the end of the
    sweep. Leave `consulted_sources` empty for a rule you verdicted from the rules pack and the
    repository alone, which is the common case.
+
+   If a rules-pack rule and a stack-profile rule you saw while sweeping the repository turn out
+   to express the same requirement worded differently, record it in that `DomainResult`'s
+   `reported_conflicts`: `{rule_id, stack_rule_text, issue}`. `rule_id` is the rules-pack rule's
+   id (one of this domain's own rule ids); `stack_rule_text` is the stack-profile rule's own
+   wording; `issue` is a short description of how the two say the same thing differently.
+   Deciding that two differently-worded rules mean the same thing is exactly the kind of reading
+   comprehension you are doing while sweeping, so you are the one who reports it; the server
+   never tries to match rule text itself. **You do not need to decide which rule wins**: the
+   rules-pack rule always wins the rendered output, by fixed policy, and the server records that
+   resolution for you. Leave `reported_conflicts` empty for a domain where you saw no such
+   conflict, which is the common case.
 6. Once every rule in the domain has a verdict, the domain's overall `status` is `completed`
    (even if some individual rules ended up could-not-evaluate or not-applicable). You already
    decided in step 2 above whether this domain runs at all or is `could-not-run`; do not revisit
@@ -397,6 +409,9 @@ For each domain id in `selected_domain_ids`, in order:
    - **Unknown rule id in consulted_sources**: a source names a `rule_id` that is not one of
      this domain's own rules. Fix the id (it must be the domain being recorded, not another
      one) and resubmit.
+   - **Unknown rule id in reported_conflicts**: a conflict names a `rule_id` you did not verdict
+     in this same `DomainResult`. The error lists both the offending id and the valid ones; fix
+     the id and resubmit.
    - **Domain not selected**: you are trying to record a domain the user did not choose. Skip it.
    - **Already recorded**: you are re-recording a domain. If this is deliberate (you found a
      mistake in your first pass), pass `replace=True`. If it is not deliberate, you have a bug in
