@@ -1387,6 +1387,60 @@ def _update_check_enabled_from_env() -> bool:
     return not os.environ.get(_NO_UPDATE_CHECK_ENV_VAR)
 
 
+def _tool_and_pack_staleness(
+    state: AppState,
+    tool_version: str | None = None,
+    host_cli: str | None = None,
+) -> tuple[str, str | None, str | None, str | None, str, str]:
+    """Resolve the tool's and the rules pack's own provenance, then run both
+    staleness checks against them, exactly as begin_run has always done.
+
+    Returns ``(tool_version_value, tool_commit_value, pack_version_value,
+    pack_commit_value, update_check, pack_update_check)``. Factored out of
+    begin_run (issue #288) so list_domains can run the identical checks
+    without duplicating the provenance lookups or the enabled= wiring:
+    before this, ``check_for_update``/``check_pack_for_update`` were reachable
+    only from begin_run, which the engineering-grill skill is forbidden to
+    call (it only uses list_domains and get_domain), so a grill session could
+    run entirely against a stale tool pin or stale rules pack with nothing to
+    say so.
+
+    ``tool_version`` and ``host_cli`` default to None for list_domains, which
+    takes no arguments and so has no caller-supplied version override and no
+    ``environment`` to read a host CLI name from; a None host_cli falls back
+    to :func:`update_remedy`'s documentation pointer rather than a guessed
+    per-host command. begin_run passes both through from its own parameters,
+    unaffected.
+    """
+    tool_version_value = tool_version or _default_tool_version()
+    tool_commit_value = _default_tool_commit()
+    pack_version_value = _git_release_version(state.pack.root)
+    # subtree_only=True (#168): see _git_commit's docstring for why the pack
+    # and the tool are scoped differently.
+    pack_commit_value = _git_commit(state.pack.root, subtree_only=True)
+    update_check_enabled = state.update_check_enabled
+    update_check = check_for_update(
+        tool_commit_value,
+        tool_version_value,
+        enabled=update_check_enabled,
+        host_cli=host_cli,
+    )
+    pack_update_check = check_pack_for_update(
+        str(state.pack.root),
+        pack_commit_value,
+        pack_version_value,
+        enabled=update_check_enabled,
+    )
+    return (
+        tool_version_value,
+        tool_commit_value,
+        pack_version_value,
+        pack_commit_value,
+        update_check,
+        pack_update_check,
+    )
+
+
 def _register_pack_tools(mcp: MCPServer, state: AppState) -> None:
     """Read-only inspection of the loaded rules pack."""
 
@@ -1394,8 +1448,24 @@ def _register_pack_tools(mcp: MCPServer, state: AppState) -> None:
     def list_domains() -> dict[str, Any]:
         """List every domain loaded from the rules pack, and report any files
         in the pack directory that were skipped because they had no Trigger
-        line."""
-        return {
+        line.
+
+        Also runs the same best-effort tool and rules-pack staleness checks
+        begin_run does (issue #288), since the engineering-grill skill calls
+        only list_domains and get_domain and is forbidden from calling
+        begin_run: without this, a long grill session could run entirely
+        against a stale tool pin or stale rules pack with no signal at all.
+        When either check positively confirms a newer release, the response
+        carries an "instruction" telling the calling agent to relay it to the
+        user, quoting the status verbatim (the same wording, and the same
+        four states, current/stale/could-not-check/not-checked, documented on
+        begin_run). "could-not-check" and "not-checked" never produce this
+        field: neither established that the install is actually behind. The
+        check is best-effort and never blocks or fails this call: any error
+        or unreachable network degrades to "could-not-check", exactly as for
+        begin_run.
+        """
+        response: dict[str, Any] = {
             "domains": [
                 {
                     "id": domain.id,
@@ -1412,6 +1482,15 @@ def _register_pack_tools(mcp: MCPServer, state: AppState) -> None:
                 for skipped in state.pack.skipped
             ],
         }
+        *_provenance, update_check, pack_update_check = _tool_and_pack_staleness(state)
+        staleness_instruction = _staleness_instruction(update_check, pack_update_check)
+        if staleness_instruction is not None:
+            response["instruction"] = staleness_instruction
+            # Same independent trace as begin_run's (issue #254/#288):
+            # stderr, never stdout, which carries the MCP protocol.
+            for line in _stale_statuses(update_check, pack_update_check):
+                print(f"engineering-audit: {line}", file=sys.stderr)
+        return response
 
     @mcp.tool()
     def get_domain(domain_id: str) -> str:
@@ -1557,7 +1636,10 @@ def _register_run_tools(mcp: MCPServer, state: AppState) -> None:
         --no-update-check or the ENGINEERING_AUDIT_NO_UPDATE_CHECK
         environment variable, in which case both fields read "not-checked",
         which is not something to warn the user about, since turning it off
-        was their own choice.
+        was their own choice. list_domains runs the identical checks and
+        surfaces the same "instruction" when either is confirmed stale
+        (issue #288), since the engineering-grill skill only calls
+        list_domains and get_domain and is forbidden from calling begin_run.
 
         When the loaded rules pack declares itself a subset of a larger
         pack (its pack.toml carries an 'edition' key; issue #255), the
@@ -1627,19 +1709,29 @@ def _register_run_tools(mcp: MCPServer, state: AppState) -> None:
                 model,
             )
 
-        tool_version_value = tool_version or _default_tool_version()
-        tool_commit_value = _default_tool_commit()
-        pack_version_value = _git_release_version(state.pack.root)
-        # subtree_only=True (#168): see the comment on the resume path above,
-        # and _git_commit's docstring, for why the pack and the tool are
-        # scoped differently.
-        pack_commit_value = _git_commit(state.pack.root, subtree_only=True)
+        # subtree_only=True (#168) for the pack commit: see the comment on
+        # the resume path above, and _git_commit's docstring, for why the
+        # pack and the tool are scoped differently. Issue #219: host_cli is
+        # passed through so a confirmed-stale tool check carries the right
+        # per-host remedy command; begin_run is the only caller of
+        # _tool_and_pack_staleness that has an environment to read it from.
+        (
+            tool_version_value,
+            tool_commit_value,
+            pack_version_value,
+            pack_commit_value,
+            update_check_value,
+            pack_update_check_value,
+        ) = _tool_and_pack_staleness(
+            state,
+            tool_version=tool_version,
+            host_cli=(environment or {}).get("host_cli"),
+        )
         # Read once here, like rules_pack_version/rules_pack_commit above, and
         # carried through RunMeta rather than re-read at render time (issue
         # #170): a saved run-state.json must reproduce the same compatibility
         # notice later even if the pack directory has since moved on or gone.
         pack_metadata = read_pack_metadata(state.pack.root)
-        update_check_enabled = state.update_check_enabled
         meta = RunMeta(
             tool_version=tool_version_value,
             tool_commit=tool_commit_value,
@@ -1654,22 +1746,8 @@ def _register_run_tools(mcp: MCPServer, state: AppState) -> None:
             rules_pack_full_pack_url=(
                 pack_metadata.full_pack_url if pack_metadata else None
             ),
-            update_check=check_for_update(
-                tool_commit_value,
-                tool_version_value,
-                enabled=update_check_enabled,
-                # Issue #219: the host decides what the fix command is, and
-                # begin_run is already told which host it is. Absent or
-                # unrecognised falls back to a documentation pointer rather
-                # than a guessed command.
-                host_cli=(environment or {}).get("host_cli"),
-            ),
-            pack_update_check=check_pack_for_update(
-                str(state.pack.root),
-                pack_commit_value,
-                pack_version_value,
-                enabled=update_check_enabled,
-            ),
+            update_check=update_check_value,
+            pack_update_check=pack_update_check_value,
             assistant=assistant,
             model=model,
             repo_name=repo_name,
@@ -1699,13 +1777,15 @@ def _register_run_tools(mcp: MCPServer, state: AppState) -> None:
         pack_edition_notice = _pack_edition_notice(meta)
         if pack_edition_notice is not None:
             response["rules_pack_notice"] = pack_edition_notice
-        staleness_instruction = _staleness_instruction(meta)
+        staleness_instruction = _staleness_instruction(
+            meta.update_check, meta.pack_update_check
+        )
         if staleness_instruction is not None:
             response["instruction"] = staleness_instruction
             # A trace independent of the agent (issue #254, same reasoning
             # as start_config's line for #246): stderr, never stdout, which
             # carries the MCP protocol.
-            for line in _stale_statuses(meta):
+            for line in _stale_statuses(meta.update_check, meta.pack_update_check):
                 print(f"engineering-audit: {line}", file=sys.stderr)
         if prior is not None:
             # Saying what was thrown away is the difference between a discard
@@ -1752,24 +1832,34 @@ def _pack_edition_notice(meta: RunMeta) -> str | None:
     )
 
 
-def _stale_statuses(meta: RunMeta) -> list[str]:
+def _stale_statuses(
+    update_check: str | None, pack_update_check: str | None
+) -> list[str]:
     """The labelled status line for each staleness check that positively
     confirmed a newer release (issue #254). Empty for everything else:
     "could-not-check" and "not-checked" must never nag as if stale, because
     nothing was established (see update_check.py's own discipline), and
     "current" needs no line at all.
+
+    Takes the two status strings directly rather than a RunMeta (issue
+    #288): begin_run has a RunMeta to read them from, but list_domains does
+    not build one at all, so the shared formatting has to work from the raw
+    strings both call sites already have.
     """
     lines = []
-    if (meta.update_check or "").startswith("stale"):
-        lines.append(f"Tool: {meta.update_check}")
-    if (meta.pack_update_check or "").startswith("stale"):
-        lines.append(f"Rules pack: {meta.pack_update_check}")
+    if (update_check or "").startswith("stale"):
+        lines.append(f"Tool: {update_check}")
+    if (pack_update_check or "").startswith("stale"):
+        lines.append(f"Rules pack: {pack_update_check}")
     return lines
 
 
-def _staleness_instruction(meta: RunMeta) -> str | None:
-    """The instruction accompanying begin_run's response when a staleness
-    check confirmed a newer release (issue #254), or None when none did.
+def _staleness_instruction(
+    update_check: str | None, pack_update_check: str | None
+) -> str | None:
+    """The instruction accompanying begin_run's (and, since issue #288,
+    list_domains') response when a staleness check confirmed a newer release
+    (issue #254), or None when none did.
 
     The status strings already carry the per-host remedy command (issue
     #219), so quoting them verbatim puts the fix one paste away. Until now
@@ -1778,7 +1868,7 @@ def _staleness_instruction(meta: RunMeta) -> str | None:
     the same replacement for staleness. The tool never updates itself: the
     user chose the pin, and the remedy is theirs to run or ignore.
     """
-    lines = _stale_statuses(meta)
+    lines = _stale_statuses(update_check, pack_update_check)
     if not lines:
         return None
     return (

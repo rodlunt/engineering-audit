@@ -39,7 +39,8 @@ Use the engineering-audit MCP's read-only tools as the canonical source:
 
 1. Call `list_domains` at the start of every session. Check the returned domain triggers, rule
    counts, and `skipped_files`. State how many domains were loaded. Report skipped files because
-   they make the visible coverage incomplete.
+   they make the visible coverage incomplete. If the response includes an `"instruction"` field,
+   quote the staleness message to the user verbatim before proceeding.
 2. Call `get_domain("dNN")` when a domain becomes `active-now`. Read the full returned document
    before deriving questions from it.
 3. Use only `list_domains` and `get_domain`. **Never call `begin_run`,

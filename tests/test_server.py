@@ -203,6 +203,153 @@ def test_list_domains_tool_reports_domains_and_skip() -> None:
     assert "03-no-trigger-draft.md" in skipped_names
 
 
+# ---------------------------------------------------------------------------
+# list_domains: tool/pack staleness (issue #288)
+#
+# The engineering-grill skill only ever calls list_domains and get_domain,
+# and is forbidden from calling begin_run, so begin_run's staleness checks
+# never ran during a grill session at all before this. These mirror the
+# begin_run tests immediately below (test_begin_run_instructs_when_a_check_
+# confirms_a_stale_install / test_begin_run_never_nags_on_could_not_check),
+# proving list_domains surfaces the identical signal via the same shared
+# formatting, not a second, divergent one.
+# ---------------------------------------------------------------------------
+
+
+def test_list_domains_instructs_when_the_tool_pin_is_confirmed_stale(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stale = (
+        "stale: latest release is v9.9.9 (abcabcabcabc), installed build is "
+        "0.1.0 @ deadbeefdead; to update: re-register with v9.9.9"
+    )
+    monkeypatch.setattr(server_module, "check_for_update", lambda *a, **k: stale)
+    monkeypatch.setattr(
+        server_module, "check_pack_for_update", lambda *a, **k: "current (v1.0.0)"
+    )
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    result = _call(mcp, "list_domains", {})
+
+    assert stale in result["instruction"]
+    assert "tell the user" in result["instruction"]
+    # The staleness signal is additional, not a replacement: the normal
+    # list_domains payload must still be there.
+    assert [d["id"] for d in result["domains"]] == ["d01", "d02"]
+
+
+def test_list_domains_instructs_when_the_rules_pack_is_confirmed_stale(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stale_pack = (
+        "stale: latest release is v2.0.0 (cafecafecafe), installed build is "
+        "v1.0.0 @ deadbeefdead; to update: re-register with v2.0.0"
+    )
+    monkeypatch.setattr(
+        server_module, "check_for_update", lambda *a, **k: "current (v1.0.0)"
+    )
+    monkeypatch.setattr(
+        server_module, "check_pack_for_update", lambda *a, **k: stale_pack
+    )
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    result = _call(mcp, "list_domains", {})
+
+    assert stale_pack in result["instruction"]
+    assert "Rules pack:" in result["instruction"]
+
+
+def test_list_domains_is_silent_when_both_checks_are_current(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        server_module, "check_for_update", lambda *a, **k: "current (v1.0.0)"
+    )
+    monkeypatch.setattr(
+        server_module, "check_pack_for_update", lambda *a, **k: "current (v1.0.0)"
+    )
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    result = _call(mcp, "list_domains", {})
+
+    assert "instruction" not in result
+
+
+def test_list_domains_never_nags_on_could_not_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The control, mirroring test_begin_run_never_nags_on_could_not_check: a
+    # check that could not run (a stand-in for "the network was unreachable")
+    # established nothing, so it must not produce the stale instruction.
+    monkeypatch.setattr(
+        server_module,
+        "check_for_update",
+        lambda *a, **k: "could-not-check: network unreachable",
+    )
+    monkeypatch.setattr(
+        server_module, "check_pack_for_update", lambda *a, **k: "current (v1.0.0)"
+    )
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    result = _call(mcp, "list_domains", {})
+
+    assert "instruction" not in result
+
+
+def test_list_domains_degrades_to_could_not_check_on_a_real_network_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Unlike the tests above (which replace check_for_update/check_pack_for_
+    # update entirely to avoid a real network call), this drives the real
+    # functions and only breaks the network boundary underneath them
+    # (git ls-remote), proving the degrade-gracefully contract end to end:
+    # list_domains must not raise or hang when the check genuinely fails.
+    monkeypatch.delenv("ENGINEERING_AUDIT_NO_UPDATE_CHECK", raising=False)
+    monkeypatch.setattr(
+        server_module,
+        "_default_tool_commit",
+        lambda: "a" * 40,
+    )
+
+    def _boom(*args, **kwargs):
+        raise OSError("git not found")
+
+    monkeypatch.setattr(server_module.subprocess, "run", _boom)
+    import engineering_audit.update_check as update_check_module
+
+    monkeypatch.setattr(update_check_module.subprocess, "run", _boom)
+
+    mcp, state = build_server(FIXTURE_PACK)
+    assert state.update_check_enabled is True
+
+    result = _call(mcp, "list_domains", {})
+
+    assert "instruction" not in result
+    assert [d["id"] for d in result["domains"]] == ["d01", "d02"]
+
+
+def test_list_domains_and_begin_run_agree_on_the_same_stale_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Regression guard for the "do not invent a second, divergent formatting
+    # path" requirement: the same underlying status string produces the same
+    # instruction wording whichever tool surfaced it.
+    stale = (
+        "stale: latest release is v9.9.9 (abcabcabcabc), installed build is "
+        "0.1.0 @ deadbeefdead; to update: re-register with v9.9.9"
+    )
+    monkeypatch.setattr(server_module, "check_for_update", lambda *a, **k: stale)
+    monkeypatch.setattr(
+        server_module, "check_pack_for_update", lambda *a, **k: "current (v1.0.0)"
+    )
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    list_domains_result = _call(mcp, "list_domains", {})
+    begin_run_result = _begin_run(mcp, tmp_path / "audit-output")
+
+    assert list_domains_result["instruction"] == begin_run_result["instruction"]
+
+
 def test_get_domain_tool_returns_full_document_text() -> None:
     mcp, _state = build_server(FIXTURE_PACK)
     result = asyncio.run(mcp.call_tool("get_domain", {"domain_id": "d01"}))
