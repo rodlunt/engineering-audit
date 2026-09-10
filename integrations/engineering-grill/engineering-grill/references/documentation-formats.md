@@ -18,6 +18,7 @@ Write `docs/engineering-coverage.md` as a design ledger, not an audit report or 
 
 **Project:** <name or working title>
 **Stage:** idea | discovery | design | implementation | existing system
+**Question style:** prose | multiple-choice
 **Last updated:** YYYY-MM-DD
 
 ## Intent
@@ -57,6 +58,10 @@ instead, and `none` when no source was reached at all. A `none` domain contribut
 questions are unknown, not zero, and a table that cannot tell those apart is the
 reason this column exists.
 
+`Question style` records the run-level setting fixed once at the start of the grill: `prose`
+unless the user opted into `multiple-choice`. It never varies per domain or per question within
+one run.
+
 ## Confirmed decisions
 
 ### <Domain id and title>
@@ -68,6 +73,11 @@ reason this column exists.
 - **Reason:** <project-specific rationale and trade-off>
 - **Evidence or artifact:** <existing evidence or artifact that must be produced>
 - **Status:** confirmed | build-gate | verification-gate
+- **Answer style:** fixed-option | prose-fallback (only recorded when the run's question style is
+  `multiple-choice`; omit entirely for a `prose` run)
+- **User justification:** <the user's one-line reason for picking the recommended option, or `no
+  reason given`> (only recorded in multiple-choice mode when the recommended option was picked;
+  omit entirely otherwise)
 
 ## Deferred triggers
 
@@ -85,6 +95,19 @@ reason this column exists.
 
 - <Risk consciously retained after the decision and why.>
 ```
+
+`Answer style` mirrors the `Source` transparency pattern above, at the level of a single answer
+rather than a whole domain: `fixed-option` when the host's fixed-option prompt tool actually
+presented the question, `prose-fallback` when it fell back to prose because the tool was
+unavailable for that question. It records which path was used, not whether the tool call
+genuinely fired in that turn; confirming the latter is a separate, unresolved question.
+
+`User justification` is not `Reason`: `Reason` is the recommendation's own project-specific
+rationale, fixed before the user ever answered; `User justification` is the user's own reason for
+accepting that recommendation, captured after the fact by the anti-rubber-stamp checkpoint. Only a
+multiple-choice-mode answer that picked the recommended option carries it. It may read `no reason
+given` when the user could not produce one after two attempts, in which case the answer is also
+flagged for review.
 
 Keep every domain returned by `list_domains` in the coverage table. Give each
 `not-applicable` entry a project-specific absent precondition and each `required-later` entry a
