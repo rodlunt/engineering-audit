@@ -48,6 +48,16 @@ _H1_RE = re.compile(
 _LOAD_WHEN_RE = re.compile(
     r"\*\*Load this when:\*\*\s*(?P<load_when>.*?)(?:\n\s*\n|\Z)", re.DOTALL
 )
+# Rationale (issue #10, "so the human standard can explain why") is not yet
+# part of the maintained rules pack's schema; this loader reads it
+# defensively so any pack that later adds it (or a hand-authored/fixture
+# pack that adopts it early) loads without change here. A domain's
+# rationale mirrors the '**Load this when:**' shape: a bold marker line,
+# free text up to the next blank line. Absent entirely (every pack today)
+# it stays None, never an empty string standing in for "no rationale".
+_DOMAIN_RATIONALE_RE = re.compile(
+    r"\*\*Rationale:\*\*\s*(?P<rationale>.*?)(?:\n\s*\n|\Z)", re.DOTALL
+)
 # Rule headings come in numbered series that may carry a letter prefix, e.g.
 # '### 8. Title' and '### T1. Title' (tier-2 rules in the real pack use a T
 # series). The label keeps the full token; Rule.number keeps the digits.
@@ -57,6 +67,17 @@ _RULE_HEADING_RE = re.compile(
 _ANY_H3_RE = re.compile(r"^###\s.*$", re.MULTILINE)
 _RULE_ID_RE = re.compile(r"Rule id:\s*(?P<rule_id>[A-Za-z0-9]+-[A-Za-z0-9]+)\s*\.")
 _VOLATILITY_RE = re.compile(r"Volatility:\s*(?P<volatility>[^.]+)\.")
+# Per-rule rationale (issue #10): same defensive stance as the domain-level
+# marker above. Unlike Volatility (always a single word, 'durable' or
+# 'volatile'), a rationale is free-form prose and is very likely
+# multi-sentence, so it is *not* read with a "stop at the first period"
+# pattern the way Volatility is. It is instead extracted by
+# :func:`_extract_rationale`, which captures the whole field and, like
+# :func:`_extract_source`, scopes its search to the rule's own metadata
+# footer rather than the whole block, so an unrelated "Rationale:" mentioned
+# in the rule's own body prose is never mistaken for the footer's field. A
+# footer with none at all, which is every pack today, leaves Rule.rationale
+# as None.
 _FILENAME_SLUG_RE = re.compile(r"^\d{2}-(?P<slug>.+)$")
 
 
@@ -90,6 +111,10 @@ class Rule:
     number: int
     volatility: str | None = None
     source: str | None = None
+    rationale: str | None = None
+    """Why this rule exists, if the pack's footer carries a 'Rationale:'
+    field (issue #10). None for every pack that predates the field, not an
+    empty string: absence and "declared empty" must stay distinguishable."""
 
 
 @dataclass(frozen=True)
@@ -104,6 +129,9 @@ class Domain:
     load_when: str
     rules: list[Rule]
     path: Path
+    rationale: str | None = None
+    """Why this domain exists, if the pack declares a '**Rationale:**' block
+    (issue #10). None for every pack that predates the field."""
 
 
 @dataclass(frozen=True)
@@ -365,6 +393,45 @@ def _extract_source(block: str, rule_id_start: int) -> str | None:
     return source_text or None
 
 
+def _extract_rationale(block: str, rule_id_start: int) -> str | None:
+    """Extract a rule's own stated rationale, if any, from its metadata
+    footer (issue #10).
+
+    Mirrors :func:`_extract_source`'s footer-narrowing approach, but looks
+    forward from ``rule_id_start`` rather than backward: in the footer shape
+    this field is written in, ``Rationale:`` (when present) follows
+    ``Rule id:`` and ``Volatility:`` within the same footer paragraph, e.g.
+    ``*Source: ... Rule id: D01-R01. Volatility: durable. Rationale: ...*``.
+    The search window is the footer paragraph from ``rule_id_start`` to the
+    next blank line (or the end of the block), which keeps this scoped to
+    the rule's own footer and never matches an unrelated "Rationale:" used
+    in the rule's own body prose (for example a rule about ADR-writing
+    conventions, which naturally discusses "Context, Decision, Rationale,
+    Consequences").
+
+    Unlike Volatility, a rationale is free-form prose and may span more than
+    one sentence, so capture runs to the end of the footer paragraph rather
+    than stopping at the first period; only a trailing closing marker
+    (the italic footer's own ``*``) and trailing punctuation are trimmed.
+
+    A footer with no ``Rationale:`` fragment at all is a legitimate result
+    (every pack today), so this returns ``None`` rather than raising.
+    """
+    footer_end = block.find("\n\n", rule_id_start)
+    footer_end = len(block) if footer_end == -1 else footer_end
+    footer_segment = block[rule_id_start:footer_end]
+
+    rationale_matches = list(re.finditer(r"Rationale:", footer_segment))
+    if not rationale_matches:
+        return None
+
+    rationale_text = footer_segment[rationale_matches[-1].end() :]
+    rationale_text = " ".join(rationale_text.split())  # collapse whitespace/newlines
+    rationale_text = rationale_text.strip().rstrip("*").strip()
+    rationale_text = rationale_text.rstrip(",.").strip()
+    return rationale_text or None
+
+
 def _parse_rules(path: Path, text: str) -> list[Rule]:
     headings = list(_RULE_HEADING_RE.finditer(text))
     if not headings:
@@ -425,6 +492,7 @@ def _parse_rules(path: Path, text: str) -> list[Rule]:
         )
 
         source = _extract_source(block, winning_id_match.start())
+        rationale = _extract_rationale(block, winning_id_match.start())
 
         rules.append(
             Rule(
@@ -433,6 +501,7 @@ def _parse_rules(path: Path, text: str) -> list[Rule]:
                 number=heading_number,
                 volatility=volatility,
                 source=source,
+                rationale=rationale,
             )
         )
     return rules
@@ -454,6 +523,13 @@ def _parse_domain(path: Path, text: str, trigger: str) -> Domain:
 
     rules = _parse_rules(path, text)
 
+    domain_rationale_match = _DOMAIN_RATIONALE_RE.search(text)
+    domain_rationale = (
+        " ".join(domain_rationale_match.group("rationale").split()).strip()
+        if domain_rationale_match is not None
+        else None
+    )
+
     return Domain(
         id=f"d{number:02d}",
         number=number,
@@ -463,6 +539,7 @@ def _parse_domain(path: Path, text: str, trigger: str) -> Domain:
         load_when=load_when,
         rules=rules,
         path=path,
+        rationale=domain_rationale or None,
     )
 
 

@@ -114,6 +114,50 @@ def test_source_footer_wins_over_earlier_source_mention_in_body(tmp_path: Path) 
     assert d01.rules[0].source == "the real citation for this rule"
 
 
+def test_rule_rationale_is_not_truncated_at_the_first_sentence(tmp_path: Path) -> None:
+    # A rule-level Rationale field is free-form prose and is very likely
+    # multi-sentence, unlike Volatility (always a single word). Capture must
+    # not stop at the first '.' the way the Volatility-derived regex did.
+    scratch = _write_pack(
+        tmp_path,
+        "# Domain 01: Multi Sentence Rationale Domain\n\n"
+        "**Trigger:** you are about to exercise a multi-sentence rationale.\n\n"
+        "### 1. A rule with a multi-sentence rationale.\n\n"
+        "Body.\n\n"
+        "*Source: fixture only. Rule id: D01-R01. Volatility: durable. "
+        "Rationale: Consistency reduces onboarding cost. It also prevents "
+        "subtle bugs.*\n",
+    )
+    pack = load_pack(scratch)
+    d01 = pack.get_domain("d01")
+    assert d01 is not None
+    assert d01.rules[0].rationale == (
+        "Consistency reduces onboarding cost. It also prevents subtle bugs"
+    )
+
+
+def test_rule_rationale_footer_field_not_matched_from_body_prose(
+    tmp_path: Path,
+) -> None:
+    # A rule's own body prose can legitimately use the word 'Rationale:' (for
+    # example, a rule about documentation conventions such as ADRs) without
+    # the footer itself carrying a Rationale field. That body-level mention
+    # must not be mistaken for the footer's own rationale.
+    scratch = _write_pack(
+        tmp_path,
+        "# Domain 01: Rationale Prose Domain\n\n"
+        "**Trigger:** you are about to exercise a body-level Rationale mention.\n\n"
+        "### 1. A rule whose body discusses ADRs.\n\n"
+        "Every ADR must record Context, Decision, Rationale: why this option "
+        "was chosen over alternatives, and Consequences.\n\n"
+        "*Source: fixture only. Rule id: D01-R01. Volatility: durable.*\n",
+    )
+    pack = load_pack(scratch)
+    d01 = pack.get_domain("d01")
+    assert d01 is not None
+    assert d01.rules[0].rationale is None
+
+
 def test_second_domain_parsed_correctly() -> None:
     pack = load_pack(FIXTURE_PACK)
     d02 = pack.get_domain("d02")

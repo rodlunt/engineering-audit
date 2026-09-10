@@ -7,12 +7,17 @@ formal markdown for company stakeholders.
 
 from __future__ import annotations
 
-from engineering_audit.standards import Rule, RuleSet
+from pathlib import Path
+
 from engineering_audit.rendering import (
     render_agent_standard,
     render_human_standard,
     render_policy,
 )
+from engineering_audit.rules import load_pack
+from engineering_audit.standards import Rule, RuleSet
+
+FIXTURE_PACK = Path(__file__).parent / "fixture_pack"
 
 
 class TestRenderAgentStandard:
@@ -1064,9 +1069,14 @@ class TestRenderPolicy:
 class TestRenderHumanStandardRulesPack:
     """Tests for render_human_standard rules pack parameter.
 
-    Note: Rationale rendering from rules pack is not yet implemented because
-    the Domain class in rules.py does not have a rationale field. See
-    post-audit-standards-artefacts.md for spec gap documentation.
+    Rationale (issue #10) is read from the rules_pack argument, when the
+    loaded pack carries it, and rendered alongside each rule's status, full
+    text and audit findings. No maintained pack carries the field yet (it is
+    blocked on an external schema change to the rules pack repository), so
+    these tests build their own fixture packs: one with a '**Rationale:**'
+    domain block and a rule-level 'Rationale:' footer field, and one (the
+    ordinary fixture_pack) with neither, to prove old packs still render
+    cleanly with the rationale section simply absent.
     """
 
     def test_render_human_standard_accepts_rules_pack_parameter(self) -> None:
@@ -1096,6 +1106,96 @@ class TestRenderHumanStandardRulesPack:
         output = render_human_standard(rule_set, None)
         assert "D06-R01" in output
         assert "Type hints" in output
+
+    def test_render_human_standard_renders_rationale_when_pack_has_it(
+        self, tmp_path: Path
+    ) -> None:
+        """A pack with domain and rule rationale renders both under the rule."""
+        pack_dir = tmp_path / "pack"
+        pack_dir.mkdir()
+        (pack_dir / "01-rationale-domain.md").write_text(
+            "# Domain 01: Rationale Domain\n\n"
+            "**Trigger:** you are about to touch something needing a stated why.\n\n"
+            "**Rationale:** This domain exists to keep an explicit paper trail "
+            "explaining why the rule matters, not just what it says.\n\n"
+            "**Load this when:** doing anything relevant.\n\n"
+            "### 1. A rule that states its own why.\n\n"
+            "Body text describing the rule.\n\n"
+            "*Source: fixture only. Rule id: D01-R01. Volatility: durable. "
+            "Rationale: Explains precisely why this specific rule exists, in "
+            "its own words.*\n",
+            encoding="utf-8",
+        )
+        rules_pack = load_pack(pack_dir)
+
+        rule_set = RuleSet(
+            version="1.0",
+            project="test-project",
+            rules=[
+                Rule(
+                    rule_id="D01-R01",
+                    domain_id="d01",
+                    text_short="States its own why",
+                    text_body="Full rule text.",
+                    source="rules-pack",
+                    stack_profile=None,
+                    status="verified-pass",
+                    verified_date="2026-08-25",
+                    severity=None,
+                    finding_details=None,
+                    conflict_with_stack_profile=None,
+                    conflict_resolution=None,
+                    source_url=None,
+                ),
+            ],
+        )
+        output = render_human_standard(rule_set, rules_pack)
+        assert "**Rationale:**" in output
+        assert (
+            "This domain exists to keep an explicit paper trail explaining why "
+            "the rule matters, not just what it says." in output
+        )
+        assert (
+            "Explains precisely why this specific rule exists, in its own words"
+            in output
+        )
+        # Rationale block appears after the full rule text, ahead of any
+        # audit-findings section, per the rendering order documented on
+        # render_human_standard.
+        assert output.find("Full rule text.") < output.find("**Rationale:**")
+
+    def test_render_human_standard_omits_rationale_section_when_pack_lacks_it(
+        self,
+    ) -> None:
+        """A pack that predates the rationale field renders with no rationale
+        section at all: no blank heading, no placeholder text."""
+        rules_pack = load_pack(FIXTURE_PACK)
+
+        rule_set = RuleSet(
+            version="1.0",
+            project="test-project",
+            rules=[
+                Rule(
+                    rule_id="D01-R01",
+                    domain_id="d01",
+                    text_short="Record hat colour",
+                    text_body="Full rule text, no rationale in this pack.",
+                    source="rules-pack",
+                    stack_profile=None,
+                    status="verified-pass",
+                    verified_date="2026-08-25",
+                    severity=None,
+                    finding_details=None,
+                    conflict_with_stack_profile=None,
+                    conflict_resolution=None,
+                    source_url=None,
+                ),
+            ],
+        )
+        output = render_human_standard(rule_set, rules_pack)
+        assert "**Rationale:**" not in output
+        assert "D01-R01" in output
+        assert "Full rule text, no rationale in this pack." in output
 
 
 class TestProvisionalDocumentMarker:

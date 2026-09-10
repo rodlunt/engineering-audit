@@ -144,16 +144,22 @@ def render_human_standard(
 ) -> str:
     """Render the human coding standard from a rule set.
 
-    Produces verbose markdown for engineers, with status, full text, any audit
-    findings with fix suggestions, and conflict notes if the rule conflicts
-    with a stack profile.
+    Produces verbose markdown for engineers, with status, full text, rationale
+    (the why, when the rules pack carries it), any audit findings with fix
+    suggestions, and conflict notes if the rule conflicts with a stack profile.
 
-    Note: Rationale is planned for future versions when the rules pack includes
-    rationale fields. Currently unused.
+    Rationale is looked up from ``rules_pack`` (issue #10): a domain-level
+    rationale and a rule-level rationale are rendered together under a single
+    "**Rationale:**" block per rule, when either is present. Not every pack
+    carries this field yet (it predates the field being added to the
+    maintained rules pack's own schema), so a rule or domain with none is
+    rendered with no rationale section at all: no blank heading, no
+    placeholder text implying something is broken, just its absence.
 
     Args:
         rule_set: The machine-readable rule set to render.
-        rules_pack: Optional RulesPack for future rationale lookup (not yet used).
+        rules_pack: Optional RulesPack used to look up each rule's and its
+            domain's rationale text, if the loaded pack carries one.
 
     Returns:
         Markdown string with managed-block markers.
@@ -210,6 +216,26 @@ def render_human_standard(
             # Full text
             lines.append(rule.text_body)
             lines.append("")
+
+            # Rationale section (if the rules pack carries one): domain-level
+            # and rule-level rationale, when either is present. Omitted
+            # entirely, not shown as a blank heading or placeholder, when
+            # neither the domain nor the rule has one.
+            if rules_pack is not None:
+                domain = (
+                    rules_pack.get_domain(rule.domain_id) if rule.domain_id else None
+                )
+                domain_rationale = domain.rationale if domain is not None else None
+                pack_rule = rules_pack.rule_index.get(rule.rule_id)
+                rule_rationale = pack_rule.rationale if pack_rule is not None else None
+                if domain_rationale or rule_rationale:
+                    lines.append("**Rationale:**")
+                    lines.append("")
+                    if domain_rationale:
+                        lines.append(f"- Domain: {domain_rationale}")
+                    if rule_rationale:
+                        lines.append(f"- Rule: {rule_rationale}")
+                    lines.append("")
 
             # Audit findings section (if applicable)
             if (
