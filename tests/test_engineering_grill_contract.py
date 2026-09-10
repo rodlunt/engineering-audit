@@ -263,6 +263,97 @@ def test_bail_out_is_unconditional() -> None:
     ), "The Hot Seat must state that bail-out is unconditional"
 
 
+def test_resolved_bucket_in_coverage_table_and_mutually_exclusive_with_answered() -> None:
+    """Guard the fifth ledger bucket: Resolved, mutually exclusive with Answered."""
+    assert re.search(
+        r"\|\s*Answered\s*\|\s*Resolved\s*\|\s*Deferred\s*\|",
+        FORMATS,
+    ), "documentation-formats.md coverage table header must add a Resolved column between Answered and Deferred"
+
+    assert re.search(
+        r"Resolved.{0,400}(?:resolved\s+by).{0,200}(?:ADR|coverage[- ]table)",
+        FORMATS,
+        flags=re.IGNORECASE | re.DOTALL,
+    ), (
+        "documentation-formats.md must explain Resolved must cite the resolving decision "
+        "(e.g. an ADR or coverage-table reference)"
+    )
+
+    assert re.search(
+        r"Resolved.{0,300}mutually\s+exclusive.{0,80}Answered",
+        FORMATS,
+        flags=re.IGNORECASE | re.DOTALL,
+    ), "documentation-formats.md must state Resolved is mutually exclusive with Answered"
+
+    assert re.search(
+        r"cross[- ]reference.{0,200}(?:look\s+identical|identical)",
+        FORMATS,
+        flags=re.IGNORECASE | re.DOTALL,
+    ), (
+        "documentation-formats.md must explain why folding Resolved into Answered would hide a "
+        "real distinction (settled by cross-reference vs. genuinely engaged with)"
+    )
+
+
+def test_adr_sizing_guidance_present() -> None:
+    """Guard that ADR bundling/sizing guidance exists in both reference and skill."""
+    # The "Architecture decision record" section's own ADR template embeds literal
+    # "## Heading" lines (Context, Decision, ...) inside its markdown code fence, which
+    # confuses the level-two `_section` scanner into truncating early. Search the whole
+    # document instead, anchored on distinctive ADR-sizing wording that appears nowhere else.
+
+    assert re.search(
+        r"one\s+ADR\s+per\s+decision",
+        FORMATS,
+        flags=re.IGNORECASE,
+    ), "documentation-formats.md ADR section must default to one ADR per decision"
+
+    assert re.search(
+        r"decided\s+together.{0,120}(?:causal\s+narrative)",
+        FORMATS,
+        flags=re.IGNORECASE | re.DOTALL,
+    ), (
+        "documentation-formats.md ADR section must define when bundling is allowed: decided "
+        "together and sharing one causal narrative"
+    )
+
+    assert re.search(
+        r"(?:prefer\s+more,?\s+smaller\s+ADRs|more,?\s+smaller\s+ADRs)",
+        FORMATS,
+        flags=re.IGNORECASE,
+    ), "documentation-formats.md ADR section must prefer more, smaller ADRs when in doubt"
+
+    capture_decisions = _section(SKILL, "Capture confirmed decisions")
+    assert re.search(
+        r"one\s+ADR\s+per\s+decision",
+        capture_decisions,
+        flags=re.IGNORECASE,
+    ), "SKILL.md's Capture confirmed decisions section must surface the ADR sizing default"
+
+
+def test_resolved_by_cross_reference_not_asked_again() -> None:
+    """Guard the resume/cross-reference instruction: mark Resolved, do not re-ask."""
+    deep_dive = _section(SKILL, "The deep dive")
+
+    assert re.search(
+        r"(?:already\s+settled|already\s+answered).{0,120}earlier\s+confirmed\s+decision",
+        deep_dive,
+        flags=re.IGNORECASE | re.DOTALL,
+    ), "The deep dive must state that a question already settled by an earlier confirmed decision is not re-asked"
+
+    assert re.search(
+        r"(?:do\s+not|never)\s+(?:ask|put)\s+it.{0,300}`Resolved`",
+        deep_dive,
+        flags=re.IGNORECASE | re.DOTALL,
+    ), "The deep dive must instruct marking such a question Resolved instead of asking it"
+
+    assert re.search(
+        r"`Resolved`.{0,40}`Answered`.{0,40}mutually\s+exclusive",
+        deep_dive,
+        flags=re.IGNORECASE | re.DOTALL,
+    ), "The deep dive must restate that Resolved and Answered are mutually exclusive"
+
+
 def test_bail_out_offers_handoff_or_mvp_split() -> None:
     """Guard that after bail-out record, two continuations are offered: handoff or MVP."""
     hot_seat = _section(SKILL, "The Hot Seat")

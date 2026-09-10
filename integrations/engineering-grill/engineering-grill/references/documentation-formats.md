@@ -27,21 +27,32 @@ Write `docs/engineering-coverage.md` as a design ledger, not an audit report or 
 
 ## Domain coverage
 
-| Domain | Status | Basis | Source | Derived | Asked | Answered | Deferred | Not asked | Revisit trigger |
-|---|---|---|---|---|---|---|---|---|---|
-| D01 Designing a Data Model | active-now | Persistent customer records are planned. | mcp | 9 | 1 | 0 | 1 | 8 | |
-| D02 Requirements Elicitation | active-now | New system. | mcp | 8 | 2 | 2 | 0 | 6 | |
-| D08 Threat Modelling and Risk | active-now | Bulk personal data. | fallback | 7 | 0 | 0 | 0 | 7 | |
-| D15 Interface Design | active-now | Operator screens planned. | **none** | n/a | 0 | 0 | 0 | n/a | |
-| D09 Incident Response | required-later | The service will run in production. | | | | | | | Deployment topology settled |
-| D16 Presenting Data | not-applicable | The product has no decision-support output. | | | | | | | Reporting enters scope |
-| **Total** | | | | **24** | **3** | **2** | **1** | **21** | |
+| Domain | Status | Basis | Source | Derived | Asked | Answered | Resolved | Deferred | Not asked | Revisit trigger |
+|---|---|---|---|---|---|---|---|---|---|---|
+| D01 Designing a Data Model | active-now | Persistent customer records are planned. | mcp | 9 | 1 | 0 | 0 | 1 | 8 | |
+| D02 Requirements Elicitation | active-now | New system. | mcp | 8 | 2 | 2 | 0 | 0 | 6 | |
+| D08 Threat Modelling and Risk | active-now | Bulk personal data. | fallback | 7 | 0 | 0 | 1 | 0 | 6 | |
+| D15 Interface Design | active-now | Operator screens planned. | **none** | n/a | 0 | 0 | 0 | 0 | n/a | |
+| D09 Incident Response | required-later | The service will run in production. | | | | | | | | Deployment topology settled |
+| D16 Presenting Data | not-applicable | The product has no decision-support output. | | | | | | | | Reporting enters scope |
+| **Total** | | | | **24** | **3** | **2** | **1** | **1** | **20** | |
 
 When the Hot Seat collapses near-duplicate questions from multiple domains into a single merged
 question, the answer counts as asked and answered for every domain whose derived question it
 subsumes. Merged questions are noted explicitly in the record (e.g., "Q1 merged from d02/d15");
 per-domain row totals may therefore exceed the distinct questions actually put to the user, so
 the `**Total**` row reports distinct question count, not the sum of per-domain columns.
+
+A derived question is `Resolved` rather than `Answered` when it was never put to the user because
+an earlier already-confirmed decision — from this run, or from a prior run this one is resuming —
+already settled it. Resolved never appears as a bare label: cite the resolving decision inline
+(e.g., "resolved by D02 — single-tenant deployment, no cached third-party state" or a reference to
+its ADR or coverage-table row) so a reader can trace the answer back to where it was actually
+decided. `Resolved` is mutually exclusive with `Answered`: a question is one or the other, never
+both, and a domain's `Resolved` count is not added into its `Answered` count. Folding a resolved
+question into `Answered` would make a domain settled entirely by cross-reference look identical to
+one where the user genuinely engaged with every question put to them, and those are different
+findings that the ledger must keep distinguishable.
 
 The count columns are what make a short session legible afterwards. A run that asked
 three of twenty-four and a run that asked all twenty-four are the same document
@@ -78,6 +89,8 @@ one run.
 - **User justification:** <the user's one-line reason for picking the recommended option, or `no
   reason given`> (only recorded in multiple-choice mode when the recommended option was picked;
   omit entirely otherwise)
+- **Resolves:** <domain and question(s) settled by this decision without being asked directly>
+  (only recorded when this decision resolved another domain's derived question; omit otherwise)
 
 ## Deferred triggers
 
@@ -155,6 +168,15 @@ without its history, and the result of a real trade-off:
 
 - <Benefit, cost, limitation, or follow-up obligation.>
 ```
+
+**Default to one ADR per decision.** Bundle two or more decisions into a single ADR only when all
+three hold: they were decided together in the same conversation, they share one causal narrative
+(the same "what made this necessary" paragraph genuinely explains all of them), and reversing one
+in isolation would not make sense without reconsidering the others. When in doubt, prefer more,
+smaller ADRs over one bundled one. Each decision inside a bundle must independently clear the hard
+to reverse, surprising without history, real trade-off bar on its own; a decision that only looks
+weighty because it is filed next to three others in the same document has not cleared the bar, it
+has borrowed weight from its neighbours, and belongs in its own record or in none at all.
 
 Do not copy domain documents, rule prose, source footers, or verification trails into project
 documentation. Quote a source only when the user needs it to evaluate a contested decision, and

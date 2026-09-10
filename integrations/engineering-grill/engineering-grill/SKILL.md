@@ -395,6 +395,16 @@ the project. Preserve uncertainty where the framework has a gap or credible sour
 After each round, update the fact map, design tree, domain classifications, deferred triggers,
 and next frontier. Load a newly active domain before asking questions from it.
 
+**A derived question already settled by an earlier confirmed decision is not asked again.** This
+comes up most often on resume, where the decisions read back in from an existing
+`docs/engineering-coverage.md` or ADR were confirmed in a session gap, but it applies equally
+within one sitting: if a later domain's derived question is already answered in substance by a
+decision confirmed earlier in this same run, do not put it to the user a second time. Mark it
+`Resolved`, not `Answered`, in the coverage ledger, and record which decision resolved it (see
+[documentation formats](references/documentation-formats.md)). `Resolved` and `Answered` are
+mutually exclusive counts: a cross-reference resolution is not the same finding as a question the
+user actually engaged with, and the ledger must keep them distinguishable.
+
 ## Capture confirmed decisions
 
 Document only confirmed material. If no project location exists yet, keep a conversation draft
@@ -410,12 +420,19 @@ Read [the documentation formats](references/documentation-formats.md) before wri
 - an ADR under `docs/adr/` only for a hard-to-reverse, surprising decision made through a real
   trade-off.
 
+**Default to one ADR per decision; only bundle decisions decided together that share one causal
+narrative and cannot be reversed independently of each other** (see [documentation
+formats](references/documentation-formats.md) for the full sizing rule). Prefer more, smaller ADRs
+when unsure: a decision filed inside a bundle still has to clear the hard-to-reverse bar on its
+own merits, not on its neighbours'.
+
 **A later grill reads and updates existing documents, checks them against the conversation, and
 continues ADR numbering. It does not replace them blindly.** A second run appends rather than
 overwriting; never destroy an earlier session's record to write this one.
 
 `docs/engineering-coverage.md` carries the per-domain counts: how many questions were derived,
-asked, answered, deferred and never put, plus the `source` each domain was read from. A run that
+asked, answered, resolved by cross-reference, deferred and never put, plus the `source` each
+domain was read from. A run that
 asked four of forty-seven and a run that asked all forty-seven must not look the same afterwards.
 
 Cross-check confirmed statements against existing code and documents. Surface contradictions
