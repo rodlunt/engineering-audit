@@ -757,10 +757,10 @@ def test_approval_ready_endpoint_answers_204_once_approval_data_is_set(
     domains,
 ) -> None:
     from engineering_audit.standards import RuleSet
-    from engineering_audit.standards_approval import derive_summary_counts
+    from engineering_audit.standards_approval import derive_rule_set_summary_counts
 
     rule_set = RuleSet(version="1.0", project="test", rules=[])
-    counts = derive_summary_counts(rule_set)
+    counts = derive_rule_set_summary_counts(rule_set)
 
     srv = ConfigServer(domains)
     try:
@@ -1817,7 +1817,7 @@ class TestApprovalPageEndpoint:
         from engineering_audit.standards import RuleSet
         from engineering_audit.standards_approval import (
             build_diff_model,
-            derive_summary_counts,
+            derive_rule_set_summary_counts,
         )
 
         rule_set = RuleSet(version="1.0", project="test", rules=[])
@@ -1829,7 +1829,7 @@ class TestApprovalPageEndpoint:
             build_diff_model(None, proposed_content, "human-standard"),
             build_diff_model(None, proposed_content, "engineering-policy"),
         ]
-        counts = derive_summary_counts(rule_set)
+        counts = derive_rule_set_summary_counts(rule_set)
 
         srv = ConfigServer(domains)
         try:
@@ -1847,7 +1847,7 @@ class TestApprovalPageEndpoint:
         from engineering_audit.standards import Rule, RuleSet, RuleStatus
         from engineering_audit.standards_approval import (
             build_diff_model,
-            derive_summary_counts,
+            derive_rule_set_summary_counts,
         )
 
         rule_set = RuleSet(
@@ -1874,7 +1874,7 @@ class TestApprovalPageEndpoint:
             build_diff_model(None, proposed_content, "human-standard"),
             build_diff_model(None, proposed_content, "engineering-policy"),
         ]
-        counts = derive_summary_counts(rule_set)
+        counts = derive_rule_set_summary_counts(rule_set)
 
         srv = ConfigServer(domains)
         try:
@@ -1903,7 +1903,7 @@ class TestApprovalPageEndpoint:
         from engineering_audit.standards import RuleSet
         from engineering_audit.standards_approval import (
             build_diff_model,
-            derive_summary_counts,
+            derive_rule_set_summary_counts,
         )
 
         rule_set = RuleSet(version="1.0", project="test", rules=[])
@@ -1918,7 +1918,7 @@ class TestApprovalPageEndpoint:
             build_diff_model(None, proposed_content, "human-standard"),
             build_diff_model(None, proposed_content, "engineering-policy"),
         ]
-        counts = derive_summary_counts(rule_set)
+        counts = derive_rule_set_summary_counts(rule_set)
 
         srv = ConfigServer(domains)
         try:
@@ -1958,7 +1958,7 @@ class TestApprovalPageEndpoint:
         from engineering_audit.standards import RuleSet
         from engineering_audit.standards_approval import (
             build_diff_model,
-            derive_summary_counts,
+            derive_rule_set_summary_counts,
         )
 
         rule_set = RuleSet(version="1.0", project="test", rules=[])
@@ -1973,7 +1973,7 @@ class TestApprovalPageEndpoint:
             build_diff_model(None, proposed_content, "human-standard"),
             build_diff_model(None, proposed_content, "engineering-policy"),
         ]
-        counts = derive_summary_counts(rule_set)
+        counts = derive_rule_set_summary_counts(rule_set)
 
         srv = ConfigServer(domains)
         try:
@@ -2004,7 +2004,7 @@ class TestApprovalPageEndpoint:
         from engineering_audit.standards import RuleSet
         from engineering_audit.standards_approval import (
             build_diff_model,
-            derive_summary_counts,
+            derive_rule_set_summary_counts,
         )
 
         rule_set = RuleSet(version="1.0", project="test", rules=[])
@@ -2018,7 +2018,7 @@ class TestApprovalPageEndpoint:
             build_diff_model(None, proposed_content, "human-standard"),
             build_diff_model(None, proposed_content, "engineering-policy"),
         ]
-        counts = derive_summary_counts(rule_set)
+        counts = derive_rule_set_summary_counts(rule_set)
 
         srv = ConfigServer(domains)
         try:
@@ -2252,7 +2252,7 @@ def _set_approval_data(srv: ConfigServer) -> None:
     from engineering_audit.standards import RuleSet
     from engineering_audit.standards_approval import (
         build_diff_model,
-        derive_summary_counts,
+        derive_rule_set_summary_counts,
     )
 
     rule_set = RuleSet(version="1.0", project="test", rules=[])
@@ -2264,7 +2264,7 @@ def _set_approval_data(srv: ConfigServer) -> None:
         build_diff_model(None, proposed_content, "human-standard"),
         build_diff_model(None, proposed_content, "engineering-policy"),
     ]
-    counts = derive_summary_counts(rule_set)
+    counts = derive_rule_set_summary_counts(rule_set)
     srv.set_approval_data(diffs, counts)
 
 

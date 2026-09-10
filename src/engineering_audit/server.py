@@ -104,7 +104,7 @@ from engineering_audit.standards_integration import (
     audit_rules_from_domain_results,
     build_diffs,
     build_stack_choice_decision,
-    derive_summary_counts,
+    derive_diff_summary_counts,
     load_prior_rule_set,
     render_all,
     resolve_stack_choice,
@@ -2818,7 +2818,7 @@ def _register_report_tools(mcp: MCPServer, state: AppState) -> None:
                     merged = merge_rule_set(used_rule_set, verdicts, audit_rules)
                     rendered = render_all(merged, state.pack)
                     diffs = build_diffs(deliverables_dir, rendered, run.repo_dir)
-                    summary_counts = derive_summary_counts(prior_rule_set, merged)
+                    summary_counts = derive_diff_summary_counts(prior_rule_set, merged)
 
                     # Present for approval
                     run.config_server.set_approval_data(diffs, summary_counts)

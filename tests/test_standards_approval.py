@@ -11,19 +11,19 @@ import html
 from engineering_audit.standards import Rule, RuleSet, RuleStatus
 from engineering_audit.standards_approval import (
     DiffModel,
-    derive_summary_counts,
+    derive_rule_set_summary_counts,
     build_diff_model,
     highlight_managed_block_markers,
 )
 
 
 class TestDeriveSummaryCounts:
-    """Tests for derive_summary_counts function."""
+    """Tests for derive_rule_set_summary_counts function."""
 
     def test_empty_rule_set_returns_zeros(self) -> None:
         """An empty rule set returns all zero counts."""
         rule_set = RuleSet(version="1.0", project="test", rules=[])
-        counts = derive_summary_counts(rule_set)
+        counts = derive_rule_set_summary_counts(rule_set)
         assert counts.new_rules == 0
         assert counts.upgraded_to_verified == 0
         assert counts.findings_recorded == 0
@@ -55,7 +55,7 @@ class TestDeriveSummaryCounts:
                 ),
             ],
         )
-        counts = derive_summary_counts(rule_set)
+        counts = derive_rule_set_summary_counts(rule_set)
         assert counts.new_rules == 2
         assert counts.upgraded_to_verified == 0
 
@@ -76,7 +76,7 @@ class TestDeriveSummaryCounts:
                 ),
             ],
         )
-        counts = derive_summary_counts(rule_set)
+        counts = derive_rule_set_summary_counts(rule_set)
         assert counts.upgraded_to_verified == 1
 
     def test_findings_are_counted(self) -> None:
@@ -103,7 +103,7 @@ class TestDeriveSummaryCounts:
                 ),
             ],
         )
-        counts = derive_summary_counts(rule_set)
+        counts = derive_rule_set_summary_counts(rule_set)
         assert counts.findings_recorded == 1
 
     def test_not_applicable_rules_are_counted(self) -> None:
@@ -123,7 +123,7 @@ class TestDeriveSummaryCounts:
                 ),
             ],
         )
-        counts = derive_summary_counts(rule_set)
+        counts = derive_rule_set_summary_counts(rule_set)
         assert counts.not_applicable == 1
 
     def test_mixed_rule_set_counts_correctly(self) -> None:
@@ -177,7 +177,7 @@ class TestDeriveSummaryCounts:
                 ),
             ],
         )
-        counts = derive_summary_counts(rule_set)
+        counts = derive_rule_set_summary_counts(rule_set)
         assert counts.new_rules == 1
         assert counts.upgraded_to_verified == 1
         assert counts.findings_recorded == 1

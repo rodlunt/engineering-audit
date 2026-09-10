@@ -43,7 +43,7 @@ __all__ = [
     "verdicts_from_domain_results",
     "audit_rules_from_domain_results",
     "load_prior_rule_set",
-    "derive_summary_counts",
+    "derive_diff_summary_counts",
     "build_diffs",
     "render_all",
     "write_standards",
@@ -349,7 +349,7 @@ def load_prior_rule_set(deliverables_dir: Path) -> RuleSet | None:
     return RuleSet.load(rule_set_path)
 
 
-def derive_summary_counts(prior: RuleSet | None, merged: RuleSet) -> SummaryCount:
+def derive_diff_summary_counts(prior: RuleSet | None, merged: RuleSet) -> SummaryCount:
     """Derive summary counts comparing prior and merged rule sets.
 
     Counts:

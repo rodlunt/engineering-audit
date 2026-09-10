@@ -402,7 +402,7 @@ def _give_approval_data(srv: ConfigServer) -> None:
     from engineering_audit.standards import RuleSet
     from engineering_audit.standards_approval import (
         build_diff_model,
-        derive_summary_counts,
+        derive_rule_set_summary_counts,
     )
 
     rule_set = RuleSet(version="1.0", project="test", rules=[])
@@ -414,7 +414,7 @@ def _give_approval_data(srv: ConfigServer) -> None:
         build_diff_model(None, proposed_content, "human-standard"),
         build_diff_model(None, proposed_content, "engineering-policy"),
     ]
-    counts = derive_summary_counts(rule_set)
+    counts = derive_rule_set_summary_counts(rule_set)
     srv.set_approval_data(diffs, counts)
 
 

@@ -20,7 +20,7 @@ from engineering_audit.standards import RuleSet, RuleStatus
 __all__ = [
     "SummaryCount",
     "DiffModel",
-    "derive_summary_counts",
+    "derive_rule_set_summary_counts",
     "build_diff_model",
     "highlight_managed_block_markers",
 ]
@@ -60,8 +60,8 @@ class DiffModel:
     proposed_content: str
 
 
-def derive_summary_counts(rule_set: RuleSet) -> SummaryCount:
-    """Derive summary counts from a rule set.
+def derive_rule_set_summary_counts(rule_set: RuleSet) -> SummaryCount:
+    """Derive summary counts from a single rule set.
 
     Returns a dataclass with counts of:
     - new_rules: Provisional (ungrill) rules

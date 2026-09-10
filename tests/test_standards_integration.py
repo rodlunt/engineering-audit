@@ -30,7 +30,7 @@ from engineering_audit.standards_integration import (
     RULE_SET_FILENAME,
     audit_rules_from_domain_results,
     build_diffs,
-    derive_summary_counts,
+    derive_diff_summary_counts,
     load_prior_rule_set,
     render_all,
     verdicts_from_domain_results,
@@ -611,7 +611,7 @@ class TestLoadPriorRuleSet:
 
 
 class TestDeriveSummaryCounts:
-    """Tests for derive_summary_counts."""
+    """Tests for derive_diff_summary_counts."""
 
     def test_first_run_no_prior(self) -> None:
         """On first run with no prior set, count new rules."""
@@ -632,7 +632,7 @@ class TestDeriveSummaryCounts:
         )
         prior = None
 
-        counts = derive_summary_counts(prior, merged)
+        counts = derive_diff_summary_counts(prior, merged)
 
         assert counts.new_rules == 1
         assert counts.upgraded_to_verified == 0
@@ -672,7 +672,7 @@ class TestDeriveSummaryCounts:
             ],
         )
 
-        counts = derive_summary_counts(prior, merged)
+        counts = derive_diff_summary_counts(prior, merged)
 
         assert counts.upgraded_to_verified == 1
 
@@ -705,7 +705,7 @@ class TestDeriveSummaryCounts:
             ],
         )
 
-        counts = derive_summary_counts(None, merged)
+        counts = derive_diff_summary_counts(None, merged)
 
         assert counts.findings_recorded == 1
         assert counts.not_applicable == 1
