@@ -27,13 +27,20 @@ decisions it made silently or did not make at all. Take the mode from the invoca
 With no argument, pick the obvious one (a plan file with real content in it means `review`) and
 confirm in one question. Never assume silently.
 
+**Also fix the question style once, at the start of the run.** Ask, or take from the invocation,
+whether interview questions run as `prose` (the default) or `multiple-choice`. This is a single
+run-level setting, not a per-domain or per-question choice: whatever is set here applies to every
+interview question asked for the rest of the session. Confirm it in the same breath as the mode
+question above and record it in the coverage document.
+
 ## Load the live framework
 
 Use the engineering-audit MCP's read-only tools as the canonical source:
 
 1. Call `list_domains` at the start of every session. Check the returned domain triggers, rule
    counts, and `skipped_files`. State how many domains were loaded. Report skipped files because
-   they make the visible coverage incomplete.
+   they make the visible coverage incomplete. If the response includes an `"instruction"` field,
+   quote the staleness message to the user verbatim before proceeding.
 2. Call `get_domain("dNN")` when a domain becomes `active-now`. Read the full returned document
    before deriving questions from it.
 3. Use only `list_domains` and `get_domain`. **Never call `begin_run`,
@@ -170,7 +177,11 @@ Each derivation returns:
           "why": "A problem statement with no named user cannot be tested against anything.",
           "cost_if_unanswered": "You build it well for nobody and find out at the demo.",
           "reversibility": "irreversible-once-shipped",
-          "blast_radius": "every screen, the data model, and what 'done' means"
+          "blast_radius": "every screen, the data model, and what 'done' means",
+          "recommended_answer": {
+            "text": "Ship to the solo user first, defer public sign-up entirely.",
+            "rationale": "Anything else adds auth and moderation before the core loop is proven."
+          }
         }
       ]
     }
@@ -199,6 +210,13 @@ The whole payload for a domain that reached nothing is this shape, and nothing m
 smaller source silently. Without this the parent cannot tell a fallback read from a real one: the
 run completes, the counts look right, and a smaller question set is presented as a full
 interrogation.
+
+`recommended_answer` is optional but expected wherever the framework and the inspected project
+evidence support a specific answer: an object with `text` (the recommended answer, becomes the
+marked option) and `rationale` (one line on why). Leave it out only when the rule is genuinely
+open with no defensible default. This is the same field the Hot Seat's "➡️" line renders from (see
+below), and, in multiple-choice mode, the field that marks the recommended option and supplies the
+reasoning behind it.
 
 `reversibility` is one of `irreversible-once-shipped`, `expensive-to-change` or
 `cheap-to-change`, and `blast_radius` names in a few words what else has to move if the answer
@@ -253,8 +271,38 @@ rather than stylistic: ask two in one turn and you reliably get one answer, the 
 and it is recorded as answered because a reply arrived. That is a silent gap, and silent gaps are
 the thing this skill exists to prevent.
 
+**When `question_style: multiple-choice` is the run's setting and the host has a fixed-option
+prompt tool** (e.g. Claude Code's `AskUserQuestion`), present each interview question through it
+instead of prose. Build the options from the plausible answers to that question, mark the option
+matching `recommended_answer.text` as recommended and keep its `rationale` on hand, and always add
+a final "Something else" option mapped to the host's free-text or "Other" affordance so no answer
+is ever foreclosed. **If the host has no such tool, fall back to prose for that question and say so
+once**, not on every question.
+
+**Selecting the recommended option is not itself an answer.** This checkpoint exists because a
+real deep-dive session produced repeated blanket "agree with recommendation" clicks with no
+evidence the trade-off was considered. It guards multiple-choice mode wherever it runs, including
+the deep dive's rounds; the paragraph immediately below is the Hot Seat's one-question-at-a-time
+case, and [the deep dive](#the-deep-dive) states the batched case separately, because "in the same
+turn" cannot mean the same thing when a round answers several questions at once.
+
+In the Hot Seat, when the user picks the recommended option, do not record ANSWERED on the click
+alone: follow, in the same turn, with a short free-text prompt (e.g. "In one line, why?"). This
+does not break "one per turn, never batch" above: the follow-up belongs to the question just
+asked, not a second question, and only fires when the recommended option was chosen.
+
+**A junk reply defeats the checkpoint as badly as no reply does.** If the reply is empty, or is
+bare agreement with no substance — "ok", "sure", "agreed", "fine", or an equivalent that restates
+the pick without giving a reason — ask once more. If the second attempt is still empty or bare,
+record the answer anyway, set its `User justification` to `no reason given`, and flag it for
+review in the record. Never ask a third time. A substantive reply is stored as the answer's
+`User justification` (see [documentation formats](references/documentation-formats.md)).
+
 Record each answer as ANSWERED, or DEFERRED with the user's reason. "Not decided yet" is a
-deferral, not an answer; if no reason is offered, ask once, then record `none given`.
+deferral, not an answer; if no reason is offered, ask once, then record `none given`. An answer
+recorded under multiple-choice mode also carries whatever `User justification` the checkpoint
+above captured, and, per [documentation formats](references/documentation-formats.md), whether it
+came from the fixed-option tool or a prose fallback.
 
 **Bail-out is unconditional.** On stop, enough, or that will do: write the record immediately,
 mark the session ended early, and give the unasked count. A short session must never read as a
@@ -283,6 +331,15 @@ Map the work as a design tree: each settled decision unlocks the decisions that 
 The **frontier** is every decision whose prerequisites are settled. Ask the whole frontier in a
 round, then wait for the user's answers before continuing.
 
+**The anti-rubber-stamp checkpoint applies here too, batched.** When a round's answers arrive
+together, collect every recommended-option pick from that round before doing anything else with
+it. Issue the required "why?" follow-up for each pick; these follow-ups MAY be batched into a
+single turn, because they belong to questions already asked in this round, not new questions.
+Apply the same give-up rule as the Hot Seat: if a pick's reply is empty or bare agreement, ask
+once more for that pick, then record `no reason given` and flag it for review if the second
+attempt is no better. Do not mark the round settled or advance the frontier until every
+recommended-option pick in the round has its `User justification` recorded, one way or the other.
+
 Work in dependency waves so later questions do not assume unsettled earlier choices. Prefer this
 order when the project supports it:
 
@@ -310,6 +367,17 @@ Format each question like this:
 ➡️ <Recommended answer for this project and the trade-off behind it.>
 ```
 
+The "➡️" line is rendered from the derivation's `recommended_answer` field, not composed fresh:
+state `text` as the recommended answer and fold `rationale` into the trade-off sentence. This is
+the prose form of the same recommendation that multiple-choice mode marks as the recommended
+option; the two must never disagree, because both come from the one field.
+
+**When `recommended_answer` is absent, omit the "➡️" line entirely.** Never compose one to fill
+the gap; a question with no defensible default gets no recommendation line, not an invented one.
+In multiple-choice mode, present that question's options with none of them marked as recommended,
+keep "Something else" as usual, and skip the anti-rubber-stamp follow-up for it — with no
+recommended option, there is nothing for the checkpoint to guard against.
+
 For every rule in a loaded domain, choose one treatment:
 
 - answer it from inspected evidence and state that evidence;
@@ -327,6 +395,16 @@ the project. Preserve uncertainty where the framework has a gap or credible sour
 After each round, update the fact map, design tree, domain classifications, deferred triggers,
 and next frontier. Load a newly active domain before asking questions from it.
 
+**A derived question already settled by an earlier confirmed decision is not asked again.** This
+comes up most often on resume, where the decisions read back in from an existing
+`docs/engineering-coverage.md` or ADR were confirmed in a session gap, but it applies equally
+within one sitting: if a later domain's derived question is already answered in substance by a
+decision confirmed earlier in this same run, do not put it to the user a second time. Mark it
+`Resolved`, not `Answered`, in the coverage ledger, and record which decision resolved it (see
+[documentation formats](references/documentation-formats.md)). `Resolved` and `Answered` are
+mutually exclusive counts: a cross-reference resolution is not the same finding as a question the
+user actually engaged with, and the ledger must keep them distinguishable.
+
 ## Capture confirmed decisions
 
 Document only confirmed material. If no project location exists yet, keep a conversation draft
@@ -342,12 +420,19 @@ Read [the documentation formats](references/documentation-formats.md) before wri
 - an ADR under `docs/adr/` only for a hard-to-reverse, surprising decision made through a real
   trade-off.
 
+**Default to one ADR per decision; only bundle decisions decided together that share one causal
+narrative and cannot be reversed independently of each other** (see [documentation
+formats](references/documentation-formats.md) for the full sizing rule). Prefer more, smaller ADRs
+when unsure: a decision filed inside a bundle still has to clear the hard-to-reverse bar on its
+own merits, not on its neighbours'.
+
 **A later grill reads and updates existing documents, checks them against the conversation, and
 continues ADR numbering. It does not replace them blindly.** A second run appends rather than
 overwriting; never destroy an earlier session's record to write this one.
 
 `docs/engineering-coverage.md` carries the per-domain counts: how many questions were derived,
-asked, answered, deferred and never put, plus the `source` each domain was read from. A run that
+asked, answered, resolved by cross-reference, deferred and never put, plus the `source` each
+domain was read from. A run that
 asked four of forty-seven and a run that asked all forty-seven must not look the same afterwards.
 
 Cross-check confirmed statements against existing code and documents. Surface contradictions
@@ -381,9 +466,16 @@ verification stage. Start that audit only after a separate user request.
   that difference visible rather than leaving it to be inferred from a payload that looks
   identical either way.
 - **Where the host offers a fixed-option prompt**, use it for the coverage-map confirmation, the
-  cost confirmation, and the deep-dive offer, where the options are few and known. Use plain prose
-  for the interview questions themselves, which are open by design and must not be reduced to a
-  multiple choice.
+  cost confirmation, and the deep-dive offer, where the options are few and known. These three
+  checkpoints are fixed-option by default and unchanged by anything below; they are not the
+  per-question `question_style` setting and do not vary with it.
+- **Prose is the default for the interview questions themselves** because they are open by
+  design: a fixed option list cannot anticipate the answer this particular project needs, and
+  forcing one in is the quiz failure mode this skill exists to avoid. A user may opt into
+  `question_style: multiple-choice` once at the start of the run, in which case each interview
+  question is offered through the host's fixed-option prompt tool with a recommended option and a
+  "Something else" free-text escape, guarded by the anti-rubber-stamp checkpoint in the Hot Seat
+  section. Where the host has no such tool, always fall back to prose regardless of the setting.
 - **Where the host has a plan file**, write the record into the one the host named. If there is
   none, ask for the location before writing. Never open a second file for work that already has
   one.
