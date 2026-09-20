@@ -22,6 +22,22 @@ engineering-audit-eval = "engineering_audit.evals:main"
 requires = ["uv_build>=0.11.8,<0.13.0"]
 build-backend = "uv_build"
 
+[tool.uv]
+# httpx2/httpcore2 are transitive via mcp, which only floors httpx2>=2.5.0 -
+# not enough to exclude the vulnerable range on its own. Constrained here
+# rather than added as direct dependencies, so resolution is forced without
+# this project taking on either as a real dependency.
+# 2026-09-21: clears 6 Dependabot alerts (3 high, 3 moderate) -
+# decompression-amplification DoS (<2.12.0), conflicting Content-Length/
+# Transfer-Encoding (<2.11.0), multipart header injection (<2.11.0),
+# WebSocket-over-SOCKS TLS downgrade (<2.10.0 both packages), and SSE
+# line-buffering DoS (<2.10.0). 2.13.0 is current latest on PyPI as of this
+# writing, comfortably past every patched floor.
+constraint-dependencies = [
+    "httpx2>=2.13.0",
+    "httpcore2>=2.13.0",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
