@@ -206,14 +206,23 @@ def _parse_draft_cookie(
     return _ConfigDraft(selected_domain_ids=selected, issue_mode=issue_mode)
 
 
-def _is_empty_domain_selection_error(exc: ValidationError) -> bool:
-    """True only for AuditConfig's 'select at least one domain' failure,
-    never for any other validation problem.
+def _domain_selection_error_message(exc: ValidationError) -> str | None:
+    """The friendly, form-preserving message for exc, if exc is one of
+    AuditConfig's selected_domain_ids failures; None for any other
+    validation problem.
 
-    Every other field but two is constrained by the HTML itself (a radio
-    button, a fixed set of checkboxes), so an empty domain selection used to
-    be the only shape of bad request a normal, unmodified submission could
-    reach. The custom output location's free-text path field is the second:
+    Two shapes reach here: nothing ticked (AuditConfig._at_least_one_domain)
+    and the same domain ticked more than once
+    (AuditConfig._no_duplicate_domains, issue #272). A duplicate needs a raw
+    POST repeating the same "domain" value, since the page itself renders
+    plain HTML checkboxes and a browser cannot submit one twice; a
+    hand-crafted request can still reach it, so it gets the same
+    form-preserving treatment as an empty selection rather than a bare 400.
+
+    Every other field but these two is constrained by the HTML itself (a
+    radio button, a fixed set of checkboxes), so together they used to be
+    the only shapes of bad request a normal, unmodified submission could
+    reach. The custom output location's free-text path field is the third:
     see _InvalidOutputLocation, raised from _parse_submission and given the
     same form-preserving re-render as this one, rather than routed through
     pydantic at all, since validating a filesystem path is not a data-shape
@@ -221,10 +230,15 @@ def _is_empty_domain_selection_error(exc: ValidationError) -> bool:
     response, on the assumption that it came from a hand-crafted request,
     not a person using the page as built.
     """
-    return any(
-        error["loc"] == ("selected_domain_ids",) and error["type"] == "value_error"
-        for error in exc.errors()
-    )
+    for error in exc.errors():
+        if error["loc"] != ("selected_domain_ids",) or error["type"] != "value_error":
+            continue
+        message = error["msg"]
+        if "must not be empty" in message:
+            return "Select at least one domain to audit."
+        if "name the same domain twice" in message:
+            return "Each domain can only be selected once. Remove the duplicate and resubmit."
+    return None
 
 
 class _InvalidOutputLocation(ValueError):
@@ -464,14 +478,15 @@ class ConfigServer:
                 try:
                     config = server._parse_submission(fields)
                 except ValidationError as exc:
-                    if _is_empty_domain_selection_error(exc):
+                    domain_error = _domain_selection_error_message(exc)
+                    if domain_error is not None:
                         # This re-render gets its own nonce as well: it is the
                         # same form, and a page that quietly lost its heartbeat
                         # because the user forgot to tick a domain would be the
                         # exact misleading state the heartbeat exists to end.
                         self._script_nonce = secrets.token_urlsafe(16)
                         body = server._render_form(
-                            error="Select at least one domain to audit.",
+                            error=domain_error,
                             state=_form_state_from_fields(fields),
                             script_nonce=self._script_nonce,
                         ).encode("utf-8")

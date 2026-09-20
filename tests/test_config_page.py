@@ -556,6 +556,60 @@ def test_post_with_no_domain_selected_shows_friendly_error_and_preserves_form(
         srv.shutdown()
 
 
+def test_post_with_a_duplicate_domain_shows_friendly_error_and_preserves_form(
+    domains,
+) -> None:
+    # Issue #272: a browser's checkboxes cannot submit the same value twice,
+    # but a hand-crafted or replayed POST can repeat "domain" in the body.
+    # AuditConfig now rejects that duplicate, and it must get the same
+    # friendly, form-preserving treatment issue #49 already gave an empty
+    # selection, not a raw pydantic dump.
+    srv = ConfigServer(domains)
+    try:
+        url = srv.start()
+        token = _fetch_csrf_token(url)
+        status, body = _post(
+            url,
+            {
+                "domain": ["d01", "d02", "d01"],
+                "issue_mode": "github",
+                "feedback_text": "please keep my note",
+                "consent_coverage": "on",
+                "csrf_token": token,
+            },
+        )
+        assert status == 400
+        assert "validation error for AuditConfig" not in body
+        assert "Each domain can only be selected once" in body
+        assert "please keep my note" in body
+        # The github radio and the coverage checkbox must still be checked
+        # in the re-rendered form, exactly like the empty-selection case.
+        github_match = re.search(
+            r'<input type="radio" name="issue_mode" value="github"[^>]*>', body
+        )
+        assert github_match is not None
+        assert "checked" in github_match.group(0)
+        coverage_match = re.search(
+            r'<input type="checkbox" name="consent_coverage"[^>]*>', body
+        )
+        assert coverage_match is not None
+        assert "checked" in coverage_match.group(0)
+        # Both ticked domains stay ticked in the re-render: the duplicate is
+        # a reason to ask again, not a reason to drop what the user chose.
+        for domain_id in ("d01", "d02"):
+            domain_match = re.search(
+                rf'<input type="checkbox" name="domain" value="{domain_id}"[^>]*>',
+                body,
+            )
+            assert domain_match is not None
+            assert "checked" in domain_match.group(0)
+        # Nothing was actually accepted: the run is still unconfigured and a
+        # corrected submission must still be possible.
+        assert srv.poll() == "pending"
+    finally:
+        srv.shutdown()
+
+
 def test_second_submission_is_rejected(domains) -> None:
     srv = ConfigServer(domains)
     try:
