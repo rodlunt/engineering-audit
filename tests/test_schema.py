@@ -11,7 +11,9 @@ from engineering_audit.rules import load_pack
 from engineering_audit.schema import (
     ENVIRONMENT_KEYS,
     FINDING_PRECONDITION_SCHEMA_VERSION,
+    FINDING_TEXT_SCHEMA_VERSION,
     LEGACY_FINDING_PRECONDITION_CONTEXT_KEY,
+    LEGACY_FINDING_TEXT_CONTEXT_KEY,
     LEGACY_NOT_APPLICABLE_CONTEXT_KEY,
     LEGACY_UNINSPECTED_EVIDENCE_CONTEXT_KEY,
     MAX_ENVIRONMENT_VALUE_CHARS,
@@ -238,6 +240,67 @@ def test_finding_without_a_precondition_loads_from_a_pre_v5_file() -> None:
     assert finding.precondition is None
 
 
+def test_finding_rejects_a_blank_title() -> None:
+    # Issue #273: title is what a report card and a GitHub issue both use as
+    # their heading; a blank one is unusable either way.
+    with pytest.raises(ValidationError) as excinfo:
+        Finding.model_validate(_finding_payload(title=""))
+    assert "title" in str(excinfo.value)
+
+
+def test_finding_rejects_a_whitespace_only_body_md() -> None:
+    # Issue #273: whitespace is the obvious way to satisfy a required-field
+    # check without actually saying anything, same trick the precondition
+    # check above already refuses.
+    with pytest.raises(ValidationError) as excinfo:
+        Finding.model_validate(_finding_payload(body_md="   \n\t  "))
+    assert "body_md" in str(excinfo.value)
+
+
+def test_finding_rejects_a_blank_issue_title() -> None:
+    # Issue #273: file_issues sends this straight to `gh issue create` as the
+    # issue's title; a blank one files an issue nobody can identify.
+    with pytest.raises(ValidationError) as excinfo:
+        Finding.model_validate(_finding_payload(issue_title=""))
+    assert "issue_title" in str(excinfo.value)
+
+
+def test_finding_rejects_a_blank_issue_body() -> None:
+    # Issue #273: the GitHub issue counterpart of body_md.
+    with pytest.raises(ValidationError) as excinfo:
+        Finding.model_validate(_finding_payload(issue_body="  "))
+    assert "issue_body" in str(excinfo.value)
+
+
+def test_finding_names_every_blank_text_field_in_one_error() -> None:
+    # A finding with several blank fields at once should not make the
+    # auditor fix them one rejection at a time; the message names all of
+    # them together.
+    with pytest.raises(ValidationError) as excinfo:
+        Finding.model_validate(
+            _finding_payload(title="", body_md="  ", issue_title="", issue_body="x")
+        )
+    message = str(excinfo.value)
+    assert "title" in message
+    assert "body_md" in message
+    assert "issue_title" in message
+    assert "issue_body" not in message
+
+
+def test_finding_with_blank_text_loads_from_a_pre_v6_file() -> None:
+    # Issue #273's own constraint: keep legacy loading relaxed for a
+    # run-state or run-progress file that may already carry older, looser
+    # data, so an old saved run does not suddenly fail to load. Same bargain
+    # as the precondition check: only the loader may opt into the
+    # relaxation, and only for a file that predates it.
+    payload = _finding_payload(title="", body_md="   ", issue_title="", issue_body="")
+    finding = Finding.model_validate(
+        payload, context={LEGACY_FINDING_TEXT_CONTEXT_KEY: True}
+    )
+    assert finding.title == ""
+    assert finding.body_md == "   "
+
+
 def test_completed_domain_without_an_evidence_boundary_is_rejected() -> None:
     # Issue #179. The two states this separates are a domain that read
     # everything the repository pointed at and a domain that never considered
@@ -270,22 +333,29 @@ def test_evidence_boundary_rejects_a_blank_entry() -> None:
 
 
 def test_a_pre_v5_file_is_relaxed_for_both_v5_constraints_and_the_v4_one() -> None:
-    # The three constraints are gated on the version that introduced each, and
-    # the flags accumulate. A version-3 file predates all three; reading the
-    # gate as a chain that returns on the first match would hold it to two
-    # rules written after it was saved.
+    # The four constraints are gated on the version that introduced each, and
+    # the flags accumulate: a version-3 file predates all four; reading the
+    # gate as a chain that returns on the first match would hold it to rules
+    # written after it was saved.
     from engineering_audit.schema import _legacy_validation_context
 
     assert _legacy_validation_context(3) == {
         LEGACY_NOT_APPLICABLE_CONTEXT_KEY: True,
         LEGACY_FINDING_PRECONDITION_CONTEXT_KEY: True,
         LEGACY_UNINSPECTED_EVIDENCE_CONTEXT_KEY: True,
+        LEGACY_FINDING_TEXT_CONTEXT_KEY: True,
     }
     assert _legacy_validation_context(4) == {
         LEGACY_FINDING_PRECONDITION_CONTEXT_KEY: True,
         LEGACY_UNINSPECTED_EVIDENCE_CONTEXT_KEY: True,
+        LEGACY_FINDING_TEXT_CONTEXT_KEY: True,
     }
-    assert _legacy_validation_context(FINDING_PRECONDITION_SCHEMA_VERSION) is None
+    # A version-5 file predates only the newest (version-6) constraint: the
+    # two version-5 constraints were already enforced when it was written.
+    assert _legacy_validation_context(FINDING_PRECONDITION_SCHEMA_VERSION) == {
+        LEGACY_FINDING_TEXT_CONTEXT_KEY: True,
+    }
+    assert _legacy_validation_context(FINDING_TEXT_SCHEMA_VERSION) is None
 
 
 def test_finding_accepts_a_bare_path_location() -> None:
@@ -449,6 +519,46 @@ def test_the_legacy_exemption_does_not_extend_to_could_not_evaluate() -> None:
     raw["domain_results"]["d01"]["rule_verdicts"][0]["note"] = None
     with pytest.raises(ValidationError):
         RunState.from_json(json.dumps(raw))
+
+
+def _run_state_json_with_a_blank_finding_title(schema_version: int) -> str:
+    """A run-state document carrying one finding with a blank title, as a
+    build that predates the non-blank-text requirement (issue #273) would
+    have written it."""
+    state = RunState(
+        meta=_meta(),
+        config=_config(),
+        domain_results={
+            "d01": DomainResult(
+                domain_id="d01",
+                status="completed",
+                uninspected_evidence=[],
+                rule_verdicts=[RuleVerdict(rule_id="D01-R01", verdict=Verdict.FINDING)],
+                findings=[_finding("beds.py:1")],
+            )
+        },
+    )
+    raw = json.loads(state.to_json())
+    raw["schema_version"] = schema_version
+    raw["domain_results"]["d01"]["findings"][0]["title"] = ""
+    return json.dumps(raw)
+
+
+def test_run_state_from_json_tolerates_a_blank_finding_title_below_version_6() -> None:
+    # Issue #273's own constraint: an old-shaped run-state.json, saved by a
+    # build that never validated this field, must keep loading rather than
+    # suddenly failing under a rule it predates.
+    restored = RunState.from_json(_run_state_json_with_a_blank_finding_title(5))
+    assert restored.domain_results["d01"].findings[0].title == ""
+
+
+def test_run_state_from_json_rejects_a_blank_finding_title_at_version_6() -> None:
+    # The exemption is for files that predate the rule, not a way around it:
+    # a document claiming to be written by a build that enforced non-blank
+    # finding text is held to it.
+    with pytest.raises(ValidationError) as excinfo:
+        RunState.from_json(_run_state_json_with_a_blank_finding_title(6))
+    assert "D01-R01" in str(excinfo.value)
 
 
 def test_run_progress_from_json_tolerates_an_unjustified_not_applicable_below_version_4() -> (
@@ -853,7 +963,7 @@ def test_validate_consulted_sources_runs_independently_of_domain_result_status()
 
 def test_run_state_defaults_to_current_schema_version_when_freshly_built() -> None:
     state = RunState(meta=_meta(), config=_config())
-    assert state.schema_version == RUN_STATE_SCHEMA_VERSION == 5
+    assert state.schema_version == RUN_STATE_SCHEMA_VERSION == 6
     assert state.filed_issue_urls == {}
     assert state.feedback_issue_url is None
 
@@ -893,10 +1003,10 @@ def test_run_state_written_before_the_fetch_record_loads_as_unknown() -> None:
     assert restored.rules_fetch_unknown_domain_ids == []
 
 
-def test_run_state_serialised_json_carries_schema_version_5() -> None:
+def test_run_state_serialised_json_carries_schema_version_6() -> None:
     state = RunState(meta=_meta(), config=_config())
     dumped = json.loads(state.to_json())
-    assert dumped["schema_version"] == 5
+    assert dumped["schema_version"] == 6
 
 
 def test_run_state_from_json_missing_schema_version_is_treated_as_version_1() -> None:
@@ -936,7 +1046,7 @@ def test_run_state_from_json_accepts_current_version() -> None:
         feedback_issue_url="https://example.invalid/issues/2",
     )
     restored = RunState.from_json(state.to_json())
-    assert restored.schema_version == 5
+    assert restored.schema_version == 6
     assert restored == state
 
 
@@ -1073,26 +1183,26 @@ def test_run_state_from_json_rejects_a_higher_schema_version_naming_both_numbers
     assert "upgrade" in message.lower()
 
 
-def test_run_state_version_gate_accepts_5_and_rejects_6_naming_both_numbers() -> None:
-    # 5 is the current version (findings must carry a precondition, and a
-    # completed domain must record its evidence boundary); 6 does not exist
-    # yet. Named with literal numbers, not just RUN_STATE_SCHEMA_VERSION +/- 1,
-    # so a future bump that forgets to update this test is caught rather than
-    # silently sliding the goalposts with it.
-    assert RUN_STATE_SCHEMA_VERSION == 5
+def test_run_state_version_gate_accepts_6_and_rejects_7_naming_both_numbers() -> None:
+    # 6 is the current version (findings must carry a precondition and
+    # non-blank text, and a completed domain must record its evidence
+    # boundary); 7 does not exist yet. Named with literal numbers, not just
+    # RUN_STATE_SCHEMA_VERSION +/- 1, so a future bump that forgets to update
+    # this test is caught rather than silently sliding the goalposts with it.
+    assert RUN_STATE_SCHEMA_VERSION == 6
     state = RunState(meta=_meta(), config=_config())
     raw = json.loads(state.to_json())
 
-    raw["schema_version"] = 5
-    accepted = RunState.from_json(json.dumps(raw))
-    assert accepted.schema_version == 5
-
     raw["schema_version"] = 6
+    accepted = RunState.from_json(json.dumps(raw))
+    assert accepted.schema_version == 6
+
+    raw["schema_version"] = 7
     with pytest.raises(RunStateVersionError) as excinfo:
         RunState.from_json(json.dumps(raw))
     message = str(excinfo.value)
+    assert "7" in message
     assert "6" in message
-    assert "5" in message
 
 
 def test_run_state_still_requires_a_config_after_run_progress_was_added() -> None:
@@ -1147,27 +1257,27 @@ def test_run_progress_from_json_rejects_a_higher_schema_version() -> None:
     assert str(RUN_STATE_SCHEMA_VERSION) in str(excinfo.value)
 
 
-def test_run_progress_version_gate_accepts_5_and_rejects_6_naming_both_numbers() -> (
+def test_run_progress_version_gate_accepts_6_and_rejects_7_naming_both_numbers() -> (
     None
 ):
     # RunProgress shares RUN_STATE_SCHEMA_VERSION with RunState deliberately
-    # (see its own docstring), so the version bump to 5 applies here too even
+    # (see its own docstring), so the version bump to 6 applies here too even
     # though filed_issues itself needed no change. Named with literal numbers
     # for the same reason as RunState's equivalent test: catching a future
     # bump that forgets to update the pinned values.
-    assert RUN_STATE_SCHEMA_VERSION == 5
+    assert RUN_STATE_SCHEMA_VERSION == 6
     raw = json.loads(RunProgress(meta=_meta(), config=_config()).to_json())
 
-    raw["schema_version"] = 5
-    accepted = RunProgress.from_json(json.dumps(raw))
-    assert accepted.schema_version == 5
-
     raw["schema_version"] = 6
+    accepted = RunProgress.from_json(json.dumps(raw))
+    assert accepted.schema_version == 6
+
+    raw["schema_version"] = 7
     with pytest.raises(RunStateVersionError) as excinfo:
         RunProgress.from_json(json.dumps(raw))
     message = str(excinfo.value)
+    assert "7" in message
     assert "6" in message
-    assert "5" in message
 
 
 def test_run_progress_rejects_a_domain_results_key_that_is_not_its_domain_id() -> None:
