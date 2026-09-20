@@ -44,6 +44,8 @@ __all__ = [
     "FINDING_PRECONDITION_SCHEMA_VERSION",
     "LEGACY_FINDING_PRECONDITION_CONTEXT_KEY",
     "LEGACY_UNINSPECTED_EVIDENCE_CONTEXT_KEY",
+    "FINDING_TEXT_SCHEMA_VERSION",
+    "LEGACY_FINDING_TEXT_CONTEXT_KEY",
     "RunStateVersionError",
     "IncompleteResultError",
     "UnknownRuleIdError",
@@ -101,7 +103,14 @@ __all__ = [
 # document (None, as distinct from an explicit empty list), so on the #110
 # reasoning it would not have needed a bump at all; it is only mentioned here so
 # a reader of a version-5 file knows which two changes landed together.
-RUN_STATE_SCHEMA_VERSION = 5
+#
+# Bumped to 6 when a finding's title, body_md, issue_title and issue_body began
+# requiring non-blank text (issue #273), the same reasoning as the 4 and 5
+# bumps again: no field changed shape, so the version number is the only thing
+# in the document that can tell a reader whether the file predates the
+# constraint. A file at 5 or below predates it and is loaded with it relaxed;
+# a file at 6 or above was written by a build that enforced it.
+RUN_STATE_SCHEMA_VERSION = 6
 
 # The first schema version whose not-applicable verdicts must carry a note.
 # Named rather than written as a bare 4 in the two from_json methods, so the
@@ -112,6 +121,11 @@ NOT_APPLICABLE_NOTE_SCHEMA_VERSION = 4
 # the same reason NOT_APPLICABLE_NOTE_SCHEMA_VERSION is: the next bump must not
 # drag this line along with it.
 FINDING_PRECONDITION_SCHEMA_VERSION = 5
+
+# The first schema version whose findings must carry non-blank title, body_md,
+# issue_title and issue_body text. Named for the same reason the two constants
+# above are: the next bump must not drag this line along with it.
+FINDING_TEXT_SCHEMA_VERSION = 6
 
 # Validation-context key that relaxes the not-applicable note requirement.
 # Set only by RunState.from_json and RunProgress.from_json, only for a file
@@ -146,6 +160,14 @@ def _not_applicable_note_relaxed(context: object) -> bool:
 # the other does not have to unpick a shared flag to do it.
 LEGACY_FINDING_PRECONDITION_CONTEXT_KEY = "allow_finding_without_precondition"
 LEGACY_UNINSPECTED_EVIDENCE_CONTEXT_KEY = "allow_domain_without_evidence_boundary"
+
+# Validation-context key that relaxes the version-6 constraint: a finding's
+# title, body_md, issue_title and issue_body must not be blank or
+# whitespace-only (issue #273). Same rule as every key above: set only by the
+# two from_json methods, only for a file that predates
+# FINDING_TEXT_SCHEMA_VERSION, and never by a tool constructing or publishing
+# a fresh finding.
+LEGACY_FINDING_TEXT_CONTEXT_KEY = "allow_blank_finding_text"
 
 
 def _context_flag_set(context: object, key: str) -> bool:
@@ -295,6 +317,44 @@ class Finding(BaseModel):
                 f"rule {self.rule_id}: a finding must state the precondition the rule "
                 "presumes and where it holds in this repository; if you cannot name "
                 "where it holds, the verdict is not-applicable, not finding"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _text_fields_not_blank(self, info: ValidationInfo) -> "Finding":
+        # A finding is what render_report turns into a report card and what
+        # file_issues turns into a GitHub issue; title, body_md, issue_title
+        # and issue_body are the whole of what either reader sees. All four
+        # used to accept blank or whitespace-only text and still pass schema
+        # validation, so a finding could publish an empty report heading or
+        # file a GitHub issue with an empty title and body, leaving whoever
+        # opens it to manually diagnose the malformed run state before they
+        # can even tell what the finding was about (issue #273).
+        #
+        # The exemption is the same shape as _precondition_required's above:
+        # a run-state or run-progress file written before this requirement
+        # existed must stay loadable, since inventing text for a field that
+        # was never validated would be worse than the blank it actually
+        # holds. Only the loader may opt into that relaxation, and only for a
+        # file that predates FINDING_TEXT_SCHEMA_VERSION; a caller
+        # constructing or publishing a fresh finding is always held to it.
+        blank_fields = [
+            field_name
+            for field_name, value in (
+                ("title", self.title),
+                ("body_md", self.body_md),
+                ("issue_title", self.issue_title),
+                ("issue_body", self.issue_body),
+            )
+            if not value.strip()
+        ]
+        if blank_fields:
+            if _context_flag_set(info.context, LEGACY_FINDING_TEXT_CONTEXT_KEY):
+                return self
+            raise ValueError(
+                f"rule {self.rule_id}: finding field(s) {', '.join(blank_fields)} must not "
+                "be blank or whitespace-only; a published finding must be self-contained, "
+                "not an empty report heading or an empty GitHub issue"
             )
         return self
 
@@ -886,10 +946,10 @@ def _legacy_validation_context(version: int) -> dict[str, bool] | None:
     one model cannot be legacy for the other.
 
     Each constraint is gated on the version that introduced it, independently,
-    and the flags accumulate: a version-3 file predates both the
-    not-applicable note and the two version-5 constraints, and must be relaxed
-    for all three. Reading this as a chain of elifs, or returning on the first
-    match, would hold an old file to a rule that postdates it.
+    and the flags accumulate: a version-3 file predates the not-applicable
+    note, the two version-5 constraints and the version-6 constraint, and must
+    be relaxed for all four. Reading this as a chain of elifs, or returning on
+    the first match, would hold an old file to a rule that postdates it.
     """
     context: dict[str, bool] = {}
     if version < NOT_APPLICABLE_NOTE_SCHEMA_VERSION:
@@ -897,6 +957,8 @@ def _legacy_validation_context(version: int) -> dict[str, bool] | None:
     if version < FINDING_PRECONDITION_SCHEMA_VERSION:
         context[LEGACY_FINDING_PRECONDITION_CONTEXT_KEY] = True
         context[LEGACY_UNINSPECTED_EVIDENCE_CONTEXT_KEY] = True
+    if version < FINDING_TEXT_SCHEMA_VERSION:
+        context[LEGACY_FINDING_TEXT_CONTEXT_KEY] = True
     return context or None
 
 

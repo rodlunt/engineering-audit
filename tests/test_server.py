@@ -3924,7 +3924,7 @@ def test_the_finished_run_state_carries_the_fetched_domains(
     assert saved_state["rules_fetch_unknown_domain_ids"] == []
     # No schema bump came with the field: an older reader can ignore it and
     # still render every report it renders today.
-    assert saved_state["schema_version"] == 5
+    assert saved_state["schema_version"] == 6
 
 
 def test_render_report_hands_back_the_domains_whose_rules_were_never_fetched(
