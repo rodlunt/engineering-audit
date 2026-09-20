@@ -1257,6 +1257,22 @@ def test_start_config_preset_path_rejects_unknown_domain_ids(
     assert "d99" in str(excinfo.value)
 
 
+def test_start_config_preset_path_rejects_a_duplicate_domain_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Issue #272: a preset file naming the same domain twice is a
+    # schema-valid JSON document that AuditConfig itself rejects, the same
+    # way an empty selection already is above.
+    mcp, _state = build_server(FIXTURE_PACK)
+    _begin_run(mcp, tmp_path / "audit-output")
+    _preset_config_env(monkeypatch, tmp_path, selected_domain_ids=["d01", "d02", "d01"])
+
+    with pytest.raises(ToolError) as excinfo:
+        _call(mcp, "start_config", {})
+    assert "not a valid AuditConfig" in str(excinfo.value)
+    assert "d01" in str(excinfo.value)
+
+
 # ---------------------------------------------------------------------------
 # start_config: deliverables_dir validation (issue #109)
 #
@@ -3574,6 +3590,40 @@ def test_corrupt_recovery_state_is_reported_loudly_not_treated_as_no_prior_run(
     assert "run-progress file" in offer["reason"]
     # Nothing was started, so this cannot pass for a fresh run that simply
     # found nothing to resume.
+    with pytest.raises(ToolError, match="No audit run in progress"):
+        _call(mcp, "run_status", {})
+
+    with pytest.raises(ToolError) as excinfo:
+        _begin_run(mcp, out_dir, resume=True)
+    assert "Cannot resume" in str(excinfo.value)
+
+
+def test_run_status_is_unreachable_when_the_saved_config_has_a_duplicate_domain_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Issue #272: run_status reports selected_domain_ids straight from
+    # run.config, so a duplicate that reached this far would double-count a
+    # domain in "selected_domain_ids" while "recorded"/"missing" derived from
+    # it stayed inconsistent. AuditConfig's validator is what stops that: a
+    # progress file whose config names a domain twice (hand-edited, or
+    # written by some other build) is treated exactly like the
+    # truncated-JSON corruption case above, unreadable rather than resumable,
+    # so it can never reach run_status with padded counts.
+    out_dir = tmp_path / "audit-output"
+    _interrupted_run(tmp_path, monkeypatch, out_dir)
+    progress_path = _progress_file(out_dir)
+    raw = json.loads(progress_path.read_text(encoding="utf-8"))
+    raw["config"]["selected_domain_ids"] = ["d01", "d02", "d01"]
+    progress_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    mcp, _state = build_server(FIXTURE_PACK)
+    offer = _begin_run(mcp, out_dir)
+
+    assert offer["run_started"] is False
+    assert offer["resumable"] is False
+    assert offer["prior_run"]["readable"] is False
+    assert "d01" in offer["reason"]
+
     with pytest.raises(ToolError, match="No audit run in progress"):
         _call(mcp, "run_status", {})
 

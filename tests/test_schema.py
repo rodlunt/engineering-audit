@@ -690,6 +690,30 @@ def test_audit_config_rejects_a_blank_deliverables_dir() -> None:
         )
 
 
+def test_audit_config_accepts_unique_selected_domain_ids() -> None:
+    # No duplicates: the ordinary case must keep working exactly as before.
+    config = AuditConfig(selected_domain_ids=["d01", "d02"], issue_mode="report")
+    assert config.selected_domain_ids == ["d01", "d02"]
+
+
+def test_audit_config_rejects_a_duplicate_selected_domain_id() -> None:
+    # Issue #272: render_report collapses selected_domain_ids into a dict
+    # keyed by domain id, so a duplicate silently vanishes there while
+    # run_status and the config summary still report the padded list. Reject
+    # it here, at the one point every caller's AuditConfig passes through,
+    # rather than letting the saved configuration and the rendered
+    # population diverge.
+    with pytest.raises(ValidationError, match="d01"):
+        AuditConfig(selected_domain_ids=["d01", "d02", "d01"], issue_mode="report")
+
+
+def test_audit_config_rejects_a_duplicate_even_when_it_is_the_only_content() -> None:
+    # Two copies of the same single domain must not slip past the
+    # "non-empty" check into looking like a valid one-domain selection.
+    with pytest.raises(ValidationError, match="d01"):
+        AuditConfig(selected_domain_ids=["d01", "d01"], issue_mode="report")
+
+
 def test_run_state_rejects_domain_results_key_mismatched_with_domain_id() -> None:
     # domain_results is keyed by domain_id; a DomainResult filed under a
     # different key than its own domain_id is silent data corruption (a
@@ -1024,6 +1048,36 @@ def test_run_state_from_json_accepts_current_version() -> None:
     restored = RunState.from_json(state.to_json())
     assert restored.schema_version == 6
     assert restored == state
+
+
+def test_run_state_from_json_rejects_a_persisted_config_with_a_duplicate_domain_id() -> (
+    None
+):
+    # Issue #272: report rendering (render_report in report.py, and the CLI
+    # that loads a saved run-state.json via RunState.from_json before handing
+    # it to render_report) must never be reachable with a duplicate domain
+    # id, whether the run-state came from a fresh submission this process
+    # validated already or from a file saved by any other build. A
+    # hand-edited or otherwise corrupted run-state.json naming the same
+    # domain twice is refused here, at load, rather than silently collapsed
+    # by render_report's dict-keyed-by-domain-id pass.
+    state = RunState(meta=_meta(), config=_config())
+    raw = json.loads(state.to_json())
+    raw["config"]["selected_domain_ids"] = ["d01", "d02", "d01"]
+    with pytest.raises(ValidationError, match="d01"):
+        RunState.from_json(json.dumps(raw))
+
+
+def test_run_progress_from_json_rejects_a_persisted_config_with_a_duplicate_domain_id() -> (
+    None
+):
+    # Same defect, on the crash-recovery record run_status reads while a run
+    # is in progress. Issue #272.
+    progress = RunProgress(meta=_meta(), config=_config())
+    raw = json.loads(progress.to_json())
+    raw["config"]["selected_domain_ids"] = ["d01", "d02", "d01"]
+    with pytest.raises(ValidationError, match="d01"):
+        RunProgress.from_json(json.dumps(raw))
 
 
 def test_run_state_from_json_migrates_schema_version_2_bare_rule_id_keys_to_first_finding() -> (

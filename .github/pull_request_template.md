@@ -9,8 +9,9 @@ Closes #
 
 ## Checks
 
-- [ ] Ran the three CI gates locally and they pass:
+- [ ] Ran the four CI gates locally and they pass:
       `uv run --with ruff==0.15.16 ruff check .`
+      `uv run --with ruff==0.15.16 ruff format --check .`
       `uv run --with mypy==2.3.0 mypy src`
       `uv run pytest -q`
 - [ ] Behaviour changes carry tests, including a failing case for any new

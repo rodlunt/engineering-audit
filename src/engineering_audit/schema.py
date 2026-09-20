@@ -883,6 +883,39 @@ class AuditConfig(BaseModel):
             raise ValueError("selected_domain_ids must not be empty")
         return value
 
+    @field_validator("selected_domain_ids")
+    @classmethod
+    def _no_duplicate_domains(cls, value: list[str]) -> list[str]:
+        # render_report (report.py) collapses selected_domain_ids into a dict
+        # keyed by domain id before rendering, so a duplicate id is silently
+        # absorbed there while run_status and the config summary upstream
+        # still report the padded, un-deduplicated list. The saved
+        # configuration and the rendered population diverge, and the
+        # report's selected-domain counts stop being trustworthy (issue
+        # #272).
+        #
+        # Enforced here rather than in each caller, because every caller's
+        # AuditConfig passes through this validator on construction: a fresh
+        # interactive submission (config_page.py's _parse_submission), a
+        # preset file (AuditConfig.model_validate_json in server.py), and a
+        # saved run-state or run-progress file loaded back in (RunState.from_json
+        # / RunProgress.from_json validate the nested AuditConfig the same
+        # way). One check here covers preset loading, interactive
+        # submission, status reporting and report rendering without any of
+        # them needing their own guard.
+        seen: set[str] = set()
+        duplicates: list[str] = []
+        for domain_id in value:
+            if domain_id in seen and domain_id not in duplicates:
+                duplicates.append(domain_id)
+            seen.add(domain_id)
+        if duplicates:
+            raise ValueError(
+                "selected_domain_ids must not name the same domain twice; "
+                f"{sorted(duplicates)} appear more than once"
+            )
+        return value
+
     @field_validator("deliverables_dir")
     @classmethod
     def _deliverables_dir_not_blank(cls, value: str | None) -> str | None:
