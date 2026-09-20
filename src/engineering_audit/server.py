@@ -224,7 +224,7 @@ def _default_tool_commit() -> str | None:
        intentional. See :func:`_git_commit`'s docstring for the same point
        made from the other side.
 
-    Neither source is load-bearing for the tool to run, so any failure here
+    Neither source affects whether the tool can run, so any failure here
     (package not installed, no direct_url.json, unreadable, malformed, no
     source tree, git missing) is swallowed and reported as None: the caller
     renders that as "unknown" in the report rather than fabricating a
@@ -1925,7 +1925,7 @@ def _register_config_tools(mcp: MCPServer, state: AppState) -> None:
         # had the page in front of them, not how promptly the assistant got
         # round to polling.
         run.config_wait_started_at = time.monotonic()
-        # Best-effort convenience, never load-bearing: the URL in the response
+        # Best-effort convenience: the URL in the response
         # stays the contract, because a remote or display-less session has no
         # browser to open and must still work. The swallow is safe precisely
         # because the result records whether a tab actually opened, so the
