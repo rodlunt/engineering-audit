@@ -243,6 +243,9 @@ a real question to make room for a cosmetic one.
 merges near-duplicate questions across domains (e.g. "who is the user" appears in both d02 and
 d15, "what is the system architecture" in both d02 and d11). One merged question answered by
 the user satisfies both domains' derived questions and counts as asked and answered for each.
+If a merged question is `resolved-by-cross-reference`, apply that outcome to every derived
+question it subsumes, with the same earlier decision provenance and reuse reason. Count those
+rows as resolved by cross-reference, not as answered.
 Note the merge explicitly in the record (e.g. "Q1 merged from d02/d15") so the per-domain counts
 remain readable. Domain totals may sum to more than the total questions actually asked; the
 coverage table's total row must report the distinct question count, not the sum of the per-domain
@@ -253,8 +256,22 @@ rather than stylistic: ask two in one turn and you reliably get one answer, the 
 and it is recorded as answered because a reply arrived. That is a silent gap, and silent gaps are
 the thing this skill exists to prevent.
 
-Record each answer as ANSWERED, or DEFERRED with the user's reason. "Not decided yet" is a
-deferral, not an answer; if no reason is offered, ask once, then record `none given`.
+Record each retained question with exactly one stable outcome:
+
+- `answered`: a direct user answer settled the question;
+- `resolved-by-cross-reference`: the question was not asked directly because an earlier
+  recorded decision resolves it. This outcome is valid only when the coverage row records the
+  earlier decision's identifier and title plus the reason for reusing it;
+- `deferred`: the question was asked but the user deferred it, with the user's reason;
+- `not-asked`: the question was retained but not shown and not resolved.
+
+"Not decided yet" is a deferral, not an answer; if no reason is offered, ask once, then record
+`none given`.
+
+The coverage totals must satisfy `asked = answered + deferred` and
+`derived = asked + resolved-by-cross-reference + not-asked`. A resumed session preserves each
+question's outcome and provenance. A `resolved-by-cross-reference` row remains that outcome and
+never becomes `answered` merely because the session resumed.
 
 **Bail-out is unconditional.** On stop, enough, or that will do: write the record immediately,
 mark the session ended early, and give the unasked count. A short session must never read as a
@@ -338,17 +355,30 @@ only at the end, so an interrupted session still leaves an honest record rather 
 Read [the documentation formats](references/documentation-formats.md) before writing. Maintain:
 
 - `CONTEXT.md` as a glossary of agreed project language without implementation detail;
-- `docs/engineering-coverage.md` as the domain map, decision ledger, build gates, and risks;
+- `docs/engineering-coverage.md` as the domain map, question-outcome ledger, session totals,
+  decision ledger, build gates, and risks;
 - an ADR under `docs/adr/` only for a hard-to-reverse, surprising decision made through a real
   trade-off.
+
+When several qualifying decisions are recorded in one ADR, group them only when they share
+context, were decided together in one confirmed design discussion (not necessarily the same
+interview round), and share the main trade-off. Split the record when any decision has independent
+alternatives, independent owners, independent lifecycles, or independent reversal paths. Keep the
+single-decision form when these conditions are not all true. A grouped record must show an explicit
+grouping rationale and each individual decision with its own consequence section. Apply the
+hard-to-reverse, surprising, and real-trade-off qualification bar to every grouped decision.
+Before writing, inspect `docs/adr/` and use the next ADR number after the highest existing record.
+Keep numbering append-only without renumbering or overwriting existing records.
 
 **A later grill reads and updates existing documents, checks them against the conversation, and
 continues ADR numbering. It does not replace them blindly.** A second run appends rather than
 overwriting; never destroy an earlier session's record to write this one.
 
 `docs/engineering-coverage.md` carries the per-domain counts: how many questions were derived,
-asked, answered, deferred and never put, plus the `source` each domain was read from. A run that
-asked four of forty-seven and a run that asked all forty-seven must not look the same afterwards.
+asked, answered, resolved by cross-reference, deferred and not asked, plus the `source` each
+domain was read from. A cross-reference row also carries the earlier decision identifier and
+title and the reason for reusing it. A run that asked four of forty-seven and a run that asked all
+forty-seven must not look the same afterwards.
 
 Cross-check confirmed statements against existing code and documents. Surface contradictions
 instead of silently choosing one version. Capturing design documents is part of the interview;
