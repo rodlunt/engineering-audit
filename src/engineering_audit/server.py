@@ -18,6 +18,7 @@ reading one of those, not the whole module.
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import os
 import subprocess
@@ -30,11 +31,13 @@ from datetime import datetime, timezone
 from importlib.metadata import PackageNotFoundError, distribution as _pkg_distribution
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
 from mcp.server import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import ValidationError
 
 # Private import: the SDK enables OpenTelemetry span middleware on every
@@ -93,6 +96,8 @@ from engineering_audit.run_state_io import (
     save_run_progress,
 )
 from engineering_audit.schema import (
+    IncompleteResultError,
+    UnknownRuleIdError,
     RUN_STATE_SCHEMA_VERSION,
     AuditConfig,
     DomainResult,
@@ -124,6 +129,43 @@ _SEVERITY_ORDER = ("critical", "high", "medium", "low")
 # the cost of being wrong in one direction (a dead process and a stale form)
 # is nothing like the cost in the other (one more cheap tool call).
 _CONFIG_POLL_INTERVAL_S = 25.0
+
+
+class AuditError(ToolError, ValueError):
+    """A failure this tool anticipated, whose message the caller is meant to read.
+
+    mcp 2.2 treats any exception other than ToolError escaping a tool as a crash and
+    returns only `Error executing tool <name>`, hiding the message. These errors are
+    deliberate and carry the guidance (unknown id, no saved run, bad config), so they
+    must be ToolError. Subclassing ValueError as well keeps every existing
+    `except ValueError` and `pytest.raises(ValueError)` working unchanged.
+    """
+
+
+def _surface_anticipated(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Let a tool's anticipated failures reach the caller as `AuditError`.
+
+    Environment validation (ValueError), unfinished or unknown-rule results
+    (IncompleteResultError, UnknownRuleIdError) and report refusals (ReportError)
+    are deliberate and carry the fix in their message. mcp 2.2 would otherwise mask
+    them as a crash. Anything else still escapes unchanged, so a real bug stays masked.
+    """
+
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return fn(*args, **kwargs)
+        except AuditError:
+            raise
+        except (
+            ValueError,
+            IncompleteResultError,
+            UnknownRuleIdError,
+            ReportError,
+        ) as exc:
+            raise AuditError(str(exc)) from exc
+
+    return wrapper
 
 
 def _default_tool_version() -> str:
@@ -872,7 +914,7 @@ def _resume_offer(prior: PriorRun, repo_name: str) -> dict[str, Any]:
 
 def _require_run(state: AppState) -> RunTracker:
     if state.run is None:
-        raise ValueError("No audit run in progress. Call begin_run first.")
+        raise AuditError("No audit run in progress. Call begin_run first.")
     return state.run
 
 
@@ -889,12 +931,12 @@ def _feedback_target(state: AppState) -> tuple[RunTracker, FinishedRun | None]:
         return state.run, None
     if state.finished is not None:
         return state.finished.tracker, state.finished
-    raise ValueError("No audit run in progress. Call begin_run first.")
+    raise AuditError("No audit run in progress. Call begin_run first.")
 
 
 def _require_config(run: RunTracker) -> AuditConfig:
     if run.config is None:
-        raise ValueError(
+        raise AuditError(
             "This run has no configuration yet. Call start_config and get_config first."
         )
     return run.config
@@ -904,7 +946,7 @@ def _validate_selected_domains(state: AppState, config: AuditConfig) -> None:
     valid_ids = {d.id for d in state.pack.domains}
     unknown = sorted(set(config.selected_domain_ids) - valid_ids)
     if unknown:
-        raise ValueError(
+        raise AuditError(
             f"selected_domain_ids includes id(s) not in the loaded rules pack: {unknown}. "
             f"Valid ids: {sorted(valid_ids)}"
         )
@@ -932,7 +974,7 @@ def _resume_run(
     whether they matter.
     """
     if prior.progress is None:
-        raise ValueError(
+        raise AuditError(
             f"Cannot resume the run saved at {prior.path}: {prior.error}. Nothing was "
             "started and the file was not touched. Its recorded results cannot be "
             "recovered; call begin_run with resume=False to discard it and start fresh, "
@@ -940,7 +982,7 @@ def _resume_run(
         )
     progress = prior.progress
     if progress.meta.repo_name != repo_name:
-        raise ValueError(
+        raise AuditError(
             f"Refusing to resume: the run saved at {prior.path} audits repository "
             f"{progress.meta.repo_name!r}, but this call is for {repo_name!r}. Recorded "
             "results are attributed to the repository they were found in; continuing one "
@@ -955,7 +997,7 @@ def _resume_run(
         try:
             _validate_selected_domains(state, config)
         except ValueError as exc:
-            raise ValueError(
+            raise AuditError(
                 f"Cannot resume the run saved at {prior.path}: {exc} The rules pack loaded "
                 "now does not define every domain that run selected, so the run cannot be "
                 "completed against it. Point the server at the rules pack that run used, or "
@@ -1168,19 +1210,19 @@ def _resolve_target_repo(run: RunTracker, repo: str | None) -> str:
     if repo is not None:
         return repo
     if run.repo_dir is None:
-        raise ValueError(
+        raise AuditError(
             "No repo_dir was recorded for this run (pass it to begin_run) and no repo "
             "argument was given to file_issues; cannot detect which GitHub repository "
             "to file issues on."
         )
     if not gh_available():
-        raise ValueError(
+        raise AuditError(
             "gh is not available or not authenticated (gh auth status failed). Install "
             "and authenticate gh, or use issue_mode='report' instead."
         )
     detected = detect_repo(run.repo_dir)
     if detected is None:
-        raise ValueError(
+        raise AuditError(
             f"Could not detect a GitHub repository from {run.repo_dir}: no GitHub "
             "remote found. Pass repo='owner/name' explicitly to file_issues."
         )
@@ -1221,7 +1263,7 @@ def _file_pending_issues(
                 if rule is None
                 else "has no cited source in the rules pack"
             )
-            raise ValueError(
+            raise AuditError(
                 f"Refusing to file issue for finding on rule {finding.rule_id}: the rule "
                 f"{problem}. A filed issue is a published claim; this tool does not "
                 "publish claims without evidence. Nothing was filed for this finding. "
@@ -1271,7 +1313,7 @@ def _file_pending_issues(
             created = create_issue(target_repo, issue_title, body, labels)
         except IssueFilingError as exc:
             unfiled = [p.key for p in pending if p.key not in run.filed_issues]
-            raise ValueError(
+            raise AuditError(
                 f"Filing stopped after {len(filed_this_call)} of {len(pending)} issue(s) "
                 f"this call. Filed: {run.filed_issues}. Not filed: {unfiled}. Failure "
                 f"filing finding '{issue.key}' on {target_repo}: {exc}"
@@ -1437,7 +1479,7 @@ def _register_pack_tools(mcp: MCPServer, state: AppState) -> None:
             valid_ids = (
                 ", ".join(d.id for d in state.pack.domains) or "(no domains loaded)"
             )
-            raise ValueError(f"Unknown domain id '{domain_id}'. Valid ids: {valid_ids}")
+            raise AuditError(f"Unknown domain id '{domain_id}'. Valid ids: {valid_ids}")
         run = state.run
         if run is not None:
             # setdefault, not assignment: this names the FIRST time the rules
@@ -1465,6 +1507,7 @@ def _register_run_tools(mcp: MCPServer, state: AppState) -> None:
     """Run lifecycle: starting a run and stamping its provenance."""
 
     @mcp.tool()
+    @_surface_anticipated
     def begin_run(
         assistant: str,
         model: str,
@@ -1575,7 +1618,7 @@ def _register_run_tools(mcp: MCPServer, state: AppState) -> None:
         validate_environment(environment)
 
         if state.run is not None and not replace:
-            raise ValueError(
+            raise AuditError(
                 f"A run is already in progress (started at {state.run.meta.started}, "
                 f"repo {state.run.meta.repo_name}). Finish it with render_report, or "
                 "pass replace=True to discard it and start a new run."
@@ -1586,7 +1629,7 @@ def _register_run_tools(mcp: MCPServer, state: AppState) -> None:
         if repo_dir is not None:
             repo_dir_path = Path(repo_dir).expanduser()
             if not repo_dir_path.is_dir():
-                raise ValueError(
+                raise AuditError(
                     f"repo_dir '{repo_dir}' does not exist or is not a directory."
                 )
 
@@ -1599,7 +1642,7 @@ def _register_run_tools(mcp: MCPServer, state: AppState) -> None:
         prior = _find_prior_run(output_dir_path)
         decision = resume if resume is not None else (False if replace else None)
         if resume is True and prior is None:
-            raise ValueError(
+            raise AuditError(
                 f"resume=True, but there is no unfinished run saved in {output_dir_path} "
                 f"(no {PROGRESS_FILENAME} there). Nothing was started. Check that output_dir "
                 "is the same directory the interrupted run used, or call begin_run with "
@@ -1861,7 +1904,7 @@ def _register_config_tools(mcp: MCPServer, state: AppState) -> None:
         if preset_path:
             path = Path(preset_path).expanduser()
             if not path.is_file():
-                raise ValueError(
+                raise AuditError(
                     f"ENGINEERING_AUDIT_CONFIG is set to '{preset_path}', which is not a file. "
                     "Fix the path, or unset ENGINEERING_AUDIT_CONFIG to use the interactive "
                     "configuration page instead."
@@ -1869,13 +1912,13 @@ def _register_config_tools(mcp: MCPServer, state: AppState) -> None:
             try:
                 raw_text = path.read_text(encoding="utf-8")
             except OSError as exc:
-                raise ValueError(
+                raise AuditError(
                     f"could not read ENGINEERING_AUDIT_CONFIG file '{path}': {exc}"
                 ) from exc
             try:
                 config = AuditConfig.model_validate_json(raw_text)
             except ValidationError as exc:
-                raise ValueError(
+                raise AuditError(
                     f"ENGINEERING_AUDIT_CONFIG file '{path}' is not a valid AuditConfig: {exc}"
                 ) from exc
             _validate_selected_domains(state, config)
@@ -1895,13 +1938,13 @@ def _register_config_tools(mcp: MCPServer, state: AppState) -> None:
                     # assistant as something it can act on, not the bare
                     # RuntimeError Path.expanduser()/resolve() themselves
                     # raise (issue #152).
-                    raise ValueError(
+                    raise AuditError(
                         f"ENGINEERING_AUDIT_CONFIG file '{path}' names a deliverables_dir "
                         f"that cannot be used: {exc}"
                     ) from exc
                 path_error = validate_deliverables_dir(resolved)
                 if path_error:
-                    raise ValueError(
+                    raise AuditError(
                         f"ENGINEERING_AUDIT_CONFIG file '{path}' names a deliverables_dir "
                         f"that cannot be used: {path_error}"
                     )
@@ -1988,7 +2031,7 @@ def _register_config_tools(mcp: MCPServer, state: AppState) -> None:
         """
         run = _require_run(state)
         if run.config_mode is None:
-            raise ValueError("start_config must be called before get_config.")
+            raise AuditError("start_config must be called before get_config.")
 
         if run.config is not None:
             return {"status": "configured", **_config_summary(run)}
@@ -2013,7 +2056,7 @@ def _register_config_tools(mcp: MCPServer, state: AppState) -> None:
         except ConfigTimeoutError as exc:
             waited_s = time.monotonic() - run.config_wait_started_at
             if waited_s >= timeout_s:
-                raise ValueError(
+                raise AuditError(
                     f"No configuration submitted within {timeout_s} seconds. The user has "
                     f"not submitted the configuration page at {run.config_url}. Tell the "
                     "user the audit is waiting on them there and is not proceeding. Do not "
@@ -2051,6 +2094,7 @@ def _register_result_tools(mcp: MCPServer, state: AppState) -> None:
     """Recording per-domain results, and reporting progress over them."""
 
     @mcp.tool()
+    @_surface_anticipated
     def record_domain_result(
         result: DomainResult, replace: bool = False
     ) -> dict[str, Any]:
@@ -2095,7 +2139,7 @@ def _register_result_tools(mcp: MCPServer, state: AppState) -> None:
 
         domain_id = result.domain_id
         if domain_id not in config.selected_domain_ids:
-            raise ValueError(
+            raise AuditError(
                 f"domain '{domain_id}' is not one of the domains selected for this run: "
                 f"{config.selected_domain_ids}"
             )
@@ -2103,7 +2147,7 @@ def _register_result_tools(mcp: MCPServer, state: AppState) -> None:
         if result.status == "completed":
             domain = state.pack.get_domain(domain_id)
             if domain is None:
-                raise ValueError(
+                raise AuditError(
                     f"domain '{domain_id}' is not in the loaded rules pack"
                 )
             validate_completeness(domain, result)
@@ -2115,7 +2159,7 @@ def _register_result_tools(mcp: MCPServer, state: AppState) -> None:
             # above already fetched.
             domain = state.pack.get_domain(domain_id)
             if domain is None:
-                raise ValueError(
+                raise AuditError(
                     f"domain '{domain_id}' is not in the loaded rules pack"
                 )
             validate_consulted_sources(domain, result)
@@ -2128,7 +2172,7 @@ def _register_result_tools(mcp: MCPServer, state: AppState) -> None:
         validate_finding_locations(result)
 
         if domain_id in run.domain_results and not replace:
-            raise ValueError(
+            raise AuditError(
                 f"domain '{domain_id}' already has a recorded result; pass replace=True to "
                 "overwrite it."
             )
@@ -2228,12 +2272,12 @@ def _register_issue_tools(mcp: MCPServer, state: AppState) -> None:
         config = _require_config(run)
 
         if config.issue_mode != "github":
-            raise ValueError(
+            raise AuditError(
                 f"This run's issue_mode is {config.issue_mode!r}, not 'github': the user chose "
                 "in-report delivery, not GitHub issue filing. Not filing anything."
             )
         if not run.domain_results:
-            raise ValueError(
+            raise AuditError(
                 "No domain results recorded yet. Call record_domain_result for at least one "
                 "domain before filing issues."
             )
@@ -2311,7 +2355,7 @@ def _register_feedback_tools(mcp: MCPServer, state: AppState) -> None:
 
         free_text = config.feedback_text or extra_text
         if not (free_text and free_text.strip()):
-            raise ValueError(
+            raise AuditError(
                 "Nothing to send: no feedback_text was set on this run's configuration and no "
                 "extra_text was given."
             )
@@ -2401,6 +2445,7 @@ def _register_report_tools(mcp: MCPServer, state: AppState) -> None:
     """Finishing a run: rendering and writing out its report."""
 
     @mcp.tool()
+    @_surface_anticipated
     def render_report(finished: str) -> dict[str, Any]:
         """Finish the run and render its report.
 
